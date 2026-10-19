@@ -27,3 +27,5 @@ windows = ["demo.exe"]
 
 [env]
 DEMO_HOME = "{home}"
+JAVA_TOOL_OPTIONS = "-Dfile.encoding=UTF-8"
+LD_LIBRARY_PATH = "{home}/lib"

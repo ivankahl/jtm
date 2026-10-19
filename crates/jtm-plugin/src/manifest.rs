@@ -469,6 +469,9 @@ impl Manifest {
     }
 
     fn validate_env(&self, p: &mut Problems) {
+        // Windows compares variable names case-insensitively, so `JAVA_HOME` and `java_home`
+        // would set the same variable.
+        let mut seen: BTreeMap<String, &str> = BTreeMap::new();
         for (name, value) in &self.env {
             let path = format!("env.{}", quote_key(name));
             if !is_env_name(name) {
@@ -480,6 +483,22 @@ impl Manifest {
             }
             if let Some(reason) = reserved_env(name) {
                 p.push(path, reason);
+                continue;
+            }
+            if let Some(first) = seen.insert(name.to_ascii_uppercase(), name) {
+                p.push(
+                    path,
+                    format!("`{first}` and `{name}` differ only in case, and collide on Windows"),
+                );
+                continue;
+            }
+            // Shells such as `cmd` cannot quote a newline, so no control character may reach
+            // the environment-setting commands jtm prints.
+            if value.chars().any(char::is_control) {
+                p.push(
+                    path,
+                    "values cannot contain control characters such as newlines",
+                );
                 continue;
             }
             check_placeholders(p, &path, value, ENV_PLACEHOLDERS);
@@ -806,17 +825,17 @@ fn is_env_name(name: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-// SPEC-QUESTION: section 7 does not restrict `[env]` names. jtm owns `PATH` and `JTM_*`, and
-// dynamic-loader variables would let a manifest inject code into every process, so all are
-// refused. Names compare case-insensitively because Windows does.
+/// Names jtm sets itself: it builds `PATH` from `layout.bin_dirs`, and the shell hook records
+/// its own changes in `JTM_*` variables to undo them. Refusing them keeps jtm correct; it is
+/// not a security boundary. A plugin is trusted when it is installed, since it already picks
+/// the keys that sign its archives, so any other variable is allowed. Names compare
+/// case-insensitively because Windows does.
 fn reserved_env(name: &str) -> Option<&'static str> {
     let upper = name.to_ascii_uppercase();
     if upper == "PATH" {
         Some("jtm manages `PATH` itself; list bin directories in `layout.bin_dirs`")
     } else if upper.starts_with("JTM_") {
         Some("`JTM_` variables are reserved for jtm")
-    } else if upper.starts_with("LD_") || upper.starts_with("DYLD_") {
-        Some("dynamic loader variables cannot be set by plugins")
     } else {
         None
     }

@@ -145,6 +145,18 @@ fn home_subdir_string_form_explains_the_table_form() {
     );
 }
 
+/// A plugin is trusted once installed, so any variable outside `PATH` and `JTM_*` is allowed.
+#[test]
+fn env_allows_any_variable_jtm_does_not_own() {
+    let text = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/manifests/valid/demo.toml"),
+    )
+    .unwrap();
+    let m = Manifest::parse(&text).unwrap();
+    assert_eq!(m.env["JAVA_TOOL_OPTIONS"], "-Dfile.encoding=UTF-8");
+    assert_eq!(m.env["LD_LIBRARY_PATH"], "{home}/lib");
+}
+
 #[test]
 fn validation_reports_every_problem() {
     let text = fs::read_to_string(

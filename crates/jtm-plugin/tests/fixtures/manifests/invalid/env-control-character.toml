@@ -1,4 +1,4 @@
-# expect: env.LD_PRELOAD
+# expect: env.JAVA_TOOL_OPTIONS
 schema = 1
 name = "demo"
 display_name = "Demo Tool"
@@ -28,5 +28,4 @@ windows = ["demo.exe"]
 
 [env]
 DEMO_HOME = "{home}"
-
-LD_PRELOAD = "{home}/lib/evil.so"
+JAVA_TOOL_OPTIONS = "-Dfile.encoding=UTF-8\n-Xmx1g"
