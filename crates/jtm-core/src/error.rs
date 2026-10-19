@@ -82,6 +82,8 @@ pub enum ErrorCode {
     LockOutdated,
     LockIndexMismatch,
     PluginUntrusted,
+    KeyChanged,
+    InputRequired,
     PluginScriptLimit,
     InUse,
     Permission,
@@ -109,6 +111,8 @@ impl ErrorCode {
         ErrorCode::LockOutdated,
         ErrorCode::LockIndexMismatch,
         ErrorCode::PluginUntrusted,
+        ErrorCode::KeyChanged,
+        ErrorCode::InputRequired,
         ErrorCode::PluginScriptLimit,
         ErrorCode::InUse,
         ErrorCode::Permission,
@@ -136,6 +140,8 @@ impl ErrorCode {
             ErrorCode::LockOutdated => "E_LOCK_OUTDATED",
             ErrorCode::LockIndexMismatch => "E_LOCK_INDEX_MISMATCH",
             ErrorCode::PluginUntrusted => "E_PLUGIN_UNTRUSTED",
+            ErrorCode::KeyChanged => "E_KEY_CHANGED",
+            ErrorCode::InputRequired => "E_INPUT_REQUIRED",
             ErrorCode::PluginScriptLimit => "E_PLUGIN_SCRIPT_LIMIT",
             ErrorCode::InUse => "E_IN_USE",
             ErrorCode::Permission => "E_PERMISSION",
@@ -162,7 +168,10 @@ impl ErrorCode {
             | ErrorCode::SizeExceeded
             | ErrorCode::ArchiveUnsafe => ExitCode::Verification,
             ErrorCode::LockOutdated | ErrorCode::LockIndexMismatch => ExitCode::LockOrPin,
-            ErrorCode::KeyUntrusted | ErrorCode::PluginUntrusted => ExitCode::TrustRequired,
+            ErrorCode::KeyUntrusted
+            | ErrorCode::PluginUntrusted
+            | ErrorCode::KeyChanged
+            | ErrorCode::InputRequired => ExitCode::TrustRequired,
             // SPEC-QUESTION: section 12 gives no exit code for E_PLUGIN_SCRIPT_LIMIT; a plugin
             // script exceeding its limits is treated as an unexpected failure.
             ErrorCode::PluginScriptLimit | ErrorCode::Internal => ExitCode::Internal,
@@ -216,8 +225,8 @@ pub enum JtmError {
     #[error("invalid signature on {file}: {message}")]
     SignatureInvalid { file: String, message: String },
 
-    #[error("key `{key_id}` is not trusted")]
-    KeyUntrusted { key_id: String },
+    #[error("key `{key_id}` is not trusted; to trust it, run {resolve}")]
+    KeyUntrusted { key_id: String, resolve: String },
 
     #[error("index {index} expired at {expires}")]
     IndexExpired { index: String, expires: String },
@@ -247,8 +256,25 @@ pub enum JtmError {
     #[error("jtm.lock entry for `{tool}` does not match the signed index: {message}")]
     LockIndexMismatch { tool: String, message: String },
 
-    #[error("plugin `{plugin}` is not trusted")]
-    PluginUntrusted { plugin: String },
+    #[error("plugin `{plugin}` is not trusted; to trust it, use {resolve}")]
+    PluginUntrusted { plugin: String, resolve: String },
+
+    /// A plugin's signing keys changed without a rotation signed by a current key. `--yes`
+    /// never accepts this.
+    #[error(
+        "signing keys for plugin `{plugin}` changed without a signed rotation; \
+         if the change is expected, run {resolve}"
+    )]
+    KeyChanged {
+        plugin: String,
+        old_keys: Vec<String>,
+        new_keys: Vec<String>,
+        resolve: String,
+    },
+
+    /// A step needed a confirmation or a choice while prompts were off.
+    #[error("{action} needs confirmation, but prompts are off; rerun with {resolve}")]
+    InputRequired { action: String, resolve: String },
 
     #[error("plugin `{plugin}` script exceeded its {limit} limit")]
     PluginScriptLimit { plugin: String, limit: String },
@@ -289,6 +315,8 @@ impl JtmError {
             JtmError::LockOutdated { .. } => ErrorCode::LockOutdated,
             JtmError::LockIndexMismatch { .. } => ErrorCode::LockIndexMismatch,
             JtmError::PluginUntrusted { .. } => ErrorCode::PluginUntrusted,
+            JtmError::KeyChanged { .. } => ErrorCode::KeyChanged,
+            JtmError::InputRequired { .. } => ErrorCode::InputRequired,
             JtmError::PluginScriptLimit { .. } => ErrorCode::PluginScriptLimit,
             JtmError::InUse { .. } => ErrorCode::InUse,
             JtmError::Permission { .. } => ErrorCode::Permission,
@@ -402,6 +430,8 @@ mod tests {
             (E::LockOutdated, 6),
             (E::LockIndexMismatch, 6),
             (E::PluginUntrusted, 7),
+            (E::KeyChanged, 7),
+            (E::InputRequired, 7),
             (E::PluginScriptLimit, 1),
             (E::InUse, 4),
             (E::Permission, 4),
@@ -432,6 +462,34 @@ mod tests {
         assert_eq!(err.code(), "E_USAGE");
         assert_eq!(err.exit_code(), ExitCode::Usage);
         assert_eq!(err.to_string(), "bad flag");
+    }
+
+    #[test]
+    fn exit_seven_errors_name_their_resolution() {
+        let err = JtmError::InputRequired {
+            action: "installing a missing version".into(),
+            resolve: "--install".into(),
+        };
+        assert_eq!(err.code(), "E_INPUT_REQUIRED");
+        assert_eq!(err.exit_code(), ExitCode::TrustRequired);
+        assert_eq!(
+            err.to_string(),
+            "installing a missing version needs confirmation, but prompts are off; \
+             rerun with --install"
+        );
+
+        let err = JtmError::KeyChanged {
+            plugin: "example".into(),
+            old_keys: vec!["RWOLD".into()],
+            new_keys: vec!["RWNEW".into()],
+            resolve: "jtm trust add RWNEW --scope example".into(),
+        };
+        assert_eq!(err.code(), "E_KEY_CHANGED");
+        assert_eq!(err.exit_code(), ExitCode::TrustRequired);
+        assert!(
+            err.to_string()
+                .ends_with("run jtm trust add RWNEW --scope example")
+        );
     }
 
     #[test]
