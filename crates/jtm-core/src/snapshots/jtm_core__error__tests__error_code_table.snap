@@ -1,0 +1,26 @@
+---
+source: crates/jtm-core/src/error.rs
+expression: table
+---
+E_USAGE                  exit=2 retryable=false
+E_TOOL_UNKNOWN           exit=3 retryable=false
+E_VERSION_NOT_FOUND      exit=3 retryable=false
+E_ALIAS_UNKNOWN          exit=3 retryable=false
+E_PLATFORM_UNSUPPORTED   exit=3 retryable=false
+E_NETWORK                exit=4 retryable=true
+E_OFFLINE                exit=4 retryable=false
+E_SIGNATURE_INVALID      exit=5 retryable=false
+E_KEY_UNTRUSTED          exit=7 retryable=false
+E_INDEX_EXPIRED          exit=5 retryable=false
+E_INDEX_ROLLBACK         exit=5 retryable=false
+E_INDEX_BINDING          exit=5 retryable=false
+E_HASH_MISMATCH          exit=5 retryable=false
+E_SIZE_EXCEEDED          exit=5 retryable=false
+E_ARCHIVE_UNSAFE         exit=5 retryable=false
+E_LOCK_OUTDATED          exit=6 retryable=false
+E_LOCK_INDEX_MISMATCH    exit=6 retryable=false
+E_PLUGIN_UNTRUSTED       exit=7 retryable=false
+E_PLUGIN_SCRIPT_LIMIT    exit=1 retryable=false
+E_IN_USE                 exit=4 retryable=true
+E_PERMISSION             exit=4 retryable=false
+E_INTERNAL               exit=1 retryable=false

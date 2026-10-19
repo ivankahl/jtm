@@ -18,6 +18,9 @@ jtm-fetch = { path = "crates/jtm-fetch" }
 jtm-plugin = { path = "crates/jtm-plugin" }
 jtm-security = { path = "crates/jtm-security" }
 
+insta = "1.49"
+thiserror = "2.0"
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 missing_debug_implementations = "warn"
