@@ -1,7 +1,7 @@
 //! Layered configuration (SPEC.md sections 6, 13 and 14).
 //!
 //! Layers merge in this order, later winning: built-in defaults, system config, user config,
-//! project `.jtm.toml` `[settings]`, `JTM_<SECTION>_<KEY>` environment variables, and
+//! project `.jtm.toml` `[settings]`, `JTM__<SECTION>__<KEY>` environment variables, and
 //! command-line flags. A key the system config marks `locked` keeps its system value whatever
 //! later layers say. A project file can never set a key that weakens verification or
 //! redirects downloads.
@@ -836,14 +836,15 @@ fn parse_bytes(text: &str) -> std::result::Result<Value, String> {
     }
 }
 
-/// The environment variable for a scalar key, such as `JTM_INDEX_TTL_HOURS`.
+/// The environment variable for a scalar key, such as `JTM__INDEX__TTL_HOURS`. Double
+/// underscores separate the parts, so they never clash with the underscores inside key names
+/// or with jtm's own flag variables such as `JTM_OFFLINE`.
 fn env_name(def: &KeyDef) -> String {
-    format!("JTM_{}_{}", def.section, def.name).to_ascii_uppercase()
+    format!("JTM__{}__{}", def.section, def.name).to_ascii_uppercase()
 }
 
-// SPEC-QUESTION: section 14 names an environment layer without naming its variables. Each
-// scalar key `<section>.<key>` is read from `JTM_<SECTION>_<KEY>`; mirrors and plugin index
-// URLs have no variables. Locked system keys still win.
+/// Reads `JTM__<SECTION>__<KEY>` for each scalar key. Mirrors and plugin index URLs have no
+/// variables, and locked system keys still win.
 fn read_env(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for def in KEYS {

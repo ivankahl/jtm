@@ -682,7 +682,7 @@ Tools without variants use the variant name `default`.
 
 ### Configuration keys
 
-Layers merge in this order, later winning unless a system key is `locked`: built-in defaults, system config, user config, project `.jtm.toml` `[settings]`, environment variables, command-line flags.
+Layers merge in this order, later winning unless a system key is `locked`: built-in defaults, system config, user config, project `.jtm.toml` `[settings]`, environment variables, command-line flags. Each key `<section>.<key>` in the table below is read from the environment variable `JTM__<SECTION>__<KEY>`, for example `JTM__INDEX__TTL_HOURS`; `[mirrors]` and `plugins.<name>.index_url` have no variables.
 
 | Key | Default | Purpose |
 | --- | --- | --- |

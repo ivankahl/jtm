@@ -113,7 +113,7 @@ fn later_layers_win_in_order() {
     assert_eq!(ttl(&f), (2, Layer::User));
     f = f.project("[settings.index]\nttl_hours = 3");
     assert_eq!(ttl(&f), (3, Layer::Project));
-    f = f.env("JTM_INDEX_TTL_HOURS", "4");
+    f = f.env("JTM__INDEX__TTL_HOURS", "4");
     assert_eq!(ttl(&f), (4, Layer::Env));
     f = f.flag("index.ttl_hours", "5");
     assert_eq!(ttl(&f), (5, Layer::Flag));
@@ -123,7 +123,7 @@ fn later_layers_win_in_order() {
 fn origins_name_the_file_variable_or_flag() {
     let config = Fixture::default()
         .user("[download]\nconcurrency = 8")
-        .env("JTM_INDEX_AUTO_REFRESH", "never")
+        .env("JTM__INDEX__AUTO_REFRESH", "never")
         .ok();
     assert_eq!(
         config.origin("download.concurrency").unwrap().to_string(),
@@ -131,7 +131,7 @@ fn origins_name_the_file_variable_or_flag() {
     );
     assert_eq!(
         config.origin("index.auto_refresh").unwrap().to_string(),
-        "environment variable JTM_INDEX_AUTO_REFRESH"
+        "environment variable JTM__INDEX__AUTO_REFRESH"
     );
     assert_eq!(config.settings.index.auto_refresh, AutoRefresh::Never);
     assert!(config.origins().any(|(key, _)| key == "pin.default_format"));
@@ -151,8 +151,8 @@ auto_refresh = { value = "never", locked = false }
 "#,
         )
         .user("[security]\nexpiry = \"remote-only\"\n[index]\nauto_refresh = \"always\"")
-        .env("JTM_SECURITY_EXPIRY", "remote-only")
-        .env("JTM_INDEX_TTL_HOURS", "12")
+        .env("JTM__SECURITY__EXPIRY", "remote-only")
+        .env("JTM__INDEX__TTL_HOURS", "12")
         .flag("security.expiry", "remote-only")
         .ok();
     assert_eq!(config.settings.security.expiry, ExpiryPolicy::Enforce);
@@ -457,21 +457,25 @@ index_url = "file:///opt/jtm-mirror/index/example-{{os}}-{{arch}}.json"
 #[test]
 fn env_variables_are_parsed_and_checked() {
     let config = Fixture::default()
-        .env("JTM_SECURITY_ALLOW_HTTP_MIRRORS", "1")
-        .env("JTM_EXTRACT_MAX_BYTES", "2 GiB")
-        .env("JTM_DOWNLOAD_CONCURRENCY", "")
+        .env("JTM__SECURITY__ALLOW_HTTP_MIRRORS", "1")
+        .env("JTM__EXTRACT__MAX_BYTES", "2 GiB")
+        .env("JTM__DOWNLOAD__CONCURRENCY", "")
         .ok();
     assert!(config.settings.security.allow_http_mirrors);
     assert_eq!(config.settings.extract.max_bytes, 2 << 30);
     assert_eq!(config.settings.download.concurrency, 4, "empty means unset");
 
+    // The old single-underscore spelling is not read.
+    let config = Fixture::default().env("JTM_INDEX_TTL_HOURS", "1").ok();
+    assert_eq!(config.settings.index.ttl_hours, 24);
+
     let err = Fixture::default()
-        .env("JTM_DOWNLOAD_CONCURRENCY", "many")
+        .env("JTM__DOWNLOAD__CONCURRENCY", "many")
         .err();
     assert_eq!(err.code(), "E_USAGE");
     assert!(
         err.to_string()
-            .starts_with("environment variable JTM_DOWNLOAD_CONCURRENCY: "),
+            .starts_with("environment variable JTM__DOWNLOAD__CONCURRENCY: "),
         "{err}"
     );
 }
