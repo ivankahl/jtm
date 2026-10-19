@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1615dafe1aaafae8872c8bf0cca552d6c62ea1076b6a87de2c21a5b4146c7344 # shrinks to (scheme, a, b, c) = (Maven, "0-1", "0.rc0", "0")

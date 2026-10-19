@@ -575,14 +575,14 @@ Success and no-op both exit 0 so `set -e` scripts keep working; the difference i
 | 2 | Usage error (bad flag, bad spec) | No |
 | 3 | Not found (tool, version, alias, platform) | No |
 | 4 | Network or I/O error | Yes |
-| 5 | Verification failure (signature, hash, rollback, expiry, unsafe archive) | No, report it |
+| 5 | Verification failure (signature, hash, rollback, expiry, unsafe archive, invalid plugin manifest) | No, report it |
 | 6 | Lock or pin problem (outdated, mismatch, conflict) | No |
 | 7 | Trust required (untrusted plugin or key) | No, ask a human |
 | 8 | Partial success in a multi-tool command | Inspect `data` |
 
 ### Error codes
 
-Stable string codes, never renamed once released: `E_USAGE`, `E_TOOL_UNKNOWN`, `E_VERSION_NOT_FOUND`, `E_ALIAS_UNKNOWN`, `E_PLATFORM_UNSUPPORTED`, `E_NETWORK`, `E_OFFLINE`, `E_SIGNATURE_INVALID`, `E_KEY_UNTRUSTED`, `E_INDEX_EXPIRED`, `E_INDEX_ROLLBACK`, `E_INDEX_BINDING`, `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED`, `E_ARCHIVE_UNSAFE`, `E_LOCK_OUTDATED`, `E_LOCK_INDEX_MISMATCH`, `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_INPUT_REQUIRED`, `E_PLUGIN_SCRIPT_LIMIT`, `E_IN_USE`, `E_PERMISSION`, `E_INTERNAL`.
+Stable string codes, never renamed once released: `E_USAGE`, `E_TOOL_UNKNOWN`, `E_VERSION_NOT_FOUND`, `E_ALIAS_UNKNOWN`, `E_PLATFORM_UNSUPPORTED`, `E_NETWORK`, `E_OFFLINE`, `E_SIGNATURE_INVALID`, `E_KEY_UNTRUSTED`, `E_INDEX_EXPIRED`, `E_INDEX_ROLLBACK`, `E_INDEX_BINDING`, `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED`, `E_ARCHIVE_UNSAFE`, `E_LOCK_OUTDATED`, `E_LOCK_INDEX_MISMATCH`, `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_INPUT_REQUIRED`, `E_PLUGIN_SCRIPT_LIMIT`, `E_PLUGIN_INVALID`, `E_IN_USE`, `E_PERMISSION`, `E_INTERNAL`.
 
 Four codes exit with 7, and they tell an agent whether a flag can help:
 

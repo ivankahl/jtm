@@ -87,6 +87,7 @@ pub enum ErrorCode {
     KeyChanged,
     InputRequired,
     PluginScriptLimit,
+    PluginInvalid,
     InUse,
     Permission,
     Internal,
@@ -116,6 +117,7 @@ impl ErrorCode {
         ErrorCode::KeyChanged,
         ErrorCode::InputRequired,
         ErrorCode::PluginScriptLimit,
+        ErrorCode::PluginInvalid,
         ErrorCode::InUse,
         ErrorCode::Permission,
         ErrorCode::Internal,
@@ -145,6 +147,7 @@ impl ErrorCode {
             ErrorCode::KeyChanged => "E_KEY_CHANGED",
             ErrorCode::InputRequired => "E_INPUT_REQUIRED",
             ErrorCode::PluginScriptLimit => "E_PLUGIN_SCRIPT_LIMIT",
+            ErrorCode::PluginInvalid => "E_PLUGIN_INVALID",
             ErrorCode::InUse => "E_IN_USE",
             ErrorCode::Permission => "E_PERMISSION",
             ErrorCode::Internal => "E_INTERNAL",
@@ -168,7 +171,8 @@ impl ErrorCode {
             | ErrorCode::IndexBinding
             | ErrorCode::HashMismatch
             | ErrorCode::SizeExceeded
-            | ErrorCode::ArchiveUnsafe => ExitCode::Verification,
+            | ErrorCode::ArchiveUnsafe
+            | ErrorCode::PluginInvalid => ExitCode::Verification,
             ErrorCode::LockOutdated | ErrorCode::LockIndexMismatch => ExitCode::LockOrPin,
             ErrorCode::KeyUntrusted
             | ErrorCode::PluginUntrusted
@@ -329,12 +333,10 @@ impl JtmError {
     /// The [`ErrorCode`] for this error.
     pub const fn kind(&self) -> ErrorCode {
         match self {
-            // SPEC-QUESTION: section 12 has no code for a malformed plugin manifest. It is bad
-            // input that no retry fixes, so it is reported as a usage error.
-            JtmError::Usage { .. }
-            | JtmError::InvalidSpec { .. }
-            | JtmError::InvalidManifest { .. }
-            | JtmError::Config { .. } => ErrorCode::Usage,
+            JtmError::Usage { .. } | JtmError::InvalidSpec { .. } | JtmError::Config { .. } => {
+                ErrorCode::Usage
+            }
+            JtmError::InvalidManifest { .. } => ErrorCode::PluginInvalid,
             JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
@@ -614,6 +616,7 @@ mod tests {
             (E::KeyChanged, 7),
             (E::InputRequired, 7),
             (E::PluginScriptLimit, 1),
+            (E::PluginInvalid, 5),
             (E::InUse, 4),
             (E::Permission, 4),
             (E::Internal, 1),
@@ -701,13 +704,14 @@ mod tests {
     }
 
     #[test]
-    fn invalid_manifest_is_a_usage_error_listing_each_problem() {
+    fn invalid_manifest_is_plugin_invalid_listing_each_problem() {
         let error = jtm_plugin::Manifest::parse("schema = 1\nname = \"Bad\"").unwrap_err();
         let err = JtmError::InvalidManifest {
             origin: "plugins/bad/plugin.toml".into(),
             error,
         };
-        assert_eq!(err.code(), "E_USAGE");
+        assert_eq!(err.code(), "E_PLUGIN_INVALID");
+        assert_eq!(err.exit_code(), ExitCode::Verification);
         assert!(
             err.to_string()
                 .starts_with("plugins/bad/plugin.toml: invalid plugin.toml: ")
