@@ -1,0 +1,57 @@
+schema = 1
+name = "java"
+display_name = "Java Development Kit"
+description = "OpenJDK builds from several vendors"
+homepage = "https://openjdk.org"
+license = "GPL-2.0-with-classpath-exception"
+min_jtm = "0.1.0"
+
+[versions]
+scheme = "java"
+variants = ["temurin", "corretto", "zulu", "liberica", "microsoft", "graalvm-community"]
+default_variant = "temurin"
+default_alias = "latest"
+
+[aliases]
+latest = { kind = "highest" }
+lts = { kind = "index-tag", tag = "lts" }
+
+[index]
+url = "https://github.com/jtm-dev/index/releases/download/java-{index_version}/java-{os}-{arch}.json"
+signing_keys = [
+  "RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB",
+  "RWT3UMq5qchY8rkpYUH0BVM6S/kloG6vWzJ4M+IqwCluDlG83S056Fx2",
+]
+format = 1
+
+[layout]
+strip_components = "auto"
+bin_dirs = ["bin"]
+
+[layout.home_subdir]
+macos = "Contents/Home"
+
+[executables]
+unix = ["java", "javac", "jar", "jshell"]
+windows = ["java.exe", "javac.exe", "jar.exe", "jshell.exe"]
+
+[env]
+JAVA_HOME = "{home}"
+
+[[interop]]
+file = ".sdkmanrc"
+parser = "keyvalue"
+key = "java"
+mapping = { tem = "temurin", amzn = "corretto", librca = "liberica", ms = "microsoft", graalce = "graalvm-community" }
+
+[[interop]]
+file = ".tool-versions"
+parser = "tool-versions"
+key = "java"
+
+[[interop]]
+file = ".java-version"
+parser = "single-line"
+
+[hooks]
+post_extract = "fix_permissions"

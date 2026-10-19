@@ -19,12 +19,15 @@ jtm-plugin = { path = "crates/jtm-plugin" }
 jtm-security = { path = "crates/jtm-security" }
 
 assert_cmd = "2.2"
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive"] }
 insta = { version = "1.49", features = ["json", "redactions"] }
 proptest = "1.12"
 serde = { version = "1.0", features = ["derive"] }
+serde_path_to_error = "0.1"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 thiserror = "2.0"
+toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

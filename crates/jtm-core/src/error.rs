@@ -210,6 +210,14 @@ pub enum JtmError {
         message: String,
     },
 
+    /// A `plugin.toml` that does not validate. `origin` names where it came from, such as a
+    /// plugin name or a path.
+    #[error("{origin}: {error}")]
+    InvalidManifest {
+        origin: String,
+        error: jtm_plugin::manifest::ManifestError,
+    },
+
     #[error("unknown tool `{tool}`")]
     ToolUnknown { tool: String },
 
@@ -312,7 +320,11 @@ impl JtmError {
     /// The [`ErrorCode`] for this error.
     pub const fn kind(&self) -> ErrorCode {
         match self {
-            JtmError::Usage { .. } | JtmError::InvalidSpec { .. } => ErrorCode::Usage,
+            // SPEC-QUESTION: section 12 has no code for a malformed plugin manifest. It is bad
+            // input that no retry fixes, so it is reported as a usage error.
+            JtmError::Usage { .. }
+            | JtmError::InvalidSpec { .. }
+            | JtmError::InvalidManifest { .. } => ErrorCode::Usage,
             JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
@@ -369,6 +381,24 @@ impl JtmError {
             JtmError::InvalidSpec { input, column, .. } => obj([
                 ("input", input.as_str().into()),
                 ("column", (*column).into()),
+            ]),
+            JtmError::InvalidManifest { origin, error } => obj([
+                ("origin", origin.as_str().into()),
+                (
+                    "problems",
+                    error
+                        .problems
+                        .iter()
+                        .map(|p| {
+                            serde_json::json!({
+                                "path": p.path,
+                                "message": p.message,
+                                "line": p.line,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                ),
             ]),
             JtmError::ToolUnknown { tool } => obj([("tool", tool.as_str().into())]),
             JtmError::VersionNotFound { tool, spec } => obj([
@@ -628,6 +658,23 @@ mod tests {
             err.to_string()
                 .ends_with("run jtm trust add RWNEW --scope example")
         );
+    }
+
+    #[test]
+    fn invalid_manifest_is_a_usage_error_listing_each_problem() {
+        let error = jtm_plugin::Manifest::parse("schema = 1\nname = \"Bad\"").unwrap_err();
+        let err = JtmError::InvalidManifest {
+            origin: "plugins/bad/plugin.toml".into(),
+            error,
+        };
+        assert_eq!(err.code(), "E_USAGE");
+        assert!(
+            err.to_string()
+                .starts_with("plugins/bad/plugin.toml: invalid plugin.toml: ")
+        );
+        let details = Value::Object(err.details());
+        assert_eq!(details["origin"], "plugins/bad/plugin.toml");
+        assert_eq!(details["problems"][0]["path"], "display_name");
     }
 
     #[test]

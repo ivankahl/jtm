@@ -1,0 +1,30 @@
+# expect: name
+schema = 1
+name = "Demo"
+display_name = "Demo Tool"
+homepage = "https://example.test"
+
+[versions]
+scheme = "semver-loose"
+variants = ["alpha-build", "beta-build"]
+default_variant = "alpha-build"
+default_alias = "latest"
+
+[aliases]
+latest = { kind = "highest" }
+
+[index]
+url = "https://example.test/demo-{os}-{arch}.json"
+signing_keys = ["RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB"]
+format = 1
+
+[layout]
+strip_components = 1
+bin_dirs = ["bin"]
+
+[executables]
+unix = ["demo"]
+windows = ["demo.exe"]
+
+[env]
+DEMO_HOME = "{home}"

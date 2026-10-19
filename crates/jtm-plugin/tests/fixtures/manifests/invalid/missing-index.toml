@@ -1,0 +1,25 @@
+# expect: index
+schema = 1
+name = "demo"
+display_name = "Demo Tool"
+homepage = "https://example.test"
+
+[versions]
+scheme = "semver-loose"
+variants = ["alpha-build", "beta-build"]
+default_variant = "alpha-build"
+default_alias = "latest"
+
+[aliases]
+latest = { kind = "highest" }
+
+[layout]
+strip_components = 1
+bin_dirs = ["bin"]
+
+[executables]
+unix = ["demo"]
+windows = ["demo.exe"]
+
+[env]
+DEMO_HOME = "{home}"
