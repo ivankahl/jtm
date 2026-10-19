@@ -264,14 +264,32 @@ pub enum JtmError {
     #[error("key `{key_id}` is not trusted; to trust it, run {resolve}")]
     KeyUntrusted { key_id: String, resolve: String },
 
-    #[error("index {index} expired at {expires}")]
+    #[error("index {index} expired at {expires}; run `jtm update` to fetch a current copy")]
     IndexExpired { index: String, expires: String },
 
-    #[error("index {index} has sequence {got}, older than the {seen} already seen")]
-    IndexRollback { index: String, seen: u64, got: u64 },
+    /// An index older than one already seen, or the same sequence with different content.
+    #[error("index {index} has sequence {got}, {reason} (sequence {seen})")]
+    IndexRollback {
+        index: String,
+        seen: u64,
+        got: u64,
+        reason: String,
+    },
 
-    #[error("index {index} is not bound to {expected}")]
-    IndexBinding { index: String, expected: String },
+    #[error("index {index} is signed for {got}, not {expected}")]
+    IndexBinding {
+        index: String,
+        expected: String,
+        got: String,
+    },
+
+    /// `state/trust.json` cannot be read as jtm wrote it.
+    #[error(
+        "{}: {message}; fix or remove the file (removing it forgets trusted keys and \
+         rollback history)",
+        path.display()
+    )]
+    TrustStateCorrupt { path: PathBuf, message: String },
 
     /// A correctly signed index or `keys.json` that is malformed, in an unsupported format, or
     /// fails validation.
@@ -371,7 +389,9 @@ impl JtmError {
             JtmError::PluginScriptLimit { .. } => ErrorCode::PluginScriptLimit,
             JtmError::InUse { .. } => ErrorCode::InUse,
             JtmError::Permission { .. } => ErrorCode::Permission,
-            JtmError::Internal { .. } => ErrorCode::Internal,
+            // SPEC-QUESTION: section 12 has no code for corrupt local state. It is not a
+            // verification failure of anything downloaded, so it is reported as internal.
+            JtmError::TrustStateCorrupt { .. } | JtmError::Internal { .. } => ErrorCode::Internal,
         }
     }
 
@@ -453,15 +473,23 @@ impl JtmError {
                 ("index", index.as_str().into()),
                 ("expires", expires.as_str().into()),
             ]),
-            JtmError::IndexRollback { index, seen, got } => obj([
+            JtmError::IndexRollback {
+                index, seen, got, ..
+            } => obj([
                 ("index", index.as_str().into()),
                 ("seen", (*seen).into()),
                 ("got", (*got).into()),
             ]),
-            JtmError::IndexBinding { index, expected } => obj([
+            JtmError::IndexBinding {
+                index,
+                expected,
+                got,
+            } => obj([
                 ("index", index.as_str().into()),
                 ("expected", expected.as_str().into()),
+                ("got", got.as_str().into()),
             ]),
+            JtmError::TrustStateCorrupt { path: p, .. } => obj([("path", path(p))]),
             JtmError::HashMismatch {
                 url,
                 expected,
@@ -563,6 +591,40 @@ impl From<jtm_security::Error> for JtmError {
                 key_id, resolve, ..
             } => JtmError::KeyUntrusted { key_id, resolve },
             S::Invalid { file, message } => JtmError::SignedFileInvalid { file, message },
+            S::IndexBinding {
+                file,
+                expected,
+                got,
+            } => JtmError::IndexBinding {
+                index: file,
+                expected,
+                got,
+            },
+            S::IndexRollback {
+                file,
+                seen,
+                got,
+                reason,
+            } => JtmError::IndexRollback {
+                index: file,
+                seen,
+                got,
+                reason,
+            },
+            S::IndexExpired { file, expires } => JtmError::IndexExpired {
+                index: file,
+                expires,
+            },
+            S::State { path, message } => JtmError::TrustStateCorrupt { path, message },
+            S::Io { path, source } if source.kind() == std::io::ErrorKind::PermissionDenied => {
+                JtmError::Permission {
+                    path,
+                    source: Some(source),
+                }
+            }
+            S::Io { path, source } => {
+                JtmError::internal(format!("cannot access {}: {source}", path.display()))
+            }
             other => JtmError::internal(other.to_string()),
         }
     }
@@ -806,6 +868,37 @@ mod tests {
         });
         assert_eq!(invalid.code(), "E_INDEX_BINDING");
         assert_eq!(invalid.details()["file"], "keys.json");
+
+        let binding = JtmError::from(jtm_security::Error::IndexBinding {
+            file: "demo-linux-x64.json".into(),
+            expected: "plugin `demo` on `linux-x64`".into(),
+            got: "plugin `other` on `linux-x64`".into(),
+        });
+        assert_eq!(binding.code(), "E_INDEX_BINDING");
+        assert_eq!(binding.details()["got"], "plugin `other` on `linux-x64`");
+        let rollback = JtmError::from(jtm_security::Error::IndexRollback {
+            file: "demo-linux-x64.json".into(),
+            seen: 10,
+            got: 9,
+            reason: "older than the newest copy already seen".into(),
+        });
+        assert_eq!(rollback.code(), "E_INDEX_ROLLBACK");
+        assert_eq!(rollback.details()["seen"], 10);
+        let expired = JtmError::from(jtm_security::Error::IndexExpired {
+            file: "demo-linux-x64.json".into(),
+            expires: "2026-11-18T03:00:00Z".into(),
+        });
+        assert_eq!(expired.code(), "E_INDEX_EXPIRED");
+        let corrupt = JtmError::from(jtm_security::Error::State {
+            path: PathBuf::from("state/trust.json"),
+            message: "bad".into(),
+        });
+        assert_eq!(corrupt.code(), "E_INTERNAL");
+        let denied = JtmError::from(jtm_security::Error::Io {
+            path: PathBuf::from("state/trust.json"),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        });
+        assert_eq!(denied.code(), "E_PERMISSION");
     }
 
     #[test]

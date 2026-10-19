@@ -69,6 +69,8 @@ pub struct KeysFile {
     /// How many distinct listed keys must sign an index.
     pub threshold: u32,
     pub keys: Vec<IndexKey>,
+    /// Lowercase hex SHA-256 of the raw bytes, for rollback checks.
+    pub sha256: String,
     /// Which root keys signed it.
     pub verified: Verified,
 }
@@ -104,7 +106,8 @@ impl KeysFile {
         let root = crate::key::Keyring::new().with(root.group());
         let verified = signature::verify(data, signatures, &root, subject, now)?;
         let raw: RawKeysFile = serde_json::from_slice(data).map_err(|e| invalid(e.to_string()))?;
-        raw.validate(verified).map_err(invalid)
+        raw.validate(crate::sha256_hex(data), verified)
+            .map_err(invalid)
     }
 
     /// The listed keys as a group that verifies indices. Expired keys stay in the group so a
@@ -145,7 +148,7 @@ struct RawKey {
 }
 
 impl RawKeysFile {
-    fn validate(self, verified: Verified) -> std::result::Result<KeysFile, String> {
+    fn validate(self, sha256: String, verified: Verified) -> std::result::Result<KeysFile, String> {
         if self.format != KEYS_FORMAT {
             return Err(format!(
                 "format {} is not supported; this jtm reads format {KEYS_FORMAT}",
@@ -186,6 +189,7 @@ impl RawKeysFile {
             sequence: self.sequence,
             threshold: self.threshold,
             keys,
+            sha256,
             verified,
         })
     }

@@ -97,6 +97,8 @@ impl fmt::Display for ArchiveKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedIndex {
     pub index: IndexFile,
+    /// Lowercase hex SHA-256 of the raw bytes, for rollback checks.
+    pub sha256: String,
     /// Which keys signed it.
     pub verified: Verified,
 }
@@ -121,7 +123,11 @@ pub fn load(
     }
     let verified = signature::verify(data, signatures, keyring, subject, now)?;
     let index = parse_verified(data).map_err(invalid)?;
-    Ok(LoadedIndex { index, verified })
+    Ok(LoadedIndex {
+        index,
+        sha256: crate::sha256_hex(data),
+        verified,
+    })
 }
 
 /// Parses bytes whose signature has already been verified. Private so no caller can skip

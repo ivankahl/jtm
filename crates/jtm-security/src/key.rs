@@ -121,17 +121,7 @@ impl Scope {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let mut set = BTreeSet::new();
-        for name in names {
-            let name = name.into();
-            check_plugin_name(&name)
-                .map_err(|(_, message)| format!("scope `{name}`: {message}"))?;
-            set.insert(name);
-        }
-        if set.is_empty() {
-            return Err("a scope must name at least one plugin".to_owned());
-        }
-        Ok(Scope::Plugins(set))
+        plugin_set(names).map(Scope::Plugins)
     }
 
     /// Whether a signature for `subject` is within this scope. `None` is a file that belongs to
@@ -143,6 +133,25 @@ impl Scope {
             (Scope::Plugins(_), None) => false,
         }
     }
+}
+
+/// Checks plugin names for a scope: at least one, each a valid plugin name. There is no
+/// wildcard; trusting a key for every plugin is never a single step.
+pub fn plugin_set<I, S>(names: I) -> Result<BTreeSet<String>, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut set = BTreeSet::new();
+    for name in names {
+        let name = name.into();
+        check_plugin_name(&name).map_err(|(_, message)| format!("scope `{name}`: {message}"))?;
+        set.insert(name);
+    }
+    if set.is_empty() {
+        return Err("a scope must name at least one plugin".to_owned());
+    }
+    Ok(set)
 }
 
 /// A key and what it is trusted to sign.
