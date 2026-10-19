@@ -201,6 +201,15 @@ pub enum JtmError {
     #[error("{message}")]
     Usage { message: String },
 
+    /// A `<tool>@<spec>` argument or pin value that does not parse. `column` is 1-based and
+    /// counts characters.
+    #[error("invalid spec `{input}` at column {column}: {message}")]
+    InvalidSpec {
+        input: String,
+        column: usize,
+        message: String,
+    },
+
     #[error("unknown tool `{tool}`")]
     ToolUnknown { tool: String },
 
@@ -303,7 +312,7 @@ impl JtmError {
     /// The [`ErrorCode`] for this error.
     pub const fn kind(&self) -> ErrorCode {
         match self {
-            JtmError::Usage { .. } => ErrorCode::Usage,
+            JtmError::Usage { .. } | JtmError::InvalidSpec { .. } => ErrorCode::Usage,
             JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
@@ -357,6 +366,10 @@ impl JtmError {
             JtmError::Usage { .. } | JtmError::LockOutdated { .. } | JtmError::Internal { .. } => {
                 Map::new()
             }
+            JtmError::InvalidSpec { input, column, .. } => obj([
+                ("input", input.as_str().into()),
+                ("column", (*column).into()),
+            ]),
             JtmError::ToolUnknown { tool } => obj([("tool", tool.as_str().into())]),
             JtmError::VersionNotFound { tool, spec } => obj([
                 ("tool", tool.as_str().into()),

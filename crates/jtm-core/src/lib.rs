@@ -3,7 +3,9 @@
 pub mod context;
 pub mod error;
 pub mod platform;
+pub mod spec;
 
 pub use context::{ColorChoice, Context, GlobalFlags, Terminal, Verbosity};
 pub use error::{ErrorCode, ExitCode, JtmError, Result};
 pub use platform::{Arch, Libc, Os, Platform};
+pub use spec::{Selector, ToolSpec};

@@ -389,6 +389,7 @@ name = "jtm-core"
 version = "0.1.0"
 dependencies = [
  "insta",
+ "jtm-plugin",
  "serde_json",
  "thiserror",
 ]
