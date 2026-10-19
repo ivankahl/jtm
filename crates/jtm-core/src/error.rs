@@ -6,6 +6,8 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use serde_json::{Map, Value};
+
 /// Convenience alias for results that fail with a [`JtmError`].
 pub type Result<T, E = JtmError> = std::result::Result<T, E>;
 
@@ -339,6 +341,95 @@ impl JtmError {
         self.kind().retryable()
     }
 
+    /// Structured context for machine output: the variant's fields, minus the message text.
+    pub fn details(&self) -> Map<String, Value> {
+        fn obj<const N: usize>(pairs: [(&str, Value); N]) -> Map<String, Value> {
+            pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
+        }
+        let path = |p: &PathBuf| Value::from(p.display().to_string());
+        match self {
+            JtmError::Usage { .. } | JtmError::LockOutdated { .. } | JtmError::Internal { .. } => {
+                Map::new()
+            }
+            JtmError::ToolUnknown { tool } => obj([("tool", tool.as_str().into())]),
+            JtmError::VersionNotFound { tool, spec } => obj([
+                ("tool", tool.as_str().into()),
+                ("spec", spec.as_str().into()),
+            ]),
+            JtmError::AliasUnknown { tool, alias } => obj([
+                ("tool", tool.as_str().into()),
+                ("alias", alias.as_str().into()),
+            ]),
+            JtmError::PlatformUnsupported { tool, platform } => obj([
+                ("tool", tool.as_str().into()),
+                ("platform", platform.as_str().into()),
+            ]),
+            JtmError::Network { url, .. } => obj([("url", url.as_str().into())]),
+            JtmError::Offline { action } => obj([("action", action.as_str().into())]),
+            JtmError::SignatureInvalid { file, .. } => obj([("file", file.as_str().into())]),
+            JtmError::KeyUntrusted { key_id, resolve } => obj([
+                ("key_id", key_id.as_str().into()),
+                ("resolve", resolve.as_str().into()),
+            ]),
+            JtmError::IndexExpired { index, expires } => obj([
+                ("index", index.as_str().into()),
+                ("expires", expires.as_str().into()),
+            ]),
+            JtmError::IndexRollback { index, seen, got } => obj([
+                ("index", index.as_str().into()),
+                ("seen", (*seen).into()),
+                ("got", (*got).into()),
+            ]),
+            JtmError::IndexBinding { index, expected } => obj([
+                ("index", index.as_str().into()),
+                ("expected", expected.as_str().into()),
+            ]),
+            JtmError::HashMismatch {
+                url,
+                expected,
+                actual,
+            } => obj([
+                ("expected", expected.as_str().into()),
+                ("actual", actual.as_str().into()),
+                ("url", url.as_str().into()),
+            ]),
+            JtmError::SizeExceeded { what, limit } => {
+                obj([("what", what.as_str().into()), ("limit", (*limit).into())])
+            }
+            JtmError::ArchiveUnsafe { entry, reason } => obj([
+                ("entry", entry.as_str().into()),
+                ("reason", reason.as_str().into()),
+            ]),
+            JtmError::LockIndexMismatch { tool, .. } => obj([("tool", tool.as_str().into())]),
+            JtmError::PluginUntrusted { plugin, resolve } => obj([
+                ("plugin", plugin.as_str().into()),
+                ("resolve", resolve.as_str().into()),
+            ]),
+            JtmError::KeyChanged {
+                plugin,
+                old_keys,
+                new_keys,
+                resolve,
+            } => obj([
+                ("plugin", plugin.as_str().into()),
+                ("old_keys", old_keys.clone().into()),
+                ("new_keys", new_keys.clone().into()),
+                ("resolve", resolve.as_str().into()),
+            ]),
+            JtmError::InputRequired { action, resolve } => obj([
+                ("action", action.as_str().into()),
+                ("resolve", resolve.as_str().into()),
+            ]),
+            JtmError::PluginScriptLimit { plugin, limit } => obj([
+                ("plugin", plugin.as_str().into()),
+                ("limit", limit.as_str().into()),
+            ]),
+            JtmError::InUse { path: p } | JtmError::Permission { path: p, .. } => {
+                obj([("path", path(p))])
+            }
+        }
+    }
+
     /// Shorthand for [`JtmError::Usage`].
     pub fn usage(message: impl Into<String>) -> Self {
         JtmError::Usage {
@@ -465,6 +556,24 @@ mod tests {
     }
 
     #[test]
+    fn details_carry_structured_context() {
+        let err = JtmError::HashMismatch {
+            url: "https://example.test/a.zip".into(),
+            expected: "aa".into(),
+            actual: "bb".into(),
+        };
+        assert_eq!(
+            Value::Object(err.details()),
+            serde_json::json!({
+                "expected": "aa",
+                "actual": "bb",
+                "url": "https://example.test/a.zip"
+            })
+        );
+        assert!(JtmError::usage("bad flag").details().is_empty());
+    }
+
+    #[test]
     fn exit_seven_errors_name_their_resolution() {
         let err = JtmError::InputRequired {
             action: "installing a missing version".into(),
@@ -485,6 +594,15 @@ mod tests {
             resolve: "jtm trust add RWNEW --scope example".into(),
         };
         assert_eq!(err.code(), "E_KEY_CHANGED");
+        assert_eq!(
+            Value::Object(err.details()),
+            serde_json::json!({
+                "plugin": "example",
+                "old_keys": ["RWOLD"],
+                "new_keys": ["RWNEW"],
+                "resolve": "jtm trust add RWNEW --scope example"
+            })
+        );
         assert_eq!(err.exit_code(), ExitCode::TrustRequired);
         assert!(
             err.to_string()

@@ -18,8 +18,14 @@ jtm-fetch = { path = "crates/jtm-fetch" }
 jtm-plugin = { path = "crates/jtm-plugin" }
 jtm-security = { path = "crates/jtm-security" }
 
-insta = "1.49"
+assert_cmd = "2.2"
+clap = { version = "4.6", features = ["derive", "env"] }
+insta = { version = "1.49", features = ["json", "redactions"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
 thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

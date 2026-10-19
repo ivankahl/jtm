@@ -1,0 +1,22 @@
+---
+source: crates/jtm-cli/src/output.rs
+expression: value
+---
+{
+  "ok": true,
+  "command": "install",
+  "changed": true,
+  "data": {
+    "installed": [
+      "java@21"
+    ]
+  },
+  "warnings": [
+    {
+      "code": "W_TEST",
+      "message": "something to note",
+      "details": {}
+    }
+  ],
+  "jtm_version": "[version]"
+}
