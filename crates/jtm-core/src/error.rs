@@ -1,0 +1,502 @@
+//! Errors with stable `E_` codes and their exit-code mapping (SPEC.md section 12).
+//!
+//! The strings returned by [`ErrorCode::as_str`] and the numbers in [`ExitCode`] are part of
+//! jtm's public contract. Never rename or renumber them once released; add new ones instead.
+
+use std::fmt;
+use std::path::PathBuf;
+
+/// Convenience alias for results that fail with a [`JtmError`].
+pub type Result<T, E = JtmError> = std::result::Result<T, E>;
+
+/// Process exit codes (SPEC.md section 12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum ExitCode {
+    /// Success or nothing to do.
+    Success = 0,
+    /// Unexpected internal error.
+    Internal = 1,
+    /// Usage error, such as a bad flag or a bad spec.
+    Usage = 2,
+    /// Tool, version, alias or platform not found.
+    NotFound = 3,
+    /// Network or I/O error.
+    Io = 4,
+    /// Signature, hash, rollback, expiry or unsafe archive.
+    Verification = 5,
+    /// Lockfile or pin problem.
+    LockOrPin = 6,
+    /// An untrusted plugin or key, or a decision that needs a human.
+    TrustRequired = 7,
+    /// Partial success in a multi-tool command.
+    Partial = 8,
+}
+
+impl ExitCode {
+    /// Every exit code, in numeric order.
+    pub const ALL: &[ExitCode] = &[
+        ExitCode::Success,
+        ExitCode::Internal,
+        ExitCode::Usage,
+        ExitCode::NotFound,
+        ExitCode::Io,
+        ExitCode::Verification,
+        ExitCode::LockOrPin,
+        ExitCode::TrustRequired,
+        ExitCode::Partial,
+    ];
+
+    /// The numeric process exit status.
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+impl From<ExitCode> for std::process::ExitCode {
+    fn from(code: ExitCode) -> Self {
+        std::process::ExitCode::from(code.as_u8())
+    }
+}
+
+/// Stable machine-readable error codes (SPEC.md section 12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+#[non_exhaustive]
+pub enum ErrorCode {
+    Usage,
+    ToolUnknown,
+    VersionNotFound,
+    AliasUnknown,
+    PlatformUnsupported,
+    Network,
+    Offline,
+    SignatureInvalid,
+    KeyUntrusted,
+    IndexExpired,
+    IndexRollback,
+    IndexBinding,
+    HashMismatch,
+    SizeExceeded,
+    ArchiveUnsafe,
+    LockOutdated,
+    LockIndexMismatch,
+    PluginUntrusted,
+    KeyChanged,
+    InputRequired,
+    PluginScriptLimit,
+    InUse,
+    Permission,
+    Internal,
+}
+
+impl ErrorCode {
+    /// Every error code, in declaration order.
+    pub const ALL: &[ErrorCode] = &[
+        ErrorCode::Usage,
+        ErrorCode::ToolUnknown,
+        ErrorCode::VersionNotFound,
+        ErrorCode::AliasUnknown,
+        ErrorCode::PlatformUnsupported,
+        ErrorCode::Network,
+        ErrorCode::Offline,
+        ErrorCode::SignatureInvalid,
+        ErrorCode::KeyUntrusted,
+        ErrorCode::IndexExpired,
+        ErrorCode::IndexRollback,
+        ErrorCode::IndexBinding,
+        ErrorCode::HashMismatch,
+        ErrorCode::SizeExceeded,
+        ErrorCode::ArchiveUnsafe,
+        ErrorCode::LockOutdated,
+        ErrorCode::LockIndexMismatch,
+        ErrorCode::PluginUntrusted,
+        ErrorCode::KeyChanged,
+        ErrorCode::InputRequired,
+        ErrorCode::PluginScriptLimit,
+        ErrorCode::InUse,
+        ErrorCode::Permission,
+        ErrorCode::Internal,
+    ];
+
+    /// The stable `E_` string for this code.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ErrorCode::Usage => "E_USAGE",
+            ErrorCode::ToolUnknown => "E_TOOL_UNKNOWN",
+            ErrorCode::VersionNotFound => "E_VERSION_NOT_FOUND",
+            ErrorCode::AliasUnknown => "E_ALIAS_UNKNOWN",
+            ErrorCode::PlatformUnsupported => "E_PLATFORM_UNSUPPORTED",
+            ErrorCode::Network => "E_NETWORK",
+            ErrorCode::Offline => "E_OFFLINE",
+            ErrorCode::SignatureInvalid => "E_SIGNATURE_INVALID",
+            ErrorCode::KeyUntrusted => "E_KEY_UNTRUSTED",
+            ErrorCode::IndexExpired => "E_INDEX_EXPIRED",
+            ErrorCode::IndexRollback => "E_INDEX_ROLLBACK",
+            ErrorCode::IndexBinding => "E_INDEX_BINDING",
+            ErrorCode::HashMismatch => "E_HASH_MISMATCH",
+            ErrorCode::SizeExceeded => "E_SIZE_EXCEEDED",
+            ErrorCode::ArchiveUnsafe => "E_ARCHIVE_UNSAFE",
+            ErrorCode::LockOutdated => "E_LOCK_OUTDATED",
+            ErrorCode::LockIndexMismatch => "E_LOCK_INDEX_MISMATCH",
+            ErrorCode::PluginUntrusted => "E_PLUGIN_UNTRUSTED",
+            ErrorCode::KeyChanged => "E_KEY_CHANGED",
+            ErrorCode::InputRequired => "E_INPUT_REQUIRED",
+            ErrorCode::PluginScriptLimit => "E_PLUGIN_SCRIPT_LIMIT",
+            ErrorCode::InUse => "E_IN_USE",
+            ErrorCode::Permission => "E_PERMISSION",
+            ErrorCode::Internal => "E_INTERNAL",
+        }
+    }
+
+    /// The process exit code a failure with this code produces.
+    pub const fn exit_code(self) -> ExitCode {
+        match self {
+            ErrorCode::Usage => ExitCode::Usage,
+            ErrorCode::ToolUnknown
+            | ErrorCode::VersionNotFound
+            | ErrorCode::AliasUnknown
+            | ErrorCode::PlatformUnsupported => ExitCode::NotFound,
+            ErrorCode::Network | ErrorCode::Offline | ErrorCode::InUse | ErrorCode::Permission => {
+                ExitCode::Io
+            }
+            ErrorCode::SignatureInvalid
+            | ErrorCode::IndexExpired
+            | ErrorCode::IndexRollback
+            | ErrorCode::IndexBinding
+            | ErrorCode::HashMismatch
+            | ErrorCode::SizeExceeded
+            | ErrorCode::ArchiveUnsafe => ExitCode::Verification,
+            ErrorCode::LockOutdated | ErrorCode::LockIndexMismatch => ExitCode::LockOrPin,
+            ErrorCode::KeyUntrusted
+            | ErrorCode::PluginUntrusted
+            | ErrorCode::KeyChanged
+            | ErrorCode::InputRequired => ExitCode::TrustRequired,
+            // SPEC-QUESTION: section 12 gives no exit code for E_PLUGIN_SCRIPT_LIMIT; a plugin
+            // script exceeding its limits is treated as an unexpected failure.
+            ErrorCode::PluginScriptLimit | ErrorCode::Internal => ExitCode::Internal,
+        }
+    }
+
+    /// Whether running the same command again might succeed without any other change.
+    pub const fn retryable(self) -> bool {
+        // SPEC-QUESTION: exit code 4 is marked retryable, but E_OFFLINE and E_PERMISSION will
+        // fail again unchanged, so only transient failures are reported as retryable.
+        matches!(self, ErrorCode::Network | ErrorCode::InUse)
+    }
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A user-facing failure. Every variant maps to exactly one [`ErrorCode`].
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum JtmError {
+    #[error("{message}")]
+    Usage { message: String },
+
+    #[error("unknown tool `{tool}`")]
+    ToolUnknown { tool: String },
+
+    #[error("no version of `{tool}` matches `{spec}`")]
+    VersionNotFound { tool: String, spec: String },
+
+    #[error("`{tool}` has no alias `{alias}`")]
+    AliasUnknown { tool: String, alias: String },
+
+    #[error("`{tool}` is not available for platform `{platform}`")]
+    PlatformUnsupported { tool: String, platform: String },
+
+    #[error("network error fetching {url}: {message}")]
+    Network {
+        url: String,
+        message: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    #[error("{action} needs the network, but jtm is running offline")]
+    Offline { action: String },
+
+    #[error("invalid signature on {file}: {message}")]
+    SignatureInvalid { file: String, message: String },
+
+    #[error("key `{key_id}` is not trusted; to trust it, run {resolve}")]
+    KeyUntrusted { key_id: String, resolve: String },
+
+    #[error("index {index} expired at {expires}")]
+    IndexExpired { index: String, expires: String },
+
+    #[error("index {index} has sequence {got}, older than the {seen} already seen")]
+    IndexRollback { index: String, seen: u64, got: u64 },
+
+    #[error("index {index} is not bound to {expected}")]
+    IndexBinding { index: String, expected: String },
+
+    #[error("hash mismatch for {url}: expected {expected}, got {actual}")]
+    HashMismatch {
+        url: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("{what} exceeds the limit of {limit} bytes")]
+    SizeExceeded { what: String, limit: u64 },
+
+    #[error("unsafe archive entry `{entry}`: {reason}")]
+    ArchiveUnsafe { entry: String, reason: String },
+
+    #[error("jtm.lock is out of date: {message}")]
+    LockOutdated { message: String },
+
+    #[error("jtm.lock entry for `{tool}` does not match the signed index: {message}")]
+    LockIndexMismatch { tool: String, message: String },
+
+    #[error("plugin `{plugin}` is not trusted; to trust it, use {resolve}")]
+    PluginUntrusted { plugin: String, resolve: String },
+
+    /// A plugin's signing keys changed without a rotation signed by a current key. `--yes`
+    /// never accepts this.
+    #[error(
+        "signing keys for plugin `{plugin}` changed without a signed rotation; \
+         if the change is expected, run {resolve}"
+    )]
+    KeyChanged {
+        plugin: String,
+        old_keys: Vec<String>,
+        new_keys: Vec<String>,
+        resolve: String,
+    },
+
+    /// A step needed a confirmation or a choice while prompts were off.
+    #[error("{action} needs confirmation, but prompts are off; rerun with {resolve}")]
+    InputRequired { action: String, resolve: String },
+
+    #[error("plugin `{plugin}` script exceeded its {limit} limit")]
+    PluginScriptLimit { plugin: String, limit: String },
+
+    #[error("{} is in use", path.display())]
+    InUse { path: PathBuf },
+
+    #[error("permission denied: {}", path.display())]
+    Permission {
+        path: PathBuf,
+        #[source]
+        source: Option<std::io::Error>,
+    },
+
+    #[error("internal error: {message}")]
+    Internal { message: String },
+}
+
+impl JtmError {
+    /// The [`ErrorCode`] for this error.
+    pub const fn kind(&self) -> ErrorCode {
+        match self {
+            JtmError::Usage { .. } => ErrorCode::Usage,
+            JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
+            JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
+            JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
+            JtmError::PlatformUnsupported { .. } => ErrorCode::PlatformUnsupported,
+            JtmError::Network { .. } => ErrorCode::Network,
+            JtmError::Offline { .. } => ErrorCode::Offline,
+            JtmError::SignatureInvalid { .. } => ErrorCode::SignatureInvalid,
+            JtmError::KeyUntrusted { .. } => ErrorCode::KeyUntrusted,
+            JtmError::IndexExpired { .. } => ErrorCode::IndexExpired,
+            JtmError::IndexRollback { .. } => ErrorCode::IndexRollback,
+            JtmError::IndexBinding { .. } => ErrorCode::IndexBinding,
+            JtmError::HashMismatch { .. } => ErrorCode::HashMismatch,
+            JtmError::SizeExceeded { .. } => ErrorCode::SizeExceeded,
+            JtmError::ArchiveUnsafe { .. } => ErrorCode::ArchiveUnsafe,
+            JtmError::LockOutdated { .. } => ErrorCode::LockOutdated,
+            JtmError::LockIndexMismatch { .. } => ErrorCode::LockIndexMismatch,
+            JtmError::PluginUntrusted { .. } => ErrorCode::PluginUntrusted,
+            JtmError::KeyChanged { .. } => ErrorCode::KeyChanged,
+            JtmError::InputRequired { .. } => ErrorCode::InputRequired,
+            JtmError::PluginScriptLimit { .. } => ErrorCode::PluginScriptLimit,
+            JtmError::InUse { .. } => ErrorCode::InUse,
+            JtmError::Permission { .. } => ErrorCode::Permission,
+            JtmError::Internal { .. } => ErrorCode::Internal,
+        }
+    }
+
+    /// The stable `E_` string for this error.
+    pub const fn code(&self) -> &'static str {
+        self.kind().as_str()
+    }
+
+    /// The process exit code this error produces.
+    pub const fn exit_code(&self) -> ExitCode {
+        self.kind().exit_code()
+    }
+
+    /// Whether running the same command again might succeed without any other change.
+    pub const fn retryable(&self) -> bool {
+        self.kind().retryable()
+    }
+
+    /// Shorthand for [`JtmError::Usage`].
+    pub fn usage(message: impl Into<String>) -> Self {
+        JtmError::Usage {
+            message: message.into(),
+        }
+    }
+
+    /// Shorthand for [`JtmError::Internal`].
+    pub fn internal(message: impl Into<String>) -> Self {
+        JtmError::Internal {
+            message: message.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fmt::Write as _;
+
+    #[test]
+    fn all_lists_every_error_code_once_in_order() {
+        for (index, code) in ErrorCode::ALL.iter().enumerate() {
+            assert_eq!(
+                *code as usize, index,
+                "{code} is out of order in ErrorCode::ALL"
+            );
+        }
+        assert_eq!(ErrorCode::ALL.len(), ErrorCode::Internal as usize + 1);
+    }
+
+    #[test]
+    fn all_lists_every_exit_code() {
+        for (index, code) in ExitCode::ALL.iter().enumerate() {
+            assert_eq!(code.as_u8() as usize, index);
+        }
+        assert_eq!(ExitCode::ALL.len(), ExitCode::Partial as usize + 1);
+    }
+
+    #[test]
+    fn codes_are_unique_and_well_formed() {
+        let mut seen = std::collections::HashSet::new();
+        for code in ErrorCode::ALL {
+            let s = code.as_str();
+            assert!(seen.insert(s), "duplicate code {s}");
+            assert!(s.starts_with("E_"), "{s} must start with E_");
+            assert!(
+                s.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'),
+                "{s} must be upper snake case"
+            );
+        }
+    }
+
+    /// Any change to this snapshot renames, renumbers or reclassifies a released code.
+    #[test]
+    fn error_code_table() {
+        let mut table = String::new();
+        for code in ErrorCode::ALL {
+            let _ = writeln!(
+                table,
+                "{:<24} exit={} retryable={}",
+                code.as_str(),
+                code.exit_code().as_u8(),
+                code.retryable()
+            );
+        }
+        insta::assert_snapshot!(table);
+    }
+
+    #[test]
+    fn exit_code_mapping_matches_spec() {
+        use ErrorCode as E;
+        let expected: &[(ErrorCode, u8)] = &[
+            (E::Usage, 2),
+            (E::ToolUnknown, 3),
+            (E::VersionNotFound, 3),
+            (E::AliasUnknown, 3),
+            (E::PlatformUnsupported, 3),
+            (E::Network, 4),
+            (E::Offline, 4),
+            (E::SignatureInvalid, 5),
+            (E::KeyUntrusted, 7),
+            (E::IndexExpired, 5),
+            (E::IndexRollback, 5),
+            (E::IndexBinding, 5),
+            (E::HashMismatch, 5),
+            (E::SizeExceeded, 5),
+            (E::ArchiveUnsafe, 5),
+            (E::LockOutdated, 6),
+            (E::LockIndexMismatch, 6),
+            (E::PluginUntrusted, 7),
+            (E::KeyChanged, 7),
+            (E::InputRequired, 7),
+            (E::PluginScriptLimit, 1),
+            (E::InUse, 4),
+            (E::Permission, 4),
+            (E::Internal, 1),
+        ];
+        assert_eq!(expected.len(), ErrorCode::ALL.len());
+        for (code, exit) in expected {
+            assert_eq!(code.exit_code().as_u8(), *exit, "{code}");
+        }
+    }
+
+    #[test]
+    fn error_exposes_code_exit_code_and_message() {
+        let err = JtmError::HashMismatch {
+            url: "https://example.test/a.zip".into(),
+            expected: "aa".into(),
+            actual: "bb".into(),
+        };
+        assert_eq!(err.code(), "E_HASH_MISMATCH");
+        assert_eq!(err.exit_code(), ExitCode::Verification);
+        assert!(!err.retryable());
+        assert_eq!(
+            err.to_string(),
+            "hash mismatch for https://example.test/a.zip: expected aa, got bb"
+        );
+
+        let err = JtmError::usage("bad flag");
+        assert_eq!(err.code(), "E_USAGE");
+        assert_eq!(err.exit_code(), ExitCode::Usage);
+        assert_eq!(err.to_string(), "bad flag");
+    }
+
+    #[test]
+    fn exit_seven_errors_name_their_resolution() {
+        let err = JtmError::InputRequired {
+            action: "installing a missing version".into(),
+            resolve: "--install".into(),
+        };
+        assert_eq!(err.code(), "E_INPUT_REQUIRED");
+        assert_eq!(err.exit_code(), ExitCode::TrustRequired);
+        assert_eq!(
+            err.to_string(),
+            "installing a missing version needs confirmation, but prompts are off; \
+             rerun with --install"
+        );
+
+        let err = JtmError::KeyChanged {
+            plugin: "example".into(),
+            old_keys: vec!["RWOLD".into()],
+            new_keys: vec!["RWNEW".into()],
+            resolve: "jtm trust add RWNEW --scope example".into(),
+        };
+        assert_eq!(err.code(), "E_KEY_CHANGED");
+        assert_eq!(err.exit_code(), ExitCode::TrustRequired);
+        assert!(
+            err.to_string()
+                .ends_with("run jtm trust add RWNEW --scope example")
+        );
+    }
+
+    #[test]
+    fn exit_code_converts_to_process_exit_code() {
+        assert_eq!(
+            std::process::ExitCode::from(ExitCode::TrustRequired),
+            std::process::ExitCode::from(7)
+        );
+    }
+}
