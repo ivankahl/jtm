@@ -118,7 +118,7 @@ pub struct Index {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layout {
-    #[serde(default)]
+    /// Required, so every plugin states its archive layout rather than relying on a guess.
     pub strip_components: StripComponents,
     /// The tool home inside the archive per OS, keyed by the names in [`OS_NAMES`], such as
     /// `macos = "Contents/Home"`.
@@ -134,13 +134,11 @@ impl Layout {
     }
 }
 
-// SPEC-QUESTION: section 7 names `strip_components` and `auto` without a syntax. This accepts
-// `strip_components = <n>` or `strip_components = "auto"`, defaulting to `auto`.
-/// How many leading path components to remove from every archive entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// How many leading path components to remove from every archive entry, written
+/// `strip_components = <n>` (0 to 16) or `strip_components = "auto"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StripComponents {
     /// Strip a single top-level directory if the archive has exactly one.
-    #[default]
     Auto,
     Count(u32),
 }

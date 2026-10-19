@@ -168,6 +168,7 @@ signing_keys = ["{KEY}"]
 format = 1
 
 [layout]
+strip_components = 1
 bin_dirs = ["bin"]
 
 [executables]
@@ -386,6 +387,7 @@ url = "https://example.test/demo.json"
 signing_keys = ["RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB"]
 format = 1
 [layout]
+strip_components = 1
 bin_dirs = ["bin"]
 [executables]
 unix = ["demo"]
