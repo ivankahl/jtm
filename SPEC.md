@@ -697,7 +697,7 @@ Layers merge in this order, later winning: built-in defaults, user config, proje
 | `plugins.<name>.index_url` | from manifest | Replace a plugin's index location |
 | `extract.max_bytes` | `4 GiB` | Archive bomb limit |
 
-Project files can never set `security.*`, `network.*`, `[mirrors]`, `extract.*` or `plugins.*.index_url`. A cloned repository must not be able to weaken verification or redirect downloads; such keys in `.jtm.toml` are an error.
+Project files can never set `security.*`, `network.*`, `[mirrors]`, `extract.*`, `plugins.*.index_url` or `download.cache_dir`. A cloned repository must not be able to weaken verification, redirect downloads, or choose where jtm writes files; such keys in `.jtm.toml` are an error.
 
 ### PATH and shell setup
 
@@ -868,7 +868,7 @@ Suggested crates: `clap`, `serde`, `serde_json`, `toml`, `toml_edit`, `schemars`
 | T1.3 | Spec parser for `<tool>[@[<variant>:]<version-or-alias>]` | T0.3 | Valid and invalid cases return `E_USAGE` with position |
 | T1.4 | `plugin.toml` schema (section 7) with validation and helpful errors | T1.2 | Maven example from section 7 parses; 20+ invalid fixtures rejected with field paths |
 | T1.5 | Alias resolution: `highest`, `index-tag`, `fixed` (script kind stubbed) | T1.4 | Resolves against an in-memory index fixture |
-| T1.6 | Config layering: defaults, user, project, env, flags, with the project-file security restrictions | T0.5 | Tests prove project files cannot set `security.*`, `network.*`, `[mirrors]`, `plugins.*.index_url` |
+| T1.6 | Config layering: defaults, user, project, env, flags, with the project-file security restrictions | T0.5 | Tests prove project files cannot set `security.*`, `network.*`, `[mirrors]`, `extract.*`, `plugins.*.index_url`, `download.cache_dir` |
 | T1.7 | Directory resolution per OS and `JTM_HOME` override (section 14) | T1.1 | Paths correct per OS; `JTM_HOME` collapses all |
 
 ### M2 Security

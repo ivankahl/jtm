@@ -281,8 +281,7 @@ const KEYS: &[KeyDef] = &[
         default: Some(DefaultValue::Int(4)),
         project: true,
     },
-    // SPEC-QUESTION: section 14 does not list `download.cache_dir` among the keys a project
-    // file cannot set. A cloned repository choosing where jtm writes downloads is refused here.
+    // A cloned repository must not choose where jtm writes downloads (section 14).
     KeyDef {
         section: "download",
         name: "cache_dir",
