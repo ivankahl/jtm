@@ -637,9 +637,8 @@ jtm must install verified JDKs on a locked-down Windows laptop behind a TLS-insp
 | TLS inspection | Trust the OS certificate store via `rustls-platform-verifier`; `network.extra_ca_file` adds a PEM bundle |
 | Blocked domains | `[mirrors]` prefix rewrites for indices and artifacts, so only approved hosts are contacted |
 | Air-gapped | `jtm mirror export --artifacts` on a connected machine, copy the directory, point `index_url` or `[mirrors]` at it, run with `--offline` |
-| Central policy | `JTM_SYSTEM_CONFIG` or a fixed system path (`%ProgramData%\jtm\config.toml`, `/etc/jtm/config.toml`) is read first; keys marked `locked = true` there cannot be overridden by users |
 | Shared download cache | `download.cache_dir` can point at a shared or pre-seeded directory; entries are content-addressed and re-hashed before use |
-| Re-signed internal indices | Security teams vet versions, re-sign with their own key, distribute that key via system config |
+| Re-signed internal indices | Security teams vet versions, re-sign with their own key, and users trust it with `jtm trust add` |
 
 `jtm doctor` checks each of these and prints the exact failure, for example "certificate for github.com issued by Corp-Proxy-CA is not trusted; add it with `network.extra_ca_file`".
 
@@ -654,7 +653,6 @@ All state lives in per-user directories following each OS's conventions, and set
 | Data (tools, links, state) | `%LOCALAPPDATA%\jtm` | `$XDG_DATA_HOME/jtm` or `~/.local/share/jtm` |
 | Config | `%APPDATA%\jtm\config.toml` | `$XDG_CONFIG_HOME/jtm/config.toml` or `~/.config/jtm/config.toml` |
 | Cache | `%LOCALAPPDATA%\jtm\cache` | `$XDG_CACHE_HOME/jtm` or `~/.cache/jtm` |
-| System config | `%ProgramData%\jtm\config.toml` | `/etc/jtm/config.toml` |
 
 ### Data directory
 
@@ -682,7 +680,7 @@ Tools without variants use the variant name `default`.
 
 ### Configuration keys
 
-Layers merge in this order, later winning unless a system key is `locked`: built-in defaults, system config, user config, project `.jtm.toml` `[settings]`, environment variables, command-line flags. Each key `<section>.<key>` in the table below is read from the environment variable `JTM__<SECTION>__<KEY>`, for example `JTM__INDEX__TTL_HOURS`; `[mirrors]` and `plugins.<name>.index_url` have no variables.
+Layers merge in this order, later winning: built-in defaults, user config, project `.jtm.toml` `[settings]`, environment variables, command-line flags. Each key `<section>.<key>` in the table below is read from the environment variable `JTM__<SECTION>__<KEY>`, for example `JTM__INDEX__TTL_HOURS`; `[mirrors]` and `plugins.<name>.index_url` have no variables.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
@@ -846,7 +844,7 @@ Suggested crates: `clap`, `serde`, `serde_json`, `toml`, `toml_edit`, `schemars`
 | M4 Activation and pins | Current links, shell hook, default, use, pins, interop, lockfile, sync, ide sync | M3 |
 | M5 First-party plugins | Five manifests and hooks, embedded | M4 |
 | M6 Index pipeline | Generator, signing, publishing, embedded snapshot | M2, M5 |
-| M7 Corporate and offline | Mirrors, proxy, system config, mirror export, doctor | M3 |
+| M7 Corporate and offline | Mirrors, proxy, mirror export, doctor | M3 |
 | M8 Agent support | describe, dry-run everywhere, MCP server | M4 |
 | M9 Marketplace | Third-party plugins, signed marketplace, Lua plugins for third parties | M5, M6 |
 | M10 Release | Signed releases, self update, installers, docs | M6 to M9 |
@@ -870,7 +868,7 @@ Suggested crates: `clap`, `serde`, `serde_json`, `toml`, `toml_edit`, `schemars`
 | T1.3 | Spec parser for `<tool>[@[<variant>:]<version-or-alias>]` | T0.3 | Valid and invalid cases return `E_USAGE` with position |
 | T1.4 | `plugin.toml` schema (section 7) with validation and helpful errors | T1.2 | Maven example from section 7 parses; 20+ invalid fixtures rejected with field paths |
 | T1.5 | Alias resolution: `highest`, `index-tag`, `fixed` (script kind stubbed) | T1.4 | Resolves against an in-memory index fixture |
-| T1.6 | Config layering: defaults, system, user, project, env, flags, with `locked` keys and the project-file security restrictions | T0.5 | Tests prove project files cannot set `security.*`, `network.*`, `[mirrors]`, `plugins.*.index_url` |
+| T1.6 | Config layering: defaults, user, project, env, flags, with the project-file security restrictions | T0.5 | Tests prove project files cannot set `security.*`, `network.*`, `[mirrors]`, `plugins.*.index_url` |
 | T1.7 | Directory resolution per OS and `JTM_HOME` override (section 14) | T1.1 | Paths correct per OS; `JTM_HOME` collapses all |
 
 ### M2 Security
@@ -939,7 +937,7 @@ Suggested crates: `clap`, `serde`, `serde_json`, `toml`, `toml_edit`, `schemars`
 | T7.2 | Proxy support: env vars, config, Windows system proxy | T3.1 | Tested with a local proxy container |
 | T7.3 | `network.extra_ca_file` and TLS-inspection scenario | T3.1 | Test with a self-signed intercepting proxy |
 | T7.4 | `jtm mirror export` with optional artifacts | T7.1 | Exported directory installs offline via `--offline` |
-| T7.5 | System config with `locked` keys | T1.6 | User config cannot override locked keys |
+| T7.5 | Deferred: a system config with `locked` keys. jtm runs at user level, so a user can point it at any file and locks would protect nothing | T1.6 | Not scheduled for v1 |
 | T7.6 | `jtm doctor` covering PATH, current links, hook, proxy, TLS, trust store, yanked plugins | T7.2, T4.5 | Each failure has a specific message and code |
 
 ### M8 Agent support

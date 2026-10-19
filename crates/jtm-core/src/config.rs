@@ -1,10 +1,8 @@
 //! Layered configuration (SPEC.md sections 6, 13 and 14).
 //!
-//! Layers merge in this order, later winning: built-in defaults, system config, user config,
-//! project `.jtm.toml` `[settings]`, `JTM__<SECTION>__<KEY>` environment variables, and
-//! command-line flags. A key the system config marks `locked` keeps its system value whatever
-//! later layers say. A project file can never set a key that weakens verification or
-//! redirects downloads.
+//! Layers merge in this order, later winning: built-in defaults, user config, project
+//! `.jtm.toml` `[settings]`, `JTM__<SECTION>__<KEY>` environment variables, and command-line
+//! flags. A project file can never set a key that weakens verification or redirects downloads.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -93,7 +91,6 @@ pub struct PluginSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Layer {
     Default,
-    System,
     User,
     Project,
     Env,
@@ -104,7 +101,6 @@ impl Layer {
     pub const fn as_str(self) -> &'static str {
         match self {
             Layer::Default => "default",
-            Layer::System => "system",
             Layer::User => "user",
             Layer::Project => "project",
             Layer::Env => "env",
@@ -125,7 +121,6 @@ impl fmt::Display for Origin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.layer {
             Layer::Default => f.write_str("built-in default"),
-            Layer::System => write!(f, "system config {}", self.name),
             Layer::User => write!(f, "user config {}", self.name),
             Layer::Project => write!(f, "project file {}", self.name),
             Layer::Env => write!(f, "environment variable {}", self.name),
@@ -133,18 +128,6 @@ impl fmt::Display for Origin {
         }
     }
 }
-
-/// A non-fatal configuration problem.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigWarning {
-    pub code: &'static str,
-    pub message: String,
-    pub key: String,
-    pub origin: Origin,
-}
-
-/// Warning code for a later layer trying to change a locked key.
-pub const W_CONFIG_LOCKED: &str = "W_CONFIG_LOCKED";
 
 /// A config file's location and contents.
 #[derive(Debug, Clone, Copy)]
@@ -156,7 +139,6 @@ pub struct FileSource<'a> {
 /// Everything configuration is built from. Files are passed in already read, so loading is
 /// pure and every layer can be tested without touching the disk.
 pub struct ConfigInputs<'a> {
-    pub system: Option<FileSource<'a>>,
     pub user: Option<FileSource<'a>>,
     /// The project's `.jtm.toml`; only its `[settings]` table is read.
     pub project: Option<FileSource<'a>>,
@@ -169,7 +151,6 @@ pub struct ConfigInputs<'a> {
 impl fmt::Debug for ConfigInputs<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConfigInputs")
-            .field("system", &self.system)
             .field("user", &self.user)
             .field("project", &self.project)
             .field("flags", &self.flags)
@@ -177,11 +158,10 @@ impl fmt::Debug for ConfigInputs<'_> {
     }
 }
 
-/// The result of loading configuration: settings, where each value came from, and warnings.
+/// The result of loading configuration: settings and where each value came from.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub settings: Settings,
-    pub warnings: Vec<ConfigWarning>,
     origins: BTreeMap<String, Origin>,
 }
 
@@ -189,9 +169,6 @@ impl Config {
     /// Merges every layer, validates the result, and records where each value came from.
     pub fn load(inputs: &ConfigInputs<'_>) -> Result<Config> {
         let mut merged = Merged::defaults();
-        if let Some(file) = inputs.system {
-            merged.apply(read_file(Layer::System, file)?);
-        }
         if let Some(file) = inputs.user {
             merged.apply(read_file(Layer::User, file)?);
         }
@@ -203,7 +180,6 @@ impl Config {
         let settings = merged.build()?;
         Ok(Config {
             settings,
-            warnings: merged.warnings,
             origins: merged
                 .entries
                 .into_iter()
@@ -374,12 +350,10 @@ struct Entry {
     key: Key,
     value: Value,
     origin: Origin,
-    locked: bool,
 }
 
 struct Merged {
     entries: BTreeMap<String, Entry>,
-    warnings: Vec<ConfigWarning>,
 }
 
 impl Merged {
@@ -403,38 +377,16 @@ impl Merged {
                         key,
                         value,
                         origin: origin.clone(),
-                        locked: false,
                     },
                 ))
             })
             .collect();
-        Merged {
-            entries,
-            warnings: Vec::new(),
-        }
+        Merged { entries }
     }
 
     fn apply(&mut self, layer: Vec<Entry>) {
         for entry in layer {
-            let dotted = entry.key.dotted();
-            match self.entries.get(&dotted) {
-                Some(current) if current.locked => {
-                    if current.value != entry.value {
-                        self.warnings.push(ConfigWarning {
-                            code: W_CONFIG_LOCKED,
-                            message: format!(
-                                "`{dotted}` is locked by the {}; ignoring the value from the {}",
-                                current.origin, entry.origin
-                            ),
-                            key: dotted,
-                            origin: entry.origin,
-                        });
-                    }
-                }
-                _ => {
-                    self.entries.insert(dotted, entry);
-                }
-            }
+            self.entries.insert(entry.key.dotted(), entry);
         }
     }
 
@@ -558,8 +510,8 @@ fn check_location(entry: &Entry, url: &str, allow_http: bool) -> Result<()> {
     }
 }
 
-/// Reads one config file into entries. Only the system layer may lock keys, and the project
-/// layer reads `[settings]` and refuses keys a project must not set.
+/// Reads one config file into entries. The project layer reads `[settings]` and refuses keys a
+/// project must not set.
 fn read_file(layer: Layer, file: FileSource<'_>) -> Result<Vec<Entry>> {
     let origin = Origin {
         layer,
@@ -669,8 +621,7 @@ fn unknown_key_message() -> String {
     format!("unknown key; known keys are {}", known.join(", "))
 }
 
-/// Converts one value from a config file, unwrapping the system layer's
-/// `{ value = ..., locked = true }` form.
+/// Converts one value from a config file.
 fn file_entry(origin: &Origin, prefix: &str, key: Key, value: toml::Value) -> Result<Entry> {
     let path = format!("{prefix}{}", key.dotted());
     if origin.layer == Layer::Project && !key.allowed_in_project() {
@@ -678,53 +629,15 @@ fn file_entry(origin: &Origin, prefix: &str, key: Key, value: toml::Value) -> Re
             origin,
             &path,
             "project files cannot set security, network, extract, mirror, plugin index or \
-             download cache settings; set it in user or system config instead",
+             download cache settings; set it in user config instead",
         ));
     }
-    let (value, locked) = match value {
-        toml::Value::Table(mut table) if table.contains_key("locked") => {
-            if origin.layer != Layer::System {
-                return Err(config_error(
-                    origin,
-                    &path,
-                    "only the system config can lock a key",
-                ));
-            }
-            let locked = match table.remove("locked") {
-                Some(toml::Value::Boolean(b)) => b,
-                _ => {
-                    return Err(config_error(
-                        origin,
-                        &path,
-                        "`locked` must be true or false",
-                    ));
-                }
-            };
-            let Some(value) = table.remove("value") else {
-                return Err(config_error(
-                    origin,
-                    &path,
-                    "a locked key is written `{ value = ..., locked = true }`",
-                ));
-            };
-            if let Some(extra) = table.keys().next() {
-                return Err(config_error(
-                    origin,
-                    &path,
-                    format!("unexpected `{extra}`; use `{{ value = ..., locked = true }}`"),
-                ));
-            }
-            (value, locked)
-        }
-        other => (other, false),
-    };
     let value =
         convert_toml(&key, value).map_err(|message| config_error(origin, &path, message))?;
     Ok(Entry {
         key,
         value,
         origin: origin.clone(),
-        locked,
     })
 }
 
@@ -844,7 +757,7 @@ fn env_name(def: &KeyDef) -> String {
 }
 
 /// Reads `JTM__<SECTION>__<KEY>` for each scalar key. Mirrors and plugin index URLs have no
-/// variables, and locked system keys still win.
+/// variables.
 fn read_env(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for def in KEYS {
@@ -862,12 +775,7 @@ fn read_env(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Vec<Entry>> {
             .map_err(|_| config_error(&origin, &key.dotted(), "is not valid UTF-8"))?;
         let value =
             convert_str(&key, &text).map_err(|m| config_error(&origin, &key.dotted(), m))?;
-        entries.push(Entry {
-            key,
-            value,
-            origin,
-            locked: false,
-        });
+        entries.push(Entry { key, value, origin });
     }
     Ok(entries)
 }
@@ -886,12 +794,7 @@ fn read_flags(flags: &[(&str, &str)]) -> Result<Vec<Entry>> {
                 .ok_or_else(|| config_error(&origin, dotted, unknown_key_message()))?;
             let key = Key::Scalar(def);
             let value = convert_str(&key, text).map_err(|m| config_error(&origin, dotted, m))?;
-            Ok(Entry {
-                key,
-                value,
-                origin,
-                locked: false,
-            })
+            Ok(Entry { key, value, origin })
         })
         .collect()
 }

@@ -15,7 +15,6 @@ fn abs(rest: &str) -> String {
 
 #[derive(Default)]
 struct Fixture {
-    system: Option<String>,
     user: Option<String>,
     project: Option<String>,
     env: HashMap<String, String>,
@@ -23,10 +22,6 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn system(mut self, text: &str) -> Self {
-        self.system = Some(text.to_owned());
-        self
-    }
     fn user(mut self, text: &str) -> Self {
         self.user = Some(text.to_owned());
         self
@@ -53,7 +48,6 @@ impl Fixture {
             })
         }
         Config::load(&ConfigInputs {
-            system: file("/etc/jtm/config.toml", &self.system),
             user: file("/home/u/.config/jtm/config.toml", &self.user),
             project: file("/work/app/.jtm.toml", &self.project),
             env: &env,
@@ -95,7 +89,6 @@ fn defaults_match_the_spec() {
         Layer::Default
     );
     assert_eq!(config.origin("network.proxy"), None);
-    assert!(config.warnings.is_empty());
 }
 
 #[test]
@@ -107,8 +100,8 @@ fn later_layers_win_in_order() {
             config.origin("index.ttl_hours").unwrap().layer,
         )
     };
-    let mut f = Fixture::default().system("[index]\nttl_hours = 1");
-    assert_eq!(ttl(&f), (1, Layer::System));
+    let mut f = Fixture::default();
+    assert_eq!(ttl(&f), (24, Layer::Default));
     f = f.user("[index]\nttl_hours = 2");
     assert_eq!(ttl(&f), (2, Layer::User));
     f = f.project("[settings.index]\nttl_hours = 3");
@@ -137,105 +130,15 @@ fn origins_name_the_file_variable_or_flag() {
     assert!(config.origins().any(|(key, _)| key == "pin.default_format"));
 }
 
+/// There is no system config, so nothing can be locked; the old locked form is just a value of
+/// the wrong type.
 #[test]
-fn locked_system_keys_cannot_be_overridden() {
-    let config = Fixture::default()
-        .system(
-            r#"
-[security]
-expiry = { value = "enforce", locked = true }
-
-[index]
-ttl_hours = { value = 12, locked = true }
-auto_refresh = { value = "never", locked = false }
-"#,
-        )
-        .user("[security]\nexpiry = \"remote-only\"\n[index]\nauto_refresh = \"always\"")
-        .env("JTM__SECURITY__EXPIRY", "remote-only")
-        .env("JTM__INDEX__TTL_HOURS", "12")
-        .flag("security.expiry", "remote-only")
-        .ok();
-    assert_eq!(config.settings.security.expiry, ExpiryPolicy::Enforce);
-    assert_eq!(
-        config.origin("security.expiry").unwrap().layer,
-        Layer::System
-    );
-    assert_eq!(config.settings.index.ttl_hours, 12);
-    // `locked = false` behaves like a plain value.
-    assert_eq!(config.settings.index.auto_refresh, AutoRefresh::Always);
-
-    // One warning per overriding layer; setting the locked value itself is not a warning.
-    let warned: Vec<(Layer, &str)> = config
-        .warnings
-        .iter()
-        .map(|w| (w.origin.layer, w.key.as_str()))
-        .collect();
-    assert_eq!(
-        warned,
-        [
-            (Layer::User, "security.expiry"),
-            (Layer::Env, "security.expiry"),
-            (Layer::Flag, "security.expiry"),
-        ]
-    );
-    assert!(config.warnings.iter().all(|w| w.code == W_CONFIG_LOCKED));
-    assert!(
-        config.warnings[0]
-            .message
-            .contains("locked by the system config")
-    );
-}
-
-#[test]
-fn locked_mirror_and_plugin_keys_hold() {
-    let config = Fixture::default()
-        .system(
-            r#"
-[mirrors]
-"https://github.com/" = { value = "https://mirror.corp.example/github/", locked = true }
-
-[plugins.example]
-index_url = { value = "https://mirror.corp.example/index/example.json", locked = true }
-"#,
-        )
-        .user(
-            r#"
-[mirrors]
-"https://github.com/" = "https://elsewhere.example/"
-
-[plugins.example]
-index_url = "https://elsewhere.example/example.json"
-"#,
-        )
-        .ok();
-    assert_eq!(
-        config.settings.mirrors["https://github.com/"],
-        "https://mirror.corp.example/github/"
-    );
-    assert_eq!(
-        config.settings.plugins["example"].index_url.as_deref(),
-        Some("https://mirror.corp.example/index/example.json")
-    );
-    assert_eq!(config.warnings.len(), 2);
-}
-
-#[test]
-fn only_the_system_config_can_lock() {
+fn locked_values_are_not_supported() {
     let err = Fixture::default()
         .user("[index]\nttl_hours = { value = 1, locked = true }")
         .err();
     assert_eq!(err.code(), "E_USAGE");
     assert_eq!(key_of(&err), "index.ttl_hours");
-    assert!(err.to_string().contains("only the system config can lock"));
-
-    for bad in [
-        "[index]\nttl_hours = { locked = true }",
-        "[index]\nttl_hours = { value = 1, locked = \"yes\" }",
-        "[index]\nttl_hours = { value = 1, locked = true, extra = 1 }",
-    ] {
-        let err = Fixture::default().system(bad).err();
-        assert_eq!(key_of(&err), "index.ttl_hours", "{bad}");
-    }
 }
 
 /// The security invariant: a cloned repository cannot weaken verification or redirect

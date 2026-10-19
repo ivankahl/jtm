@@ -5,10 +5,9 @@
 //! | Data | `%LOCALAPPDATA%\jtm` | `$XDG_DATA_HOME/jtm` or `~/.local/share/jtm` |
 //! | Config | `%APPDATA%\jtm\config.toml` | `$XDG_CONFIG_HOME/jtm/config.toml` or `~/.config/jtm/config.toml` |
 //! | Cache | `%LOCALAPPDATA%\jtm\cache` | `$XDG_CACHE_HOME/jtm` or `~/.cache/jtm` |
-//! | System config | `%ProgramData%\jtm\config.toml` | `/etc/jtm/config.toml` |
 //!
 //! `JTM_HOME` collapses data, config and cache into one directory. `JTM_CONFIG` or `--config`
-//! picks the user config file, and `JTM_SYSTEM_CONFIG` the system one.
+//! picks the user config file.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -26,8 +25,6 @@ pub struct Dirs {
     pub cache: PathBuf,
     /// The user config file. It may not exist.
     pub config_file: PathBuf,
-    /// The system config file, read first and able to lock keys. It may not exist.
-    pub system_config_file: PathBuf,
 }
 
 const APP: &str = "jtm";
@@ -57,21 +54,7 @@ impl Dirs {
     ) -> Result<Dirs> {
         let var = |name: &str| env(name).filter(|v| !v.is_empty()).map(PathBuf::from);
 
-        let system_config_file = match var("JTM_SYSTEM_CONFIG") {
-            Some(path) => require_absolute(os, "JTM_SYSTEM_CONFIG", path)?,
-            None => match os {
-                Os::Windows => var("ProgramData")
-                    .filter(|p| is_absolute(os, p))
-                    .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-                    .join(APP)
-                    .join(CONFIG_FILE),
-                Os::Macos | Os::Linux => PathBuf::from("/etc").join(APP).join(CONFIG_FILE),
-            },
-        };
-
         let (data, cache, default_config) = match home {
-            // SPEC-QUESTION: `JTM_HOME` "collapses everything", but letting it also move the
-            // system config would let a user variable skip central policy, so it does not.
             Some(home) => {
                 let home = require_absolute(os, "JTM_HOME", home.to_path_buf())?;
                 (home.clone(), home.join("cache"), home.join(CONFIG_FILE))
@@ -127,7 +110,6 @@ impl Dirs {
             data,
             cache,
             config_file: config.map_or(default_config, Path::to_path_buf),
-            system_config_file,
         })
     }
 
@@ -261,7 +243,6 @@ mod tests {
     const WINDOWS: &[(&str, &str)] = &[
         ("LOCALAPPDATA", r"C:\Users\u\AppData\Local"),
         ("APPDATA", r"C:\Users\u\AppData\Roaming"),
-        ("ProgramData", r"D:\ProgramData"),
         ("USERPROFILE", r"C:\Users\u"),
     ];
 
@@ -277,10 +258,6 @@ mod tests {
             dirs.config_file,
             p(r"C:\Users\u\AppData\Roaming", &["jtm", "config.toml"])
         );
-        assert_eq!(
-            dirs.system_config_file,
-            p(r"D:\ProgramData", &["jtm", "config.toml"])
-        );
     }
 
     #[test]
@@ -290,10 +267,6 @@ mod tests {
         assert_eq!(
             dirs.config_file,
             p(r"C:\Users\u", &["AppData", "Roaming", "jtm", "config.toml"])
-        );
-        assert_eq!(
-            dirs.system_config_file,
-            p(r"C:\ProgramData", &["jtm", "config.toml"])
         );
         assert_eq!(resolve(Os::Windows, &[]).unwrap_err().code(), "E_USAGE");
     }
@@ -307,11 +280,6 @@ mod tests {
             assert_eq!(
                 dirs.config_file,
                 p("/home/u", &[".config", "jtm", "config.toml"]),
-                "{os}"
-            );
-            assert_eq!(
-                dirs.system_config_file,
-                p("/etc", &["jtm", "config.toml"]),
                 "{os}"
             );
         }
@@ -380,12 +348,6 @@ mod tests {
     }
 
     #[test]
-    fn jtm_home_does_not_move_the_system_config() {
-        let dirs = Dirs::resolve(Os::Linux, Some(Path::new("/opt/jtm")), None, &env(&[])).unwrap();
-        assert_eq!(dirs.system_config_file, p("/etc", &["jtm", "config.toml"]));
-    }
-
-    #[test]
     fn jtm_home_must_be_absolute() {
         let err = Dirs::resolve(Os::Linux, Some(Path::new("jtm")), None, &env(&[])).unwrap_err();
         assert_eq!(err.code(), "E_USAGE");
@@ -407,23 +369,16 @@ mod tests {
     }
 
     #[test]
-    fn explicit_config_files_win() {
+    fn an_explicit_config_file_wins() {
         let dirs = Dirs::resolve(
             Os::Linux,
             Some(Path::new("/opt/jtm")),
             Some(Path::new("/srv/ci/jtm.toml")),
-            &env(&[("JTM_SYSTEM_CONFIG", "/srv/policy.toml")]),
+            &env(&[]),
         )
         .unwrap();
         assert_eq!(dirs.config_file, PathBuf::from("/srv/ci/jtm.toml"));
-        assert_eq!(dirs.system_config_file, PathBuf::from("/srv/policy.toml"));
-
-        let err = resolve(
-            Os::Linux,
-            &[("HOME", "/home/u"), ("JTM_SYSTEM_CONFIG", "policy.toml")],
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("JTM_SYSTEM_CONFIG"));
+        assert_eq!(dirs.data, PathBuf::from("/opt/jtm"));
     }
 
     #[test]
