@@ -4,6 +4,7 @@ pub mod config;
 pub mod context;
 pub mod dirs;
 pub mod error;
+pub mod indices;
 pub mod platform;
 pub mod spec;
 

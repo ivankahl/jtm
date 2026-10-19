@@ -499,6 +499,7 @@ dependencies = [
  "jtm-plugin",
  "jtm-security",
  "serde_json",
+ "tempfile",
  "thiserror",
  "toml",
 ]
