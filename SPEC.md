@@ -118,7 +118,7 @@ jtm is interactive by default for humans and switches prompts off by itself for 
 
 - **Interactive** when stdin and stderr are both terminals. jtm may offer to install a missing version, confirm overwrites, and let the user pick when a spec is ambiguous.
 - **Automatically non-interactive** when stdin or stderr is not a terminal, `CI=true`, `--json` is passed, or the call comes through `jtm mcp`. Scripts and agents never see a prompt, even without a flag.
-- **`--no-input`** (or `JTM_NO_INPUT=1`) forces non-interactive mode in a terminal. A step that needs a decision fails with exit 7 and prints the flag or command that would resolve it.
+- **`--no-input`** (or `JTM_NO_INPUT=1`) forces non-interactive mode in a terminal. A step that needs a decision fails with exit 7 (`E_INPUT_REQUIRED`, or a trust code from section 12) and prints the flag or command that would resolve it.
 - **`--yes`** accepts routine confirmations, such as installing a missing version or editing a shell rc file. It never accepts trust changes: new plugin keys and untrusted plugins always need `--trust-key`, `jtm trust add`, or a human answering the prompt.
 
 The flag is `--no-input` because it is the common CLI convention (the Command Line Interface Guidelines at clig.dev recommend it) and says exactly what it does.
@@ -300,7 +300,7 @@ Plugin hooks are written in Lua, run by the Luau dialect through the `mlua` crat
 
 - A plugin's identity is its source URL plus a commit SHA or tag. Branch names are rejected.
 - The installed plugin's manifest hash is recorded in user state and in `jtm.lock`, so a changed manifest is detected.
-- An update that changes a plugin's `signing_keys` is refused unless the new key list is signed by a current key (rotation) or the user runs `jtm trust add` explicitly.
+- An update that changes a plugin's `signing_keys` is refused with `E_KEY_CHANGED` unless the new key list is signed by a current key (rotation) or the user runs `jtm trust add` explicitly.
 
 ## 8. Version indices and distribution
 
@@ -582,7 +582,18 @@ Success and no-op both exit 0 so `set -e` scripts keep working; the difference i
 
 ### Error codes
 
-Stable string codes, never renamed once released: `E_USAGE`, `E_TOOL_UNKNOWN`, `E_VERSION_NOT_FOUND`, `E_ALIAS_UNKNOWN`, `E_PLATFORM_UNSUPPORTED`, `E_NETWORK`, `E_OFFLINE`, `E_SIGNATURE_INVALID`, `E_KEY_UNTRUSTED`, `E_INDEX_EXPIRED`, `E_INDEX_ROLLBACK`, `E_INDEX_BINDING`, `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED`, `E_ARCHIVE_UNSAFE`, `E_LOCK_OUTDATED`, `E_LOCK_INDEX_MISMATCH`, `E_PLUGIN_UNTRUSTED`, `E_PLUGIN_SCRIPT_LIMIT`, `E_IN_USE`, `E_PERMISSION`, `E_INTERNAL`.
+Stable string codes, never renamed once released: `E_USAGE`, `E_TOOL_UNKNOWN`, `E_VERSION_NOT_FOUND`, `E_ALIAS_UNKNOWN`, `E_PLATFORM_UNSUPPORTED`, `E_NETWORK`, `E_OFFLINE`, `E_SIGNATURE_INVALID`, `E_KEY_UNTRUSTED`, `E_INDEX_EXPIRED`, `E_INDEX_ROLLBACK`, `E_INDEX_BINDING`, `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED`, `E_ARCHIVE_UNSAFE`, `E_LOCK_OUTDATED`, `E_LOCK_INDEX_MISMATCH`, `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_INPUT_REQUIRED`, `E_PLUGIN_SCRIPT_LIMIT`, `E_IN_USE`, `E_PERMISSION`, `E_INTERNAL`.
+
+Four codes exit with 7, and they tell an agent whether a flag can help:
+
+| Code | Meaning | Resolved by |
+| --- | --- | --- |
+| `E_PLUGIN_UNTRUSTED` | A plugin, including a project `[plugins]` entry, is not trusted | `--trust-key`, `--trust-project-plugins`, a trust config entry, or a human at the prompt; never `--yes` |
+| `E_KEY_UNTRUSTED` | An index is signed by a key not in the trust store | `jtm trust add` or a human at the prompt; never `--yes` |
+| `E_KEY_CHANGED` | A plugin's signing keys changed without a rotation signed by a current key; `details` carry the old and new keys | `jtm trust add` after a human checks the change; never `--yes` |
+| `E_INPUT_REQUIRED` | A routine confirmation or choice was needed while prompts were off | The flag named in `details.resolve`, such as `--yes`, `--install` or a more specific spec |
+
+Every exit-7 error puts the flag or command that would resolve it in `details.resolve`.
 
 ### Behaviour guarantees
 
