@@ -41,7 +41,7 @@ fn spec_maven_example_parses() {
     assert_eq!(m.display_name, "Apache Maven");
     assert_eq!(m.min_jtm.as_deref(), Some("0.1.0"));
     assert_eq!(m.versions.scheme, Scheme::Maven);
-    assert_eq!(m.versions.default_alias.as_deref(), Some("latest"));
+    assert_eq!(m.versions.default_alias, "latest");
     assert!(!m.versions.include_prereleases);
     assert_eq!(m.default_variant(), "default");
     assert!(m.has_variant("default"));

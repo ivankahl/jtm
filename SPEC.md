@@ -227,7 +227,7 @@ jtm-plugin-maven/
 | Section | Required | Purpose |
 | --- | --- | --- |
 | top level | Yes | `schema` (manifest version, starts at 1), `name`, `display_name`, `description`, `homepage`, `license`, `min_jtm` |
-| `[versions]` | Yes | `scheme` (`java`, `maven`, `semver-loose`, or `script`), `default_variant`, `default_alias`, `variants`, `include_prereleases` |
+| `[versions]` | Yes | `scheme` (`java`, `maven`, `semver-loose`, or `script`), `default_variant`, `default_alias` (required: the alias a bare `<tool>` resolves to), `variants`, `include_prereleases` |
 | `[aliases]` | No | Named aliases and how each resolves: `highest`, `index-tag`, `fixed`, or `script` |
 | `[index]` | Yes | `url` template, `signing_keys` (Ed25519 public keys), `format` |
 | `[layout]` | Yes | How to find the tool home inside the archive: required `strip_components`, a number of leading directories to strip or `"auto"` (strip a single top-level directory), per-OS `home_subdir` table keyed by `windows`, `macos` or `linux` (for example `home_subdir = { macos = "Contents/Home" }` for JDKs), `bin_dirs` |

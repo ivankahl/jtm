@@ -490,6 +490,7 @@ fn check_location(entry: &Entry, url: &str, allow_http: bool) -> Result<()> {
         || url.starts_with("file://")
         || (allow_http && url.starts_with("http://"))
         || (!url.contains("://") && Path::new(url).is_absolute());
+    let url = redact(url);
     if ok {
         Ok(())
     } else if url.starts_with("http://") {
@@ -557,6 +558,7 @@ fn read_file(layer: Layer, file: FileSource<'_>) -> Result<Vec<Entry>> {
         match section.as_str() {
             "mirrors" => {
                 for (source, value) in inner {
+                    check_project_allowed(&origin, prefix, &Key::Mirror(source.clone()))?;
                     if !source.starts_with("https://") {
                         return Err(config_error(
                             &origin,
@@ -612,6 +614,33 @@ fn read_file(layer: Layer, file: FileSource<'_>) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
+/// Hides credentials in a URL, such as `user:pass@` in `http://user:pass@proxy:8080`, so error
+/// messages on stderr and in the JSON envelope never contain them.
+fn redact(url: &str) -> String {
+    let (scheme, rest) = match url.find("://") {
+        Some(at) => url.split_at(at + 3),
+        None => ("", url),
+    };
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    match authority.rfind('@') {
+        Some(at) => format!("{scheme}***@{}", &rest[at + 1..]),
+        None => url.to_owned(),
+    }
+}
+
+/// Refuses a key that a project file must not set, before anything else about it is checked.
+fn check_project_allowed(origin: &Origin, prefix: &str, key: &Key) -> Result<()> {
+    if origin.layer == Layer::Project && !key.allowed_in_project() {
+        return Err(config_error(
+            origin,
+            &format!("{prefix}{}", key.dotted()),
+            "project files cannot set security, network, extract, mirror, plugin index or \
+             download cache settings; set it in user config instead",
+        ));
+    }
+    Ok(())
+}
+
 fn unknown_key_message() -> String {
     let known: Vec<String> = KEYS
         .iter()
@@ -623,15 +652,8 @@ fn unknown_key_message() -> String {
 
 /// Converts one value from a config file.
 fn file_entry(origin: &Origin, prefix: &str, key: Key, value: toml::Value) -> Result<Entry> {
+    check_project_allowed(origin, prefix, &key)?;
     let path = format!("{prefix}{}", key.dotted());
-    if origin.layer == Layer::Project && !key.allowed_in_project() {
-        return Err(config_error(
-            origin,
-            &path,
-            "project files cannot set security, network, extract, mirror, plugin index or \
-             download cache settings; set it in user config instead",
-        ));
-    }
     let value =
         convert_toml(&key, value).map_err(|message| config_error(origin, &path, message))?;
     Ok(Entry {
@@ -706,7 +728,8 @@ fn convert_text(kind: Kind, text: String) -> std::result::Result<Value, String> 
                 .any(|scheme| text.starts_with(scheme)) =>
         {
             Err(format!(
-                "`{text}` must be an http, https, socks5 or socks5h URL"
+                "`{}` must be an http, https, socks5 or socks5h URL",
+                redact(&text)
             ))
         }
         _ => Ok(Value::Text(text)),

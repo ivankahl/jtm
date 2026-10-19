@@ -59,7 +59,8 @@ pub struct Manifest {
 pub struct Versions {
     pub scheme: Scheme,
     pub default_variant: Option<String>,
-    pub default_alias: Option<String>,
+    /// The alias a spec without a version resolves to, such as `latest` for a bare `maven`.
+    pub default_alias: String,
     #[serde(default)]
     pub variants: Vec<String>,
     #[serde(default)]
@@ -350,12 +351,10 @@ impl Manifest {
             ),
             _ => {}
         }
-        if let Some(alias) = &versions.default_alias
-            && !self.aliases.contains_key(alias)
-        {
+        if !self.aliases.contains_key(&versions.default_alias) {
             p.push(
                 "versions.default_alias",
-                format!("`{alias}` is not defined in `[aliases]`"),
+                format!("`{}` is not defined in `[aliases]`", versions.default_alias),
             );
         }
         if versions.scheme == Scheme::Script && self.hooks.compare_versions.is_none() {
@@ -382,6 +381,12 @@ impl Manifest {
                 Alias::Fixed { target } => {
                     if let Err((_, message)) = check_version_or_alias(target) {
                         p.push(format!("{path}.target"), message);
+                    } else if let Some(scheme) = self.versions.scheme.builtin()
+                        && let Err(err) = scheme.parse(target)
+                    {
+                        // A target that is not a version, such as an alias name, could never
+                        // match anything.
+                        p.push(format!("{path}.target"), err.to_string());
                     }
                 }
                 Alias::Script {} => {
@@ -461,7 +466,10 @@ impl Manifest {
                 if !is_file_name(name) {
                     p.push(
                         format!("executables.{os}[{i}]"),
-                        format!("`{name}` must be a plain file name, such as `mvn` or `mvn.cmd`"),
+                        format!(
+                            "`{name}` must be a plain file name not starting with `-`, such as \
+                             `mvn` or `mvn.cmd`"
+                        ),
                     );
                 }
             }
@@ -801,8 +809,11 @@ fn check_relative_path(p: &mut Problems, path: &str, value: &str, allow_dot: boo
     }
 }
 
+/// A plain file name. It cannot start with `-`, so it is never read as an option when it reaches
+/// a command line.
 fn is_file_name(name: &str) -> bool {
     !name.is_empty()
+        && !name.starts_with('-')
         && name != "."
         && name != ".."
         && name

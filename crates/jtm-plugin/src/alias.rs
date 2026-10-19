@@ -229,6 +229,7 @@ display_name = "Demo"
 [versions]
 scheme = "{scheme}"
 {variants}
+default_alias = "latest"
 {extra_versions}
 
 [aliases]
@@ -452,6 +453,7 @@ name = "demo"
 display_name = "Demo"
 [versions]
 scheme = "script"
+default_alias = "latest"
 [aliases]
 latest = { kind = "highest" }
 [index]

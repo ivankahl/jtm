@@ -357,6 +357,49 @@ index_url = "file:///opt/jtm-mirror/index/example-{{os}}-{{arch}}.json"
     }
 }
 
+/// Proxy and mirror URLs can carry credentials, and errors go to stderr and the JSON envelope.
+#[test]
+fn errors_never_repeat_url_credentials() {
+    for text in [
+        "[network]\nproxy = \"user:s3cret@proxy:8080\"",
+        "[network]\nproxy = \"ftp://user:s3cret@proxy:8080\"",
+        "[mirrors]\n\"https://github.com/\" = \"http://user:s3cret@mirror.example/\"",
+        "[mirrors]\n\"https://github.com/\" = \"ftp://user:s3cret@mirror.example/\"",
+    ] {
+        let err = Fixture::default().user(text).err();
+        let shown = format!("{err} {}", serde_json::Value::Object(err.details()));
+        assert!(!shown.contains("s3cret"), "{text}: {shown}");
+        assert!(shown.contains("***@"), "{text}: {shown}");
+    }
+}
+
+#[test]
+fn redact_hides_only_userinfo() {
+    assert_eq!(
+        redact("http://u:p@proxy:8080/x@y"),
+        "http://***@proxy:8080/x@y"
+    );
+    assert_eq!(redact("u:p@proxy:8080"), "***@proxy:8080");
+    assert_eq!(
+        redact("https://mirror.example/a@b"),
+        "https://mirror.example/a@b"
+    );
+    assert_eq!(redact("/opt/mirror"), "/opt/mirror");
+}
+
+/// A non-https mirror key in a project file reports the project restriction, which is the
+/// real problem, rather than the URL shape.
+#[test]
+fn project_restriction_is_reported_before_mirror_shape() {
+    let err = Fixture::default()
+        .project("[settings.mirrors]\n\"http://github.com/\" = \"https://mirror/\"")
+        .err();
+    assert!(
+        err.to_string().contains("project files cannot set"),
+        "{err}"
+    );
+}
+
 #[test]
 fn env_variables_are_parsed_and_checked() {
     let config = Fixture::default()
