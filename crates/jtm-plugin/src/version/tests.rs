@@ -278,6 +278,8 @@ fn maven_ordering_has_no_cycles_through_mid_list_qualifiers() {
         ["0.rc0", "0", "0-1"],
         ["0", "0-ea", "0.rc.ea"],
         ["0", "0-ea", "0.rc-ea"],
+        // A qualifier after a release (`a`) against a list before one (`[rc]`).
+        ["0a", "0", "0ga.rc0"],
     ] {
         let mut versions: Vec<Version> = triple.iter().map(|s| v(m, s)).collect();
         versions.sort_by(Version::cmp_precedence);

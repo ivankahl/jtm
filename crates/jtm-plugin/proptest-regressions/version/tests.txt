@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 1615dafe1aaafae8872c8bf0cca552d6c62ea1076b6a87de2c21a5b4146c7344 # shrinks to (scheme, a, b, c) = (Maven, "0-1", "0.rc0", "0")
 cc aad2c3b7098eb9199cce5c32f48bbaa438d6f307f7cc6d5586d60ad99de8843e # shrinks to (scheme, a, b, c) = (Maven, "0", "0-ea", "0.rc.ea")
+cc f7d417b30fb9dacfe3c5bb3c6c54bf3e871336e3ecf0b47d82bddee1f932d88e # shrinks to (scheme, a, b, c) = (Maven, "0a", "0", "0ga.rc0")

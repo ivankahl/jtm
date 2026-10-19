@@ -1,5 +1,6 @@
 //! Maven's `ComparableVersion` ordering, ported from `org.apache.maven.artifact.versioning` as
-//! of Maven 3.9, with one deviation that keeps the ordering transitive (see [`parse`]).
+//! of Maven 3.9, with two deviations that keep the ordering transitive (see [`parse`] and
+//! [`compare`]).
 //!
 //! A version becomes a tree of items. `.` separates items in a list, while `-`, a change
 //! between digits and letters, and a qualifier after other items start a nested list. Trailing
@@ -189,21 +190,15 @@ pub(super) fn compare(a: &Item, b: Option<&Item>) -> Ordering {
                 Ordering::Greater
             }
         }
-        (Item::Int(x), Some(Item::Int(y))) => cmp_numeric(x, y),
-        (Item::Int(_), Some(_)) => Ordering::Greater,
-
         (Item::Str(x), None) => qualifier_rank(x).cmp(&(RELEASE_INDEX, "")),
-        (Item::Str(_), Some(Item::Int(_))) => Ordering::Less,
-        (Item::Str(x), Some(Item::Str(y))) => qualifier_rank(x).cmp(&qualifier_rank(y)),
-        (Item::Str(_), Some(Item::List(_))) => Ordering::Less,
-
         (Item::List(items), None) => items
             .iter()
             .map(|item| compare(item, None))
             .find(|o| o.is_ne())
             .unwrap_or(Ordering::Equal),
-        (Item::List(_), Some(Item::Int(_))) => Ordering::Less,
-        (Item::List(_), Some(Item::Str(_))) => Ordering::Greater,
+
+        (Item::Int(x), Some(Item::Int(y))) => cmp_numeric(x, y),
+        (Item::Str(x), Some(Item::Str(y))) => qualifier_rank(x).cmp(&qualifier_rank(y)),
         (Item::List(xs), Some(Item::List(ys))) => {
             let len = xs.len().max(ys.len());
             (0..len)
@@ -215,6 +210,28 @@ pub(super) fn compare(a: &Item, b: Option<&Item>) -> Ordering {
                 .find(|o| o.is_ne())
                 .unwrap_or(Ordering::Equal)
         }
+
+        // Deviation from Maven, which orders a qualifier and a list by type alone (qualifier
+        // first). That ignores where each sits relative to a release, so
+        // `0ga.rc0 < 0 < 0a < 0ga.rc0` was a cycle. Comparing each against "nothing" first
+        // keeps the order transitive; the type order still decides between a qualifier and a
+        // list on the same side of a release.
+        (Item::Str(_), Some(other @ Item::List(_)))
+        | (Item::List(_), Some(other @ Item::Str(_))) => compare(a, None)
+            .cmp(&compare(other, None))
+            .then_with(|| type_rank(a).cmp(&type_rank(other))),
+        // An int outranks a qualifier or a list, as in Maven: `1.1 > 1-1 > 1-sp`.
+        (Item::Int(_), Some(_)) => Ordering::Greater,
+        (_, Some(Item::Int(_))) => Ordering::Less,
+    }
+}
+
+/// Maven's order between item types: `qualifier < list < int`.
+fn type_rank(item: &Item) -> u8 {
+    match item {
+        Item::Str(_) => 0,
+        Item::List(_) => 1,
+        Item::Int(_) => 2,
     }
 }
 
