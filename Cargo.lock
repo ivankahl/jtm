@@ -398,6 +398,7 @@ dependencies = [
  "jtm-plugin",
  "serde_json",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

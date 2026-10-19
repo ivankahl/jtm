@@ -218,6 +218,15 @@ pub enum JtmError {
         error: jtm_plugin::manifest::ManifestError,
     },
 
+    /// A configuration value that is invalid or not allowed where it was set. `key` is the
+    /// dotted key, or empty when the whole file is at fault.
+    #[error("{origin}: {}{message}", key_prefix(.key))]
+    Config {
+        origin: String,
+        key: String,
+        message: String,
+    },
+
     #[error("unknown tool `{tool}`")]
     ToolUnknown { tool: String },
 
@@ -324,7 +333,8 @@ impl JtmError {
             // input that no retry fixes, so it is reported as a usage error.
             JtmError::Usage { .. }
             | JtmError::InvalidSpec { .. }
-            | JtmError::InvalidManifest { .. } => ErrorCode::Usage,
+            | JtmError::InvalidManifest { .. }
+            | JtmError::Config { .. } => ErrorCode::Usage,
             JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
@@ -399,6 +409,10 @@ impl JtmError {
                         .collect::<Vec<_>>()
                         .into(),
                 ),
+            ]),
+            JtmError::Config { origin, key, .. } => obj([
+                ("origin", origin.as_str().into()),
+                ("key", key.as_str().into()),
             ]),
             JtmError::ToolUnknown { tool } => obj([("tool", tool.as_str().into())]),
             JtmError::VersionNotFound { tool, spec } => obj([
@@ -492,6 +506,14 @@ impl JtmError {
         JtmError::Internal {
             message: message.into(),
         }
+    }
+}
+
+fn key_prefix(key: &str) -> String {
+    if key.is_empty() {
+        String::new()
+    } else {
+        format!("`{key}`: ")
     }
 }
 
