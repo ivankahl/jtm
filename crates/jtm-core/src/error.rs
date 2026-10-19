@@ -542,6 +542,19 @@ impl From<jtm_plugin::ResolveError> for JtmError {
     }
 }
 
+impl From<jtm_security::Error> for JtmError {
+    fn from(err: jtm_security::Error) -> Self {
+        use jtm_security::Error as S;
+        match err {
+            S::SignatureInvalid { file, message } => JtmError::SignatureInvalid { file, message },
+            S::KeyUntrusted {
+                key_id, resolve, ..
+            } => JtmError::KeyUntrusted { key_id, resolve },
+            other => JtmError::internal(other.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,6 +766,27 @@ mod tests {
             spec: "custom".into(),
         });
         assert_eq!(script.code(), "E_INTERNAL");
+    }
+
+    #[test]
+    fn security_errors_map_to_verification_and_trust_codes() {
+        let invalid = JtmError::from(jtm_security::Error::SignatureInvalid {
+            file: "demo-linux-x64.json".into(),
+            message: "bad".into(),
+        });
+        assert_eq!(invalid.code(), "E_SIGNATURE_INVALID");
+        assert_eq!(invalid.exit_code(), ExitCode::Verification);
+        let untrusted = JtmError::from(jtm_security::Error::KeyUntrusted {
+            file: "demo-linux-x64.json".into(),
+            key_id: "0123456789ABCDEF".into(),
+            resolve: "jtm trust add <public key> --scope demo".into(),
+        });
+        assert_eq!(untrusted.code(), "E_KEY_UNTRUSTED");
+        assert_eq!(untrusted.exit_code(), ExitCode::TrustRequired);
+        assert_eq!(
+            untrusted.details()["resolve"],
+            "jtm trust add <public key> --scope demo"
+        );
     }
 
     #[test]
