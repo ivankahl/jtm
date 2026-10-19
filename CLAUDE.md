@@ -50,7 +50,7 @@ cargo test --workspace
 
 - **Verify before parse.** Index files are signature-checked on raw bytes before they reach a JSON parser (section 9).
 - **No unverified extraction.** No artifact is extracted unless its SHA-256 matches the signed index or the lockfile (section 10).
-- **Project files cannot widen trust.** `.jtm.toml` and other project files cannot set `security.*`, `network.*`, `[mirrors]` or `plugins.*.index_url` (section 6).
+- **Project files cannot widen trust.** `.jtm.toml` and other project files cannot set `security.*`, `network.*`, `[mirrors]`, `extract.*`, `plugins.*.index_url` or `download.cache_dir` (section 14).
 - **Automation never prompts.** No prompts without a TTY or under `CI`, `--json`, `--no-input` or MCP; a step needing confirmation fails with exit 7. `--yes` never accepts trust changes (section 12).
 - **JSON mode.** With `--json`, stdout carries exactly one JSON envelope; all logs go to stderr.
 - **Stable codes.** `E_` error codes and exit codes 0 to 8 are never renamed or renumbered once released (section 12).

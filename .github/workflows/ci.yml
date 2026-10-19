@@ -39,26 +39,34 @@ jobs:
           - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
+            platform: windows-x64
           - name: windows-arm64
             os: windows-11-arm
             target: aarch64-pc-windows-msvc
+            platform: windows-aarch64
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
+            platform: macos-aarch64
           # SPEC.md names macos-13, which GitHub has retired; macos-15-intel is
           # the remaining x64 macOS runner.
           - name: macos-x64
             os: macos-15-intel
             target: x86_64-apple-darwin
+            platform: macos-x64
           - name: linux-x64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            platform: linux-x64
           - name: linux-arm64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            platform: linux-aarch64
           - name: linux-x64-musl
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
+            # A musl build on a glibc host must still detect the host's glibc.
+            platform: linux-x64
             musl: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,3 +83,5 @@ jobs:
           key: ${{ matrix.target }}
       - run: cargo build --workspace --all-targets --locked --target ${{ matrix.target }}
       - run: cargo test --workspace --locked --target ${{ matrix.target }}
+        env:
+          JTM_EXPECTED_PLATFORM: ${{ matrix.platform }}

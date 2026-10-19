@@ -87,6 +87,7 @@ pub enum ErrorCode {
     KeyChanged,
     InputRequired,
     PluginScriptLimit,
+    PluginInvalid,
     InUse,
     Permission,
     Internal,
@@ -116,6 +117,7 @@ impl ErrorCode {
         ErrorCode::KeyChanged,
         ErrorCode::InputRequired,
         ErrorCode::PluginScriptLimit,
+        ErrorCode::PluginInvalid,
         ErrorCode::InUse,
         ErrorCode::Permission,
         ErrorCode::Internal,
@@ -145,6 +147,7 @@ impl ErrorCode {
             ErrorCode::KeyChanged => "E_KEY_CHANGED",
             ErrorCode::InputRequired => "E_INPUT_REQUIRED",
             ErrorCode::PluginScriptLimit => "E_PLUGIN_SCRIPT_LIMIT",
+            ErrorCode::PluginInvalid => "E_PLUGIN_INVALID",
             ErrorCode::InUse => "E_IN_USE",
             ErrorCode::Permission => "E_PERMISSION",
             ErrorCode::Internal => "E_INTERNAL",
@@ -168,7 +171,8 @@ impl ErrorCode {
             | ErrorCode::IndexBinding
             | ErrorCode::HashMismatch
             | ErrorCode::SizeExceeded
-            | ErrorCode::ArchiveUnsafe => ExitCode::Verification,
+            | ErrorCode::ArchiveUnsafe
+            | ErrorCode::PluginInvalid => ExitCode::Verification,
             ErrorCode::LockOutdated | ErrorCode::LockIndexMismatch => ExitCode::LockOrPin,
             ErrorCode::KeyUntrusted
             | ErrorCode::PluginUntrusted
@@ -201,6 +205,32 @@ pub enum JtmError {
     #[error("{message}")]
     Usage { message: String },
 
+    /// A `<tool>@<spec>` argument or pin value that does not parse. `column` is 1-based and
+    /// counts characters.
+    #[error("invalid spec `{input}` at column {column}: {message}")]
+    InvalidSpec {
+        input: String,
+        column: usize,
+        message: String,
+    },
+
+    /// A `plugin.toml` that does not validate. `origin` names where it came from, such as a
+    /// plugin name or a path.
+    #[error("{origin}: {error}")]
+    InvalidManifest {
+        origin: String,
+        error: jtm_plugin::manifest::ManifestError,
+    },
+
+    /// A configuration value that is invalid or not allowed where it was set. `key` is the
+    /// dotted key, or empty when the whole file is at fault.
+    #[error("{origin}: {}{message}", key_prefix(.key))]
+    Config {
+        origin: String,
+        key: String,
+        message: String,
+    },
+
     #[error("unknown tool `{tool}`")]
     ToolUnknown { tool: String },
 
@@ -212,6 +242,10 @@ pub enum JtmError {
 
     #[error("`{tool}` is not available for platform `{platform}`")]
     PlatformUnsupported { tool: String, platform: String },
+
+    /// The machine jtm runs on is not one of the v1 platforms.
+    #[error("this machine ({host}) is not a supported platform")]
+    HostUnsupported { host: String },
 
     #[error("network error fetching {url}: {message}")]
     Network {
@@ -299,11 +333,16 @@ impl JtmError {
     /// The [`ErrorCode`] for this error.
     pub const fn kind(&self) -> ErrorCode {
         match self {
-            JtmError::Usage { .. } => ErrorCode::Usage,
+            JtmError::Usage { .. } | JtmError::InvalidSpec { .. } | JtmError::Config { .. } => {
+                ErrorCode::Usage
+            }
+            JtmError::InvalidManifest { .. } => ErrorCode::PluginInvalid,
             JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
-            JtmError::PlatformUnsupported { .. } => ErrorCode::PlatformUnsupported,
+            JtmError::PlatformUnsupported { .. } | JtmError::HostUnsupported { .. } => {
+                ErrorCode::PlatformUnsupported
+            }
             JtmError::Network { .. } => ErrorCode::Network,
             JtmError::Offline { .. } => ErrorCode::Offline,
             JtmError::SignatureInvalid { .. } => ErrorCode::SignatureInvalid,
@@ -351,6 +390,32 @@ impl JtmError {
             JtmError::Usage { .. } | JtmError::LockOutdated { .. } | JtmError::Internal { .. } => {
                 Map::new()
             }
+            JtmError::InvalidSpec { input, column, .. } => obj([
+                ("input", input.as_str().into()),
+                ("column", (*column).into()),
+            ]),
+            JtmError::InvalidManifest { origin, error } => obj([
+                ("origin", origin.as_str().into()),
+                (
+                    "problems",
+                    error
+                        .problems
+                        .iter()
+                        .map(|p| {
+                            serde_json::json!({
+                                "path": p.path,
+                                "message": p.message,
+                                "line": p.line,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                ),
+            ]),
+            JtmError::Config { origin, key, .. } => obj([
+                ("origin", origin.as_str().into()),
+                ("key", key.as_str().into()),
+            ]),
             JtmError::ToolUnknown { tool } => obj([("tool", tool.as_str().into())]),
             JtmError::VersionNotFound { tool, spec } => obj([
                 ("tool", tool.as_str().into()),
@@ -364,6 +429,7 @@ impl JtmError {
                 ("tool", tool.as_str().into()),
                 ("platform", platform.as_str().into()),
             ]),
+            JtmError::HostUnsupported { host } => obj([("host", host.as_str().into())]),
             JtmError::Network { url, .. } => obj([("url", url.as_str().into())]),
             JtmError::Offline { action } => obj([("action", action.as_str().into())]),
             JtmError::SignatureInvalid { file, .. } => obj([("file", file.as_str().into())]),
@@ -441,6 +507,37 @@ impl JtmError {
     pub fn internal(message: impl Into<String>) -> Self {
         JtmError::Internal {
             message: message.into(),
+        }
+    }
+}
+
+fn key_prefix(key: &str) -> String {
+    if key.is_empty() {
+        String::new()
+    } else {
+        format!("`{key}`: ")
+    }
+}
+
+impl From<jtm_plugin::ResolveError> for JtmError {
+    fn from(err: jtm_plugin::ResolveError) -> Self {
+        use jtm_plugin::ResolveError as R;
+        match err {
+            R::AliasUnknown { tool, alias } => JtmError::AliasUnknown { tool, alias },
+            R::AliasNoMatch {
+                tool,
+                alias: value,
+                variant,
+            }
+            | R::VersionNotFound {
+                tool,
+                variant,
+                value,
+            } => JtmError::VersionNotFound {
+                tool,
+                spec: format!("{variant}:{value}"),
+            },
+            R::ScriptUnsupported { .. } => JtmError::internal(err.to_string()),
         }
     }
 }
@@ -524,6 +621,7 @@ mod tests {
             (E::KeyChanged, 7),
             (E::InputRequired, 7),
             (E::PluginScriptLimit, 1),
+            (E::PluginInvalid, 5),
             (E::InUse, 4),
             (E::Permission, 4),
             (E::Internal, 1),
@@ -608,6 +706,53 @@ mod tests {
             err.to_string()
                 .ends_with("run jtm trust add RWNEW --scope example")
         );
+    }
+
+    #[test]
+    fn invalid_manifest_is_plugin_invalid_listing_each_problem() {
+        let error = jtm_plugin::Manifest::parse("schema = 1\nname = \"Bad\"").unwrap_err();
+        let err = JtmError::InvalidManifest {
+            origin: "plugins/bad/plugin.toml".into(),
+            error,
+        };
+        assert_eq!(err.code(), "E_PLUGIN_INVALID");
+        assert_eq!(err.exit_code(), ExitCode::Verification);
+        assert!(
+            err.to_string()
+                .starts_with("plugins/bad/plugin.toml: invalid plugin.toml: ")
+        );
+        let details = Value::Object(err.details());
+        assert_eq!(details["origin"], "plugins/bad/plugin.toml");
+        assert_eq!(details["problems"][0]["path"], "display_name");
+    }
+
+    #[test]
+    fn resolve_errors_map_to_not_found_codes() {
+        use jtm_plugin::ResolveError as R;
+        let unknown = JtmError::from(R::AliasUnknown {
+            tool: "demo".into(),
+            alias: "stable".into(),
+        });
+        assert_eq!(unknown.code(), "E_ALIAS_UNKNOWN");
+        let no_match = JtmError::from(R::AliasNoMatch {
+            tool: "demo".into(),
+            alias: "lts".into(),
+            variant: "zulu".into(),
+        });
+        assert_eq!(no_match.code(), "E_VERSION_NOT_FOUND");
+        assert_eq!(no_match.details()["spec"], "zulu:lts");
+        let not_found = JtmError::from(R::VersionNotFound {
+            tool: "demo".into(),
+            variant: "default".into(),
+            value: "9.9".into(),
+        });
+        assert_eq!(not_found.code(), "E_VERSION_NOT_FOUND");
+        assert_eq!(not_found.details()["spec"], "default:9.9");
+        let script = JtmError::from(R::ScriptUnsupported {
+            tool: "demo".into(),
+            spec: "custom".into(),
+        });
+        assert_eq!(script.code(), "E_INTERNAL");
     }
 
     #[test]
