@@ -155,6 +155,14 @@ fn env_allows_any_variable_jtm_does_not_own() {
     let m = Manifest::parse(&text).unwrap();
     assert_eq!(m.env["JAVA_TOOL_OPTIONS"], "-Dfile.encoding=UTF-8");
     assert_eq!(m.env["LD_LIBRARY_PATH"], "{home}/lib");
+
+    // Values may contain control characters; whatever prints them for a shell must quote them.
+    let text = text.replace(
+        "JAVA_TOOL_OPTIONS = \"-Dfile.encoding=UTF-8\"",
+        "JAVA_TOOL_OPTIONS = \"-Dfile.encoding=UTF-8\\n-Xmx1g\"",
+    );
+    let m = Manifest::parse(&text).unwrap();
+    assert_eq!(m.env["JAVA_TOOL_OPTIONS"], "-Dfile.encoding=UTF-8\n-Xmx1g");
 }
 
 #[test]

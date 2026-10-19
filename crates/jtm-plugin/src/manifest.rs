@@ -500,15 +500,6 @@ impl Manifest {
                 );
                 continue;
             }
-            // Shells such as `cmd` cannot quote a newline, so no control character may reach
-            // the environment-setting commands jtm prints.
-            if value.chars().any(char::is_control) {
-                p.push(
-                    path,
-                    "values cannot contain control characters such as newlines",
-                );
-                continue;
-            }
             check_placeholders(p, &path, value, ENV_PLACEHOLDERS);
         }
     }
