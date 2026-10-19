@@ -300,7 +300,10 @@ Plugin hooks are written in Lua, run by the Luau dialect through the `mlua` crat
 
 - A plugin's identity is its source URL plus a commit SHA or tag. Branch names are rejected.
 - The installed plugin's manifest hash is recorded in user state and in `jtm.lock`, so a changed manifest is detected.
-- An update that changes a plugin's `signing_keys` is refused with `E_KEY_CHANGED` unless the new key list is signed by a current key (rotation) or the user runs `jtm trust add` explicitly.
+- A plugin's signing keys are trusted only after an explicit decision: a human answering the prompt, `--trust-key`, or `jtm trust add`. Being listed in the signed marketplace is evidence shown in that prompt, never trust on its own, and `--yes` never answers it. Without a terminal, an install that needs an untrusted key fails with exit 7 (`E_KEY_UNTRUSTED`) and names the command that would trust it.
+- Trust is per plugin: a key confirmed for `acme/flyway` is scoped to `acme/flyway` and can never sign another plugin's index.
+- A change to a trusted plugin's `signing_keys` is accepted without a prompt when the new key list is signed by a key the user already trusts for that plugin (rotation). Any other change is refused with `E_KEY_CHANGED` until a human confirms it.
+- First-party plugins are trusted through the root keys embedded in jtm (section 9), so they never prompt, and their key rotations need no action from the user.
 
 ## 8. Version indices and distribution
 
@@ -390,7 +393,7 @@ jtm never trusts a network location: an artifact is accepted only if its SHA-256
 5. **Index entry** supplies the expected `size` and `sha256`.
 6. **Artifact** is hashed while streaming and rejected on any mismatch before extraction.
 
-Third-party plugins skip steps 1 and 2: their index keys come from the plugin manifest, pinned when the plugin is added (marketplace entry or explicit `--trust-key`) and recorded in `jtm.lock`.
+Third-party plugins skip steps 1 and 2: their index keys come from the plugin manifest and are trusted only once a human confirms them, or `--trust-key` or `jtm trust add` names them (section 7). The marketplace entry is shown as evidence but grants nothing. Confirmed keys are stored, scoped to that plugin, in `<JTM_HOME>/state/trust.json` and recorded in `jtm.lock`.
 
 ### Key roles
 
@@ -399,8 +402,13 @@ Third-party plugins skip steps 1 and 2: their index keys come from the plugin ma
 | Root | Maintainers, offline (hardware token), threshold 2 of 3 | `keys.json` | New root embedded in a jtm release, cross-signed by the old root |
 | Index | CI (GitHub Actions secret in a protected environment) | First-party index files | New `keys.json` signed by root; old key removed |
 | Release | Maintainers, offline | jtm binaries and `SHA256SUMS` | Same as root |
-| Plugin author | Third-party maintainer | That plugin's index files | New key list signed by the current key, or explicit `jtm trust add` |
+| Plugin author | Third-party maintainer | That plugin's index files | New key list signed by a key the user already trusts for the plugin (accepted without a prompt); otherwise `E_KEY_CHANGED` until a human confirms or runs `jtm trust add` |
 | User or company | The user | Re-signed internal indices | `jtm trust add` and `jtm trust remove` |
+
+**First-party rotation never breaks clients.**
+
+- **Index keys** rotate by publishing a new `keys.json` with a higher `sequence`, signed by the root keys. Clients accept the new key without a prompt or a jtm release. During an overlap period, `keys.json` lists both the old and the new key, so indices signed by either verify. The old key is then removed or left to expire. Rollback checks on `keys.json` stop an older copy that still lists a removed key from being replayed.
+- **Root keys** rotate through a jtm release that embeds the new root keys. Until every supported release knows them, `keys.json` is cross-signed by the old and the new root keys, so older and newer releases both accept it.
 
 Signatures use minisign (Ed25519). Clients verify with the `minisign-verify` crate; the publishing tool signs with `minisign`. `keys.json` supports a `threshold` field from day one even if first-party starts at 1 of 1 for index keys.
 
@@ -436,7 +444,8 @@ These run on embedded, cached, mirrored and freshly downloaded copies alike, bef
 | Malicious third-party plugin | Luau sandbox, no network, path containment, explicit trust, commit pinning |
 | Malicious archive contents | Extraction rules in section 10 |
 | Typosquatted marketplace plugin | Namespaced names, review, CI checks (section 16) |
-| Prompt-injected agent adding plugins | Non-interactive modes refuse untrusted plugins without an allowlist entry |
+| Prompt-injected agent adding plugins | Non-interactive modes refuse untrusted plugins and keys without an allowlist entry or `--trust-key`; a marketplace listing never grants trust |
+| Compromised marketplace entry | Keys are confirmed by a human when first added and pinned afterwards; a later key change needs a rotation signed by a trusted key or a human |
 | Tampered local cache | Signatures re-verified on every load; installs record their hash |
 | Tampered jtm update | Release signature verified before `self update` swaps the binary |
 
@@ -589,7 +598,7 @@ Four codes exit with 7, and they tell an agent whether a flag can help:
 | Code | Meaning | Resolved by |
 | --- | --- | --- |
 | `E_PLUGIN_UNTRUSTED` | A plugin, including a project `[plugins]` entry, is not trusted | `--trust-key`, `--trust-project-plugins`, a trust config entry, or a human at the prompt; never `--yes` |
-| `E_KEY_UNTRUSTED` | An index is signed by a key not in the trust store | `jtm trust add` or a human at the prompt; never `--yes` |
+| `E_KEY_UNTRUSTED` | An index is signed by a key not trusted for that plugin, including a third-party plugin key that is listed in the marketplace but not yet confirmed | `jtm trust add`, `--trust-key`, or a human at the prompt; never `--yes` |
 | `E_KEY_CHANGED` | A plugin's signing keys changed without a rotation signed by a current key; `details` carry the old and new keys | `jtm trust add` after a human checks the change; never `--yes` |
 | `E_INPUT_REQUIRED` | A routine confirmation or choice was needed while prompts were off | The flag named in `details.resolve`, such as `--yes`, `--install` or a more specific spec |
 
@@ -783,10 +792,10 @@ tags = ["database", "migrations"]
 
 | Command | Trust outcome |
 | --- | --- |
-| `jtm plugin add acme/flyway` | Trusted via the signed marketplace entry; rev, manifest hash and keys pinned |
+| `jtm plugin add acme/flyway` | Rev and manifest hash come from the signed marketplace entry. Keys not already trusted for the plugin need confirmation: the prompt shows each key's fingerprint and whether it matches the marketplace entry. With `--no-input` or in automation it fails with exit 7 unless `--trust-key` names the key, and `--yes` does not accept it. A key that differs from the marketplace entry is refused |
 | `jtm plugin add --source <url> --rev <sha> --trust-key <key>` | Trusted explicitly by the user for that plugin only |
 | `jtm plugin add --source <url> --rev <sha>` | Prompts for confirmation showing the key fingerprint; with `--no-input` or in automation it fails with exit 7, and `--yes` does not accept it |
-| `jtm plugin update [name]` | Moves to the marketplace's newer rev; shows any key or source change and requires confirmation for it |
+| `jtm plugin update [name]` | Moves to the marketplace's newer rev. A key change signed by a key already trusted for the plugin is accepted without a prompt; any other key change, or a source change, requires confirmation (`E_KEY_CHANGED` in automation) |
 
 A yanked entry prints its reason, blocks new installs, and makes `jtm doctor` warn about existing ones.
 
@@ -804,6 +813,7 @@ None of these block M0 or M1; each should be decided before the milestone named 
 - [x] **Maven Central publication** of indices for Nexus and Artifactory users: deferred until after v1. Mirrors and mirror export cover corporate users until then.
 - [x] **Windows PAC files and NTLM proxies:** not supported natively in v1. The docs explain pointing network.proxy at a local authenticating proxy such as px or Cntlm (section 13).
 - [x] **Oracle JDK:** Oracle JDK builds are excluded from v1; Temurin and the other vendors cover the need.
+- [x] **Marketplace trust:** does a marketplace listing make a plugin's signing keys trusted? Decided: no. A human confirms each third-party key (or names it with `--trust-key` or `jtm trust add`); later rotations signed by a trusted key are accepted without a prompt. First-party plugins stay trusted through the embedded root keys, and their key rotations never need user action (sections 7, 9 and 16). \[M9\]
 - [x] **Name availability:** the crate name `jtm` is taken on crates.io by an unrelated crypto library (Just The Math, last released September 2025). Decided: publish the crate as jtm-cli with a binary named jtm. winget IDs, Scoop buckets and Homebrew taps are namespaced by publisher, so they are fine; check homebrew-core before submitting there. \[M0\]
 
 ## 18. Task breakdown
