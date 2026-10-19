@@ -213,6 +213,10 @@ pub enum JtmError {
     #[error("`{tool}` is not available for platform `{platform}`")]
     PlatformUnsupported { tool: String, platform: String },
 
+    /// The machine jtm runs on is not one of the v1 platforms.
+    #[error("this machine ({host}) is not a supported platform")]
+    HostUnsupported { host: String },
+
     #[error("network error fetching {url}: {message}")]
     Network {
         url: String,
@@ -303,7 +307,9 @@ impl JtmError {
             JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
-            JtmError::PlatformUnsupported { .. } => ErrorCode::PlatformUnsupported,
+            JtmError::PlatformUnsupported { .. } | JtmError::HostUnsupported { .. } => {
+                ErrorCode::PlatformUnsupported
+            }
             JtmError::Network { .. } => ErrorCode::Network,
             JtmError::Offline { .. } => ErrorCode::Offline,
             JtmError::SignatureInvalid { .. } => ErrorCode::SignatureInvalid,
@@ -364,6 +370,7 @@ impl JtmError {
                 ("tool", tool.as_str().into()),
                 ("platform", platform.as_str().into()),
             ]),
+            JtmError::HostUnsupported { host } => obj([("host", host.as_str().into())]),
             JtmError::Network { url, .. } => obj([("url", url.as_str().into())]),
             JtmError::Offline { action } => obj([("action", action.as_str().into())]),
             JtmError::SignatureInvalid { file, .. } => obj([("file", file.as_str().into())]),
