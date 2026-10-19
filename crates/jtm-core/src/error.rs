@@ -37,7 +37,7 @@ pub enum ExitCode {
 
 impl ExitCode {
     /// Every exit code, in numeric order.
-    pub const ALL: &'static [ExitCode] = &[
+    pub const ALL: &[ExitCode] = &[
         ExitCode::Success,
         ExitCode::Internal,
         ExitCode::Usage,
@@ -94,7 +94,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every error code, in declaration order.
-    pub const ALL: &'static [ErrorCode] = &[
+    pub const ALL: &[ErrorCode] = &[
         ErrorCode::Usage,
         ErrorCode::ToolUnknown,
         ErrorCode::VersionNotFound,
