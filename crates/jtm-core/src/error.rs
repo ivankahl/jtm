@@ -495,6 +495,24 @@ impl JtmError {
     }
 }
 
+impl From<jtm_plugin::AliasError> for JtmError {
+    fn from(err: jtm_plugin::AliasError) -> Self {
+        use jtm_plugin::AliasError as A;
+        match err {
+            A::Unknown { tool, alias } => JtmError::AliasUnknown { tool, alias },
+            A::NoMatch {
+                tool,
+                alias,
+                variant,
+            } => JtmError::VersionNotFound {
+                tool,
+                spec: format!("{variant}:{alias}"),
+            },
+            A::ScriptUnsupported { .. } => JtmError::internal(err.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,6 +693,28 @@ mod tests {
         let details = Value::Object(err.details());
         assert_eq!(details["origin"], "plugins/bad/plugin.toml");
         assert_eq!(details["problems"][0]["path"], "display_name");
+    }
+
+    #[test]
+    fn alias_errors_map_to_not_found_codes() {
+        use jtm_plugin::AliasError as A;
+        let unknown = JtmError::from(A::Unknown {
+            tool: "demo".into(),
+            alias: "stable".into(),
+        });
+        assert_eq!(unknown.code(), "E_ALIAS_UNKNOWN");
+        let no_match = JtmError::from(A::NoMatch {
+            tool: "demo".into(),
+            alias: "lts".into(),
+            variant: "zulu".into(),
+        });
+        assert_eq!(no_match.code(), "E_VERSION_NOT_FOUND");
+        assert_eq!(no_match.details()["spec"], "zulu:lts");
+        let script = JtmError::from(A::ScriptUnsupported {
+            tool: "demo".into(),
+            alias: "custom".into(),
+        });
+        assert_eq!(script.code(), "E_INTERNAL");
     }
 
     #[test]
