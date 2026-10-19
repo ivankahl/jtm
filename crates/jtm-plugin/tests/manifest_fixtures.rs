@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use jtm_plugin::manifest::{Alias, HomeSubdir, InteropParser, Manifest, Scheme, StripComponents};
+use jtm_plugin::manifest::{Alias, InteropParser, Manifest, Scheme, StripComponents};
 
 fn fixtures(kind: &str) -> Vec<PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -70,7 +70,6 @@ fn java_style_manifest_uses_variants_and_per_os_layout() {
     assert!(!m.has_variant("default"));
     assert_eq!(m.aliases["lts"], Alias::IndexTag { tag: "lts".into() });
     assert_eq!(m.layout.strip_components, StripComponents::Auto);
-    assert!(matches!(m.layout.home_subdir, Some(HomeSubdir::PerOs(_))));
     assert_eq!(m.layout.home_subdir_for("macos"), Some("Contents/Home"));
     assert_eq!(m.layout.home_subdir_for("linux"), None);
     assert_eq!(m.interop[0].mapping["tem"], "temurin");
@@ -130,6 +129,20 @@ fn errors_are_readable() {
     .unwrap();
     let err = Manifest::parse(&text).unwrap_err().to_string();
     assert!(err.contains("may need a newer jtm"), "{err}");
+}
+
+#[test]
+fn home_subdir_string_form_explains_the_table_form() {
+    let text = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/manifests/invalid/layout-home-subdir-string.toml"),
+    )
+    .unwrap();
+    let err = Manifest::parse(&text).unwrap_err().to_string();
+    assert!(
+        err.contains("home_subdir = { macos = \"Contents/Home\" }"),
+        "{err}"
+    );
 }
 
 #[test]

@@ -230,7 +230,7 @@ jtm-plugin-maven/
 | `[versions]` | Yes | `scheme` (`java`, `maven`, `semver-loose`, or `script`), `default_variant`, `default_alias`, `variants`, `include_prereleases` |
 | `[aliases]` | No | Named aliases and how each resolves: `highest`, `index-tag`, `fixed`, or `script` |
 | `[index]` | Yes | `url` template, `signing_keys` (Ed25519 public keys), `format` |
-| `[layout]` | Yes | How to find the tool home inside the archive: `strip_components` or `auto`, per-OS `home_subdir` (for example `Contents/Home` on macOS JDKs), `bin_dirs` |
+| `[layout]` | Yes | How to find the tool home inside the archive: `strip_components` or `auto`, per-OS `home_subdir` table keyed by `windows`, `macos` or `linux` (for example `home_subdir = { macos = "Contents/Home" }` for JDKs), `bin_dirs` |
 | `[executables]` | Yes | Executables the tool provides, per OS, used by which and doctor checks (`mvn` and `mvn.cmd`) |
 | `[env]` | No | Variables to set when active, using `{home}` and `{bin}` placeholders, for example `JAVA_HOME = "{home}"` |
 | `[requires]` | No | Runtime dependencies, for example Maven requires `java >= 8`; used for warnings, never auto-installs |
@@ -721,7 +721,7 @@ The five v1 tools ship as ordinary plugins embedded in the binary, which proves 
 
 ### Notes per plugin
 
-- **java:** macOS archives set `home_subdir = "Contents/Home"`. Interop with `.sdkmanrc`, `.tool-versions` and `.java-version`.
+- **java:** macOS archives need `home_subdir = { macos = "Contents/Home" }`. Interop with `.sdkmanrc`, `.tool-versions` and `.java-version`.
 - **maven, gradle, kotlin, spring-boot-cli:** their archives are platform-independent, so each publishes a single index with `"platform": "any"`, which the binding check accepts on every platform. `[requires] java` declares the minimum Java version, for example 17 for Spring Boot CLI 3.x, and produces a warning, never an automatic install.
 - **gradle:** jtm installs Gradle distributions, using the wrapper's version as a fallback pin when a project has one (section 6, rule 5). Projects with `gradlew` keep working unchanged.
 

@@ -1,4 +1,4 @@
-# expect: layout.home_subdir
+# expect: layout.home_subdir.macos
 schema = 1
 name = "demo"
 display_name = "Demo Tool"
@@ -21,7 +21,7 @@ format = 1
 [layout]
 strip_components = 1
 bin_dirs = ["bin"]
-home_subdir = "Contents\\Home"
+home_subdir = { macos = "Contents\\Home" }
 
 [executables]
 unix = ["demo"]

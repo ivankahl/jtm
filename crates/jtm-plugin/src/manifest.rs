@@ -120,17 +120,17 @@ pub struct Index {
 pub struct Layout {
     #[serde(default)]
     pub strip_components: StripComponents,
-    pub home_subdir: Option<HomeSubdir>,
+    /// The tool home inside the archive per OS, keyed by the names in [`OS_NAMES`], such as
+    /// `macos = "Contents/Home"`.
+    #[serde(default)]
+    pub home_subdir: BTreeMap<String, String>,
     pub bin_dirs: Vec<String>,
 }
 
 impl Layout {
     /// The `home_subdir` that applies on `os`, if any.
     pub fn home_subdir_for(&self, os: &str) -> Option<&str> {
-        match self.home_subdir.as_ref()? {
-            HomeSubdir::All(dir) => Some(dir),
-            HomeSubdir::PerOs(dirs) => dirs.get(os).map(String::as_str),
-        }
+        self.home_subdir.get(os).map(String::as_str)
     }
 }
 
@@ -143,15 +143,6 @@ pub enum StripComponents {
     #[default]
     Auto,
     Count(u32),
-}
-
-// SPEC-QUESTION: section 15 writes `home_subdir = "Contents/Home"` for macOS only, while
-// section 7 calls it per-OS. Both a plain string (every OS) and an OS-keyed table are accepted.
-/// The tool home inside the extracted archive.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HomeSubdir {
-    All(String),
-    PerOs(BTreeMap<String, String>),
 }
 
 /// `[executables]`: file names per OS. `macos` and `linux` take precedence over `unix`.
@@ -440,18 +431,12 @@ impl Manifest {
 
     fn validate_layout(&self, p: &mut Problems) {
         let layout = &self.layout;
-        match &layout.home_subdir {
-            None => {}
-            Some(HomeSubdir::All(dir)) => check_relative_path(p, "layout.home_subdir", dir, false),
-            Some(HomeSubdir::PerOs(dirs)) => {
-                for (os, dir) in dirs {
-                    let path = format!("layout.home_subdir.{}", quote_key(os));
-                    if OS_NAMES.contains(&os.as_str()) {
-                        check_relative_path(p, &path, dir, false);
-                    } else {
-                        p.push(path, unknown_os(os));
-                    }
-                }
+        for (os, dir) in &layout.home_subdir {
+            let path = format!("layout.home_subdir.{}", quote_key(os));
+            if OS_NAMES.contains(&os.as_str()) {
+                check_relative_path(p, &path, dir, false);
+            } else {
+                p.push(path, unknown_os(os));
             }
         }
         if layout.bin_dirs.is_empty() {
@@ -693,6 +678,11 @@ fn toml_error(text: &str, error: &toml::de::Error, path: &str) -> ManifestError 
         }
         _ => path.to_owned(),
     };
+    let message = if path == "layout.home_subdir" {
+        format!("{message}; set it per OS, such as `home_subdir = {{ macos = \"Contents/Home\" }}`")
+    } else {
+        message
+    };
     single(&path, message, line)
 }
 
@@ -879,35 +869,6 @@ impl<'de> Deserialize<'de> for StripComponents {
                 } else {
                     Err(E::invalid_value(serde::de::Unexpected::Str(v), &self))
                 }
-            }
-        }
-        deserializer.deserialize_any(Visitor)
-    }
-}
-
-impl<'de> Deserialize<'de> for HomeSubdir {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = HomeSubdir;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a relative path, or a table of paths keyed by OS")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(HomeSubdir::All(v.to_owned()))
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut dirs = BTreeMap::new();
-                while let Some((os, dir)) = map.next_entry::<String, String>()? {
-                    dirs.insert(os, dir);
-                }
-                Ok(HomeSubdir::PerOs(dirs))
             }
         }
         deserializer.deserialize_any(Visitor)
