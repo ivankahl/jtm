@@ -21,6 +21,7 @@ jtm-security = { path = "crates/jtm-security" }
 assert_cmd = "2.2"
 clap = { version = "4.6", features = ["derive"] }
 insta = { version = "1.49", features = ["json", "redactions"] }
+proptest = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 thiserror = "2.0"

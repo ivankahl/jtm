@@ -9,6 +9,10 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+thiserror.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
