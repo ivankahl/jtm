@@ -1,3 +1,116 @@
 //! The `jtm` command-line interface.
 
-fn main() {}
+mod cli;
+mod logging;
+mod output;
+
+use std::ffi::OsString;
+use std::io::{self, IsTerminal, Write};
+use std::process::ExitCode;
+
+use clap::Parser;
+use clap::error::ErrorKind;
+use jtm_core::{Context, ExitCode as JtmExitCode, GlobalFlags, JtmError, Terminal};
+use serde::Serialize;
+
+use crate::cli::Cli;
+use crate::output::{Format, Human, JTM_VERSION, Outcome, Renderer};
+
+#[derive(Debug, Serialize)]
+struct VersionData {
+    version: &'static str,
+}
+
+impl Human for VersionData {
+    fn render_human(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(out, "jtm {}", self.version)
+    }
+}
+
+fn main() -> ExitCode {
+    let args: Vec<OsString> = std::env::args_os().collect();
+
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(cli) => cli,
+        // Usage errors honour `--json` even though parsing failed.
+        Err(err) if wants_json(&args) && !is_informational(err.kind()) => {
+            return fail(
+                &mut Renderer::stdio(Format::Json),
+                "jtm",
+                &usage_error(&err),
+            );
+        }
+        Err(err) => {
+            let _ = err.print();
+            return ExitCode::from(u8::try_from(err.exit_code()).unwrap_or(1));
+        }
+    };
+
+    let flags = GlobalFlags::from(&cli.global);
+    let format = if flags.json {
+        Format::Json
+    } else {
+        Format::Human
+    };
+    let mut renderer = Renderer::stdio(format);
+    let terminal = Terminal {
+        stdin: io::stdin().is_terminal(),
+        stderr: io::stderr().is_terminal(),
+    };
+    let ctx = match Context::resolve(&flags, |key| std::env::var_os(key), terminal) {
+        Ok(ctx) => ctx,
+        Err(err) => return fail(&mut renderer, "jtm", &err),
+    };
+    logging::init(&ctx);
+    tracing::debug!(?ctx, "resolved context");
+
+    if cli.version {
+        let outcome = Outcome {
+            command: "version",
+            changed: false,
+            data: VersionData {
+                version: JTM_VERSION,
+            },
+            warnings: Vec::new(),
+        };
+        let _ = renderer.success(&outcome);
+        return JtmExitCode::Success.into();
+    }
+    fail(
+        &mut renderer,
+        "jtm",
+        &JtmError::usage("no command given; see `jtm --help`"),
+    )
+}
+
+fn fail<O: Write, E: Write>(
+    renderer: &mut Renderer<O, E>,
+    command: &str,
+    err: &JtmError,
+) -> ExitCode {
+    let _ = renderer.failure(command, err);
+    err.exit_code().into()
+}
+
+/// Whether `--json` appears before any `--` separator.
+fn wants_json(args: &[OsString]) -> bool {
+    args.iter()
+        .skip(1)
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--json")
+}
+
+fn is_informational(kind: ErrorKind) -> bool {
+    matches!(kind, ErrorKind::DisplayHelp | ErrorKind::DisplayVersion)
+}
+
+fn usage_error(err: &clap::Error) -> JtmError {
+    let rendered = err.render().to_string();
+    let first_line = rendered.lines().next().unwrap_or_default();
+    JtmError::usage(
+        first_line
+            .strip_prefix("error: ")
+            .unwrap_or(first_line)
+            .trim(),
+    )
+}

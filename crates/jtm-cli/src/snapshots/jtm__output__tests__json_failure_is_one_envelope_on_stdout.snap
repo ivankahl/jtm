@@ -1,0 +1,19 @@
+---
+source: crates/jtm-cli/src/output.rs
+expression: value
+---
+{
+  "ok": false,
+  "command": "install",
+  "error": {
+    "code": "E_HASH_MISMATCH",
+    "message": "hash mismatch for https://example.test/a.zip: expected aa, got bb",
+    "retryable": false,
+    "details": {
+      "expected": "aa",
+      "actual": "bb",
+      "url": "https://example.test/a.zip"
+    }
+  },
+  "jtm_version": "[version]"
+}
