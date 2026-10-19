@@ -123,7 +123,7 @@ pub fn select(copies: Vec<IndexCopy>, sel: Selection<'_>) -> Result<Option<Selec
 fn verify_copy(copy: &IndexCopy, sel: Selection<'_>) -> Result<(LoadedIndex, Accepted)> {
     let subject = Subject {
         file: sel.file,
-        plugin: Some(sel.request.plugin),
+        plugin: sel.request.plugin,
     };
     let loaded = index::load(&copy.data, &copy.signature, sel.keyring, subject, sel.now)?;
     let accepted = check_index(

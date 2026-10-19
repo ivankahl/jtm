@@ -104,15 +104,10 @@ impl FromStr for PublicKey {
     }
 }
 
-/// Which plugins a key may sign indices for.
+/// Which plugins a key may sign for. Every trusted key is limited to named plugins; there is no
+/// wildcard.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Scope {
-    /// Any signed file. Only root keys, which sign `keys.json` and nothing else, use it; a key a
-    /// user or `keys.json` adds is always limited to named plugins.
-    Any,
-    /// The named plugins only.
-    Plugins(BTreeSet<String>),
-}
+pub struct Scope(BTreeSet<String>);
 
 impl Scope {
     /// A scope of the given plugin names, each checked as a plugin name.
@@ -121,17 +116,21 @@ impl Scope {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        plugin_set(names).map(Scope::Plugins)
+        plugin_set(names).map(Scope)
     }
 
-    /// Whether a signature for `subject` is within this scope. `None` is a file that belongs to
-    /// no plugin, such as `keys.json`, which only [`Scope::Any`] covers.
-    pub fn covers(&self, subject: Option<&str>) -> bool {
-        match (self, subject) {
-            (Scope::Any, _) => true,
-            (Scope::Plugins(names), Some(plugin)) => names.contains(plugin),
-            (Scope::Plugins(_), None) => false,
-        }
+    /// A scope of names already checked, such as those read back from `trust.json`.
+    pub(crate) fn from_set(names: BTreeSet<String>) -> Scope {
+        Scope(names)
+    }
+
+    /// Whether a signature on a file belonging to `plugin` is within this scope.
+    pub fn covers(&self, plugin: &str) -> bool {
+        self.0.contains(plugin)
+    }
+
+    pub fn names(&self) -> &BTreeSet<String> {
+        &self.0
     }
 }
 
@@ -173,14 +172,14 @@ impl TrustedKey {
 /// `threshold` distinct keys of the group, each in scope, signed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyGroup {
-    /// Where the keys come from, such as `root`, `keys.json` or `user trust store`, for messages.
+    /// Where the keys come from, such as a plugin's signing keys, its keys file or the user trust store, for messages.
     pub origin: String,
     pub keys: Vec<TrustedKey>,
     pub threshold: u32,
 }
 
 /// Every group of keys trusted for one verification. A file is accepted when any one group
-/// accepts it, so a key a user trusts never needs the co-signatures `keys.json` requires.
+/// accepts it, so a key a user trusts never needs the co-signatures a keys file requires.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Keyring {
     pub groups: Vec<KeyGroup>,
@@ -232,11 +231,9 @@ mod tests {
     #[test]
     fn scopes_name_valid_plugins() {
         let scope = Scope::plugins(["java", "acme/flyway"]).unwrap();
-        assert!(scope.covers(Some("java")));
-        assert!(scope.covers(Some("acme/flyway")));
-        assert!(!scope.covers(Some("maven")));
-        assert!(!scope.covers(None), "a plugin scope never covers keys.json");
-        assert!(Scope::Any.covers(None));
+        assert!(scope.covers("java"));
+        assert!(scope.covers("acme/flyway"));
+        assert!(!scope.covers("maven"));
         assert!(Scope::plugins(["Java"]).is_err());
         assert!(Scope::plugins(["*"]).is_err());
         assert!(Scope::plugins(Vec::<String>::new()).is_err());

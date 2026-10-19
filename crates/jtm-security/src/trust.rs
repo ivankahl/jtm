@@ -5,7 +5,7 @@
 //! {
 //!   "format": 1,
 //!   "keys": [{ "key": "RW...", "scope": ["acme/flyway"], "added": "2026-10-19T03:00:00Z" }],
-//!   "keys_json": { "sequence": 7, "sha256": "..." },
+//!   "keys_files": { "java": { "sequence": 7, "sha256": "..." } },
 //!   "indices": { "java": { "linux-x64": { "sequence": 412, "sha256": "...", "source": "remote" } } }
 //! }
 //! ```
@@ -61,7 +61,7 @@ pub struct Seen {
     pub sequence: u64,
     /// Lowercase hex SHA-256 of the file's bytes.
     pub sha256: String,
-    /// Where the accepted copy came from. Absent for `keys.json`.
+    /// Where the accepted copy came from. Absent for keys files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceKind>,
 }
@@ -78,7 +78,9 @@ pub struct UserKey {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrustState {
     pub keys: Vec<UserKey>,
-    pub keys_json: Option<Seen>,
+    /// Newest keys file seen per plugin. First-party plugins share one file, recorded under
+    /// each of them.
+    pub keys_files: BTreeMap<String, Seen>,
     /// Highest sequence seen per plugin, then per platform.
     pub indices: BTreeMap<String, BTreeMap<String, Seen>>,
 }
@@ -99,15 +101,22 @@ impl TrustState {
         record(slot, seen)
     }
 
-    /// Records an accepted `keys.json`.
-    pub fn record_keys_json(&mut self, seen: Seen) -> bool {
-        match &self.keys_json {
+    /// Records an accepted keys file for `plugin`.
+    pub fn record_keys_file(&mut self, plugin: &str, seen: Seen) -> bool {
+        match self.keys_files.get(plugin) {
             Some(old) if old.sequence >= seen.sequence => false,
             _ => {
-                self.keys_json = Some(seen);
+                self.keys_files.insert(plugin.to_owned(), seen);
                 true
             }
         }
+    }
+
+    /// Whether the user trusts `key` for `plugin`.
+    pub fn trusts(&self, key: &PublicKey, plugin: &str) -> bool {
+        self.keys
+            .iter()
+            .any(|k| k.key == *key && k.scope.contains(plugin))
     }
 
     /// Adds `key` for `scope`, merging with any scopes it already has. Returns whether anything
@@ -158,7 +167,7 @@ impl TrustState {
                 .iter()
                 .map(|k| TrustedKey {
                     key: k.key.clone(),
-                    scope: Scope::Plugins(k.scope.clone()),
+                    scope: Scope::from_set(k.scope.clone()),
                     expires: None,
                 })
                 .collect(),
@@ -189,7 +198,7 @@ impl TrustState {
         }
         Ok(TrustState {
             keys,
-            keys_json: raw.keys_json,
+            keys_files: raw.keys_files,
             indices: raw.indices,
         })
     }
@@ -207,7 +216,7 @@ impl TrustState {
                     added: k.added.to_string(),
                 })
                 .collect(),
-            keys_json: self.keys_json.clone(),
+            keys_files: self.keys_files.clone(),
             indices: self.indices.clone(),
         };
         let mut out = serde_json::to_vec_pretty(&raw).unwrap_or_default();
@@ -315,8 +324,8 @@ struct RawTrust {
     format: u64,
     #[serde(default)]
     keys: Vec<RawKey>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    keys_json: Option<Seen>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    keys_files: BTreeMap<String, Seen>,
     #[serde(default)]
     indices: BTreeMap<String, BTreeMap<String, Seen>>,
 }
@@ -353,11 +362,14 @@ mod tests {
         let key = TestKey::generate();
         let mut state = TrustState::default();
         state.add_key(key.public(), scope(&["acme/flyway", "demo"]), NOW);
-        state.record_keys_json(Seen {
-            sequence: 3,
-            sha256: "aa".into(),
-            source: None,
-        });
+        state.record_keys_file(
+            "demo",
+            Seen {
+                sequence: 3,
+                sha256: "aa".into(),
+                source: None,
+            },
+        );
         state.record_index("demo", "linux-x64", seen(7, "bb", SourceKind::Remote));
         let json = state.to_json();
         let text = String::from_utf8(json.clone()).unwrap();
@@ -391,8 +403,9 @@ mod tests {
         assert_eq!(state.seen_index("demo", "linux-x64").unwrap().sha256, "d");
         assert_eq!(state.seen_index("demo", "macos-x64"), None);
 
-        assert!(state.record_keys_json(seen(2, "k", SourceKind::Remote)));
-        assert!(!state.record_keys_json(seen(1, "j", SourceKind::Remote)));
+        assert!(state.record_keys_file("demo", seen(2, "k", SourceKind::Remote)));
+        assert!(!state.record_keys_file("demo", seen(1, "j", SourceKind::Remote)));
+        assert!(state.record_keys_file("other", seen(1, "j", SourceKind::Remote)));
     }
 
     #[test]
@@ -423,9 +436,10 @@ mod tests {
         state.add_key(key.public(), scope(&["demo"]), NOW);
         let group = state.user_group();
         assert_eq!(group.threshold, 1);
-        assert!(group.keys[0].scope.covers(Some("demo")));
-        assert!(!group.keys[0].scope.covers(Some("other")));
-        assert!(!group.keys[0].scope.covers(None));
+        assert!(group.keys[0].scope.covers("demo"));
+        assert!(!group.keys[0].scope.covers("other"));
+        assert!(state.trusts(&key.public(), "demo"));
+        assert!(!state.trusts(&key.public(), "other"));
         assert_eq!(group.keys[0].expires, None);
     }
 

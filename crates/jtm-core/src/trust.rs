@@ -208,21 +208,35 @@ mod tests {
     }
 
     #[test]
-    fn trusted_keys_verify_indices_for_their_scope_only() {
+    fn trust_add_confirms_a_plugins_signing_key_for_that_plugin_only() {
         let home = tempfile::tempdir().unwrap();
         let dirs = dirs(&home);
         let key = TestKey::generate();
-        add_key(&dirs, &key.public_str(), &scopes(&["demo"]), NOW).unwrap();
-        let state = TrustState::load(&trust_path(&dirs)).unwrap();
-        let keyring = crate::indices::keyring_for("demo", &[], None, &state).unwrap();
+        let manifest_keys = [key.public_str()];
+        let anchors = |plugin: &str| {
+            let state = TrustState::load(&trust_path(&dirs)).unwrap();
+            jtm_security::TrustAnchors::confirmed(plugin, &manifest_keys, 1, &state)
+                .map(|a| jtm_security::plugin_keyring(&a, None, &state))
+        };
+        let err = JtmError::from(anchors("acme/demo").unwrap_err());
+        assert_eq!(err.code(), "E_KEY_UNTRUSTED");
+        assert_eq!(
+            err.details()["resolve"],
+            format!("jtm trust add {} --scope acme/demo", key.public_str())
+        );
+
+        add_key(&dirs, &key.public_str(), &scopes(&["acme/demo"]), NOW).unwrap();
+        let keyring = anchors("acme/demo").unwrap();
         let data = b"{}";
         let sig = key.sign(data);
         let subject = |plugin| jtm_security::Subject {
             file: "index.json",
-            plugin: Some(plugin),
+            plugin,
         };
-        jtm_security::verify(data, &sig, &keyring, subject("demo"), NOW).unwrap();
-        let err = jtm_security::verify(data, &sig, &keyring, subject("other"), NOW).unwrap_err();
+        jtm_security::verify(data, &sig, &keyring, subject("acme/demo"), NOW).unwrap();
+        let err =
+            jtm_security::verify(data, &sig, &keyring, subject("acme/other"), NOW).unwrap_err();
         assert!(matches!(err, jtm_security::Error::KeyUntrusted { .. }));
+        assert!(anchors("acme/other").is_err());
     }
 }

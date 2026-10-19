@@ -55,8 +55,10 @@ v1 stays narrow so the plugin API and the security model are proven on five JVM 
 | Pin | A tool and spec recorded for a project in a pin file |
 | Pin file | `.jtm.toml` (native) or an interop file such as `.sdkmanrc` |
 | Lockfile | `jtm.lock`, the exact resolved version, URL and hash per tool and platform for a project |
-| Root key | The offline Ed25519 key that certifies index-signing keys |
-| Trust store | The set of public keys jtm accepts, embedded in the binary or added explicitly by the user |
+| Signing keys | A plugin's trust anchors: the Ed25519 public keys in its manifest's `[index] signing_keys`, which sign its indices directly or sign its keys file |
+| Keys file | A file signed by a plugin's signing keys that delegates to short-lived index keys, each with a scope and an expiry; the first-party plugins share one, `keys.json` |
+| Root key | One of jtm's offline Ed25519 keys. They are the signing keys of every first-party plugin and of the marketplace |
+| Trust store | The keys the user has trusted, each for named plugins, in `<JTM_HOME>/state/trust.json` |
 | Install dir | One extracted, verified version on disk, for example `tools/java/temurin-21.0.5+11` |
 | Current link | A junction (Windows) or symlink (Unix) at `current/<tool>` pointing at the default install; its `bin` dir is on `PATH` and `[env]` variables such as `JAVA_HOME` point at it |
 
@@ -229,7 +231,7 @@ jtm-plugin-maven/
 | top level | Yes | `schema` (manifest version, starts at 1), `name`, `display_name`, `description`, `homepage`, `license`, `min_jtm` |
 | `[versions]` | Yes | `scheme` (`java`, `maven`, `semver-loose`, or `script`), `default_variant`, `default_alias` (the alias a bare `<tool>` resolves to; without one, the highest version), `variants`, `include_prereleases` |
 | `[aliases]` | No | Named aliases and how each resolves: `highest`, `index-tag`, `fixed`, or `script` |
-| `[index]` | Yes | `url` template, `signing_keys` (Ed25519 public keys), `format` |
+| `[index]` | Yes | `url` template, `signing_keys` (Ed25519 public keys: the plugin's trust anchors), `threshold` (how many signing keys must sign; default 1), `keys_url` (optional `https` URL of a keys file signed by the signing keys), `format` |
 | `[layout]` | Yes | How to find the tool home inside the archive: `strip_components`, a number of leading directories to strip or `"auto"` (strip a single top-level directory, the default), per-OS `home_subdir` table keyed by `windows`, `macos` or `linux` (for example `home_subdir = { macos = "Contents/Home" }` for JDKs), `bin_dirs` |
 | `[executables]` | Yes | Executables the tool provides, per OS, used by which and doctor checks (`mvn` and `mvn.cmd`) |
 | `[env]` | No | Variables to set when active, using `{home}` and `{bin}` placeholders, for example `JAVA_HOME = "{home}"` |
@@ -300,10 +302,13 @@ Plugin hooks are written in Lua, run by the Luau dialect through the `mlua` crat
 
 - A plugin's identity is its source URL plus a commit SHA or tag. Branch names are rejected.
 - The installed plugin's manifest hash is recorded in user state and in `jtm.lock`, so a changed manifest is detected.
-- A plugin's signing keys are trusted only after an explicit decision: a human answering the prompt, `--trust-key`, or `jtm trust add`. Being listed in the signed marketplace is evidence shown in that prompt, never trust on its own, and `--yes` never answers it. Without a terminal, an install that needs an untrusted key fails with exit 7 (`E_KEY_UNTRUSTED`) and names the command that would trust it.
+- First-party and third-party plugins use one trust model (section 9). A plugin's `signing_keys` are its trust anchors: they sign its indices, or sign a keys file that delegates to short-lived index keys. Only how the anchors become trusted differs.
+- A first-party plugin's signing keys are trusted because its manifest is compiled into jtm; installing jtm is that decision.
+- Any other plugin's signing keys are trusted only after an explicit decision: a human answering the prompt, `--trust-key`, or `jtm trust add`. Being listed in the signed marketplace is evidence shown in that prompt, never trust on its own, and `--yes` never answers it. Without a terminal, an install that needs an untrusted key fails with exit 7 (`E_KEY_UNTRUSTED`) and names the command that would trust it.
 - Trust is per plugin: a key confirmed for `acme/flyway` is scoped to `acme/flyway` and can never sign another plugin's index.
 - A change to a trusted plugin's `signing_keys` is accepted without a prompt when the new key list is signed by a key the user already trusts for that plugin (rotation). Any other change is refused with `E_KEY_CHANGED` until a human confirms it.
-- First-party plugins are trusted through the root keys embedded in jtm (section 9), so they never prompt, and their key rotations need no action from the user.
+- Delegated keys in a keys file change without any prompt for every plugin: the file is signed by the plugin's already-trusted signing keys.
+- First-party plugins never prompt, and their key rotations need no action from the user (section 9).
 
 ## 8. Version indices and distribution
 
@@ -351,6 +356,8 @@ Each plugin publishes one signed JSON index per platform; jtm embeds a snapshot 
 3. **Cache.** `<JTM_HOME>/cache/index/<plugin>/<platform>.json` plus `.minisig`, written atomically after verification.
 4. **Override.** Any URL or local path the user configures (below).
 
+A plugin's keys file, when its manifest sets `keys_url`, comes from the same kinds of source: embedded (the first-party `keys.json`), cached at `<JTM_HOME>/cache/index/<plugin>/keys.json`, or fetched from `keys_url`. The copy with the highest valid `sequence` is used. A keys file that is missing or fails verification only removes its delegated keys; the plugin's signing keys still verify indices they sign directly.
+
 At load time jtm verifies every available copy and uses the one with the highest valid `sequence`.
 
 ### Refresh policy
@@ -386,31 +393,34 @@ jtm never trusts a network location: an artifact is accepted only if its SHA-256
 
 ### Verification chain
 
-1. **Root key** (embedded public key, private key offline). Signs `keys.json`.
-2. **`keys.json`** lists the online keys allowed to sign indices, each with a scope (plugin names), a `sequence` and an `expires` date. It is distributed with the indices and verified against the root key.
-3. **Index key** (online, used by CI) signs each index file.
+1. **Signing keys** (the plugin's trust anchors, `[index] signing_keys` with `threshold`). For first-party plugins these are jtm's root keys: embedded in the binary, private keys offline. For every other plugin they are the author's keys, trusted once the user confirms them (section 7).
+2. **Keys file** (optional, at `[index] keys_url`) lists delegated index keys, each with a scope (plugin names) and an `expires` date, plus a file `sequence` and a `threshold`. It is verified against the signing keys before it is parsed. Delegated keys can never sign a keys file. The first-party plugins share one keys file, `keys.json`, published with the indices.
+3. **Index key** signs each index file: a signing key directly, or a delegated key from the keys file whose scope includes the plugin and which has not expired. For first-party plugins the delegated keys are held by CI.
 4. **Index file** is verified, then checked for plugin, platform, sequence and expiry.
 5. **Index entry** supplies the expected `size` and `sha256`.
 6. **Artifact** is hashed while streaming and rejected on any mismatch before extraction.
 
-Third-party plugins skip steps 1 and 2: their index keys come from the plugin manifest and are trusted only once a human confirms them, or `--trust-key` or `jtm trust add` names them (section 7). The marketplace entry is shown as evidence but grants nothing. Confirmed keys are stored, scoped to that plugin, in `<JTM_HOME>/state/trust.json` and recorded in `jtm.lock`.
+Every plugin follows this chain; a simple third-party plugin can skip step 2 and sign its indices with its signing key directly. A third-party plugin's signing keys count only once a human confirms them, or `--trust-key` or `jtm trust add` names them (section 7); the marketplace entry is shown as evidence but grants nothing. Confirmed keys are stored, scoped to that plugin, in `<JTM_HOME>/state/trust.json` and recorded in `jtm.lock`. When fewer confirmed signing keys than the manifest's `threshold` are trusted, loading fails with `E_KEY_UNTRUSTED`, and `details.resolve` names a key to trust.
+
+A key the user trusts for a plugin may also re-sign that plugin's indices on its own, so a company can vet and re-sign an internal mirror. A trusted signing key never counts toward this, so confirming signing keys cannot lower the manifest's `threshold`.
 
 ### Key roles
 
 | Role | Held by | Signs | Rotation |
 | --- | --- | --- | --- |
-| Root | Maintainers, offline (hardware token), threshold 2 of 3 | `keys.json` | New root embedded in a jtm release, cross-signed by the old root |
-| Index | CI (GitHub Actions secret in a protected environment) | First-party index files | New `keys.json` signed by root; old key removed |
+| Root | Maintainers, offline (hardware token), threshold 2 of 3 | `keys.json`, as the signing keys of every first-party plugin and of the marketplace | New root embedded in a jtm release, cross-signed by the old root |
+| Index | CI (GitHub Actions secret in a protected environment) | First-party index files and `marketplace.json` | New `keys.json` signed by root; old key removed |
 | Release | Maintainers, offline | jtm binaries and `SHA256SUMS` | Same as root |
-| Plugin author | Third-party maintainer | That plugin's index files | New key list signed by a key the user already trusts for the plugin (accepted without a prompt); otherwise `E_KEY_CHANGED` until a human confirms or runs `jtm trust add` |
+| Plugin signing key | Third-party maintainer | That plugin's index files, or its keys file | New key list signed by a key the user already trusts for the plugin (accepted without a prompt); otherwise `E_KEY_CHANGED` until a human confirms or runs `jtm trust add` |
+| Plugin index key | Third-party maintainer, optional | That plugin's index files | New keys file signed by the plugin's signing keys; no prompt |
 | User or company | The user | Re-signed internal indices | `jtm trust add` and `jtm trust remove` |
 
-**First-party rotation never breaks clients.**
+**Rotation never breaks clients.** The same rules apply to every plugin with a keys file; the first-party set is described here.
 
 - **Index keys** rotate by publishing a new `keys.json` with a higher `sequence`, signed by the root keys. Clients accept the new key without a prompt or a jtm release. During an overlap period, `keys.json` lists both the old and the new key, so indices signed by either verify. The old key is then removed or left to expire. Rollback checks on `keys.json` stop an older copy that still lists a removed key from being replayed.
 - **Root keys** rotate through a jtm release that embeds the new root keys. Until every supported release knows them, `keys.json` is cross-signed by the old and the new root keys, so older and newer releases both accept it.
 
-Signatures use minisign (Ed25519). Clients verify with the `minisign-verify` crate; the publishing tool signs with `minisign`. `keys.json` supports a `threshold` field from day one even if first-party starts at 1 of 1 for index keys.
+Signatures use minisign (Ed25519). Clients verify with the `minisign-verify` crate; the publishing tool signs with `minisign`. Keys files support a `threshold` field from day one even if first-party starts at 1 of 1 for index keys.
 
 **Index key custody in v1.** The index key is a GitHub Actions secret that only the publish workflow can read, through a protected environment that requires a maintainer's approval and runs only on the default branch. Index keys expire after 90 days through `keys.json`, so a leaked key has a short life. Because the offline root key certifies index keys, moving custody to a cloud KMS or hardware signer later is an ordinary key rotation with no client changes. Sigstore keyless signing would need client-side changes, so it is not planned.
 
@@ -508,6 +518,7 @@ generated_by = "jtm 0.1.0"
 name = "java"
 source = "builtin"
 manifest_sha256 = "<hex>"
+signing_keys = ["RWR..."]           # jtm's root keys, the same for every first-party plugin
 
 [[plugin]]
 name = "acme-flyway"
@@ -682,6 +693,7 @@ All state lives in per-user directories following each OS's conventions, and set
   locks/
 <cache>/
   index/<plugin>/<platform>.json(.minisig)
+  index/<plugin>/keys.json(.minisig)   # the plugin's keys file, when it has one
   downloads/<sha256>      # content-addressed archives
 ```
 
@@ -718,6 +730,8 @@ Project files can never set `security.*`, `network.*`, `[mirrors]`, `extract.*`,
 
 The five v1 tools ship as ordinary plugins embedded in the binary, which proves the plugin API before any third party depends on it; no line of core code may mention a specific tool.
 
+They also use the same trust model as any other plugin (section 9). Each manifest lists jtm's root keys as `signing_keys` with `threshold = 2` and points `keys_url` at the shared `keys.json`, whose CI-held index keys sign the indices. Their signing keys are pre-approved only because the manifests are compiled into jtm.
+
 | Plugin | Variants | Scheme | Aliases | Env | Executables on PATH |
 | --- | --- | --- | --- | --- | --- |
 | `java` | `temurin` (default), `corretto`, `zulu`, `liberica`, `microsoft`, `graalvm-community` | `java` | `lts` (highest version tagged `lts`), `latest` | `JAVA_HOME` | `java`, `javac`, `jar`, `jshell`, `javadoc`, `keytool`, `jlink`, `jpackage`, `jcmd`, `jfr` |
@@ -749,7 +763,7 @@ The generator stores SHA-256 for every entry regardless of what the vendor publi
 
 ## 16. Plugin marketplace
 
-Plugins are hosted by their authors on GitHub; the `jtm-dev/marketplace` repository is only a curated, signed index of them, built from one file per plugin submitted by pull request.
+Plugins are hosted by their authors on GitHub; the `jtm-dev/marketplace` repository is only a curated, signed index of them, built from one file per plugin submitted by pull request. It lists the first-party plugins too, with `source = "builtin"`, so `jtm plugin search`, `info`, yanking and `jtm doctor` treat every plugin alike.
 
 ### Entry file
 
@@ -785,7 +799,8 @@ tags = ["database", "migrations"]
 
 ### Publication
 
-- After merge, CI builds `marketplace.json` from all entries, signs it with an index key scoped to `marketplace`, and publishes it like a version index (sequence, expiry, rollback checks all apply).
+- After merge, CI builds `marketplace.json` from all entries, signs it with an index key scoped to `marketplace`, and publishes it like a version index (sequence, expiry, rollback checks all apply). The marketplace follows the same chain as a first-party plugin: its signing keys are jtm's root keys, and the `marketplace` scope in `keys.json` delegates to the index key. `marketplace` is reserved and cannot be a plugin name.
+- First-party entries are generated from the manifests compiled into jtm and are informational: adding, updating or trusting a first-party plugin never reads them.
 - The CLI only reads the signed `marketplace.json`, never raw repository files. It is not embedded in releases and is always fetched when needed, so `jtm plugin search`, `info`, `add <name>` and `update` need the network and fail with `E_OFFLINE` under `--offline`. Its highest `sequence` is kept in `<JTM_HOME>/state/trust.json` for rollback checks; no copy is cached.
 - Installed plugins keep working offline: their manifests, pinned keys and indices do not depend on the marketplace. `jtm doctor` checks installed plugins for yanked entries only when it can fetch `marketplace.json`, and says so when it cannot.
 
@@ -816,6 +831,7 @@ None of these block M0 or M1; each should be decided before the milestone named 
 - [x] **Oracle JDK:** Oracle JDK builds are excluded from v1; Temurin and the other vendors cover the need.
 - [x] **Marketplace trust:** does a marketplace listing make a plugin's signing keys trusted? Decided: no. A human confirms each third-party key (or names it with `--trust-key` or `jtm trust add`); later rotations signed by a trusted key are accepted without a prompt. First-party plugins stay trusted through the embedded root keys, and their key rotations never need user action (sections 7, 9 and 16). \[M9\]
 - [x] **Offline marketplace search:** decided: not supported. `marketplace.json` is not embedded in releases; marketplace commands need the network, while installed plugins work offline (section 16). \[M9\]
+- [x] **One trust model:** decided: first-party and third-party plugins share one model. Every manifest's `signing_keys` are the plugin's trust anchors, with an optional keys file of short-lived index keys; first-party manifests list jtm's root keys and share `keys.json`. Only how the anchors become trusted differs (sections 7 and 9). \[M2\]
 - [x] **Name availability:** the crate name `jtm` is taken on crates.io by an unrelated crypto library (Just The Math, last released September 2025). Decided: publish the crate as jtm-cli with a binary named jtm. winget IDs, Scoop buckets and Homebrew taps are namespaced by publisher, so they are fine; check homebrew-core before submitting there. \[M0\]
 
 ## 18. Task breakdown

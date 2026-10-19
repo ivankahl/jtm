@@ -22,6 +22,8 @@ signing_keys = [
   "RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB",
   "RWT3UMq5qchY8rkpYUH0BVM6S/kloG6vWzJ4M+IqwCluDlG83S056Fx2",
 ]
+threshold = 2
+keys_url = "https://github.com/jtm-dev/index/releases/latest/download/keys.json"
 format = 1
 
 [layout]

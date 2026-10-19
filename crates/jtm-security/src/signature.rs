@@ -21,8 +21,8 @@ pub const MAX_SIGNATURES: usize = 16;
 pub struct Subject<'a> {
     /// The file, such as `java-linux-x64.json`, for messages.
     pub file: &'a str,
-    /// The plugin the file belongs to, or `None` for `keys.json`.
-    pub plugin: Option<&'a str>,
+    /// The plugin the file belongs to. A keys file is verified for the plugin that fetched it.
+    pub plugin: &'a str,
 }
 
 /// A successful verification.
@@ -120,12 +120,7 @@ pub fn verify(
         .into_iter()
         .collect::<Vec<_>>()
         .join(", ");
-    let resolve = match subject.plugin {
-        Some(plugin) => format!("jtm trust add <public key> --scope {plugin}"),
-        // SPEC-QUESTION: nothing in section 9 lets a user trust a new root key; only a jtm
-        // release can, so there is no command to suggest.
-        None => "a jtm release that embeds this root key".to_owned(),
-    };
+    let resolve = format!("jtm trust add <public key> --scope {}", subject.plugin);
     Err(Error::KeyUntrusted {
         file: subject.file.to_owned(),
         key_id,
@@ -203,7 +198,7 @@ mod tests {
     fn subject() -> Subject<'static> {
         Subject {
             file: "demo-linux-x64.json",
-            plugin: Some("demo"),
+            plugin: "demo",
         }
     }
 
@@ -351,25 +346,6 @@ mod tests {
         let err = verify(DATA, &sig, &ring(vec![expiring]), subject(), NOW).unwrap_err();
         assert!(matches!(err, Error::SignatureInvalid { .. }), "{err:?}");
         assert!(err.to_string().contains("expired"), "{err}");
-    }
-
-    #[test]
-    fn plugin_scoped_keys_never_verify_keys_json() {
-        let key = TestKey::generate();
-        let sig = key.sign(DATA);
-        let keys_json = Subject {
-            file: "keys.json",
-            plugin: None,
-        };
-        let err = verify(
-            DATA,
-            &sig,
-            &ring(vec![group(&[&key], &["demo"], 1)]),
-            keys_json,
-            NOW,
-        )
-        .unwrap_err();
-        assert!(matches!(err, Error::KeyUntrusted { .. }), "{err:?}");
     }
 
     #[test]

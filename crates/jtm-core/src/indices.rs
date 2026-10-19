@@ -5,6 +5,13 @@
 //! verified and checked the same way, and the valid copy with the highest sequence is used. A
 //! copy that came over the network is saved to the cache, and the accepted sequence is recorded
 //! in `state/trust.json` for rollback protection.
+//!
+//! [`IndexLoader::keyring`] builds the keys an index is checked against. First-party and
+//! third-party plugins go through the same steps: the manifest's `signing_keys` are the
+//! plugin's trust anchors, an optional keys file at `keys_url` delegates to short-lived index
+//! keys, and keys the user trusts for the plugin may re-sign its indices. The only difference is
+//! that anchors in a manifest compiled into jtm are pre-approved, while any other plugin's
+//! anchors count only once the user has trusted them.
 
 use std::fs;
 use std::io;
@@ -12,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use jtm_security::select::{IndexCopy, Selection};
 use jtm_security::{
-    ExpiryPolicy, IndexFile, IndexRequest, KeyGroup, Keyring, KeysFile, PublicKey, Scope,
-    SourceKind, Timestamp, TrustState, TrustedKey, Warning,
+    ExpiryPolicy, IndexFile, IndexRequest, Keyring, KeysFile, SourceKind, Timestamp, TrustAnchors,
+    TrustState, Warning,
 };
 
 use crate::dirs::{Dirs, dir_name};
@@ -21,6 +28,31 @@ use crate::error::{JtmError, Result};
 
 /// Warning code when the network copy could not be fetched and a local copy was used.
 pub const W_INDEX_REFRESH_FAILED: &str = "W_INDEX_REFRESH_FAILED";
+/// Warning code when a plugin's keys file is unavailable or invalid, so only its anchors and
+/// the user's keys can verify its indices.
+pub const W_KEYS_FILE_UNAVAILABLE: &str = "W_KEYS_FILE_UNAVAILABLE";
+
+/// A plugin's signing keys, as its manifest's `[index]` table gives them.
+#[derive(Debug, Clone, Copy)]
+pub struct PluginKeys<'a> {
+    pub plugin: &'a str,
+    /// The trust anchors, `[index] signing_keys`.
+    pub signing_keys: &'a [String],
+    pub threshold: u32,
+    /// `[index] keys_url`, a keys file signed by the anchors.
+    pub keys_url: Option<&'a str>,
+    /// Whether the manifest is compiled into jtm, which pre-approves its anchors. Every other
+    /// plugin's anchors must be trusted by the user.
+    pub preapproved: bool,
+}
+
+/// A signed keys file compiled into the binary, identified by its URL.
+#[derive(Debug, Clone, Copy)]
+pub struct EmbeddedKeysFile {
+    pub url: &'static str,
+    pub data: &'static [u8],
+    pub signature: &'static [u8],
+}
 
 /// Fetches bytes over the network. Implemented by the HTTP client; tests use an in-memory map.
 pub trait Fetcher {
@@ -75,6 +107,7 @@ pub struct PluginIndex {
 pub struct IndexLoader<'a> {
     pub dirs: &'a Dirs,
     pub embedded: &'a [EmbeddedIndex],
+    pub embedded_keys: &'a [EmbeddedKeysFile],
     pub fetcher: Option<&'a dyn Fetcher>,
 }
 
@@ -83,6 +116,7 @@ impl std::fmt::Debug for IndexLoader<'_> {
         f.debug_struct("IndexLoader")
             .field("dirs", &self.dirs)
             .field("embedded", &self.embedded.len())
+            .field("embedded_keys", &self.embedded_keys.len())
             .field("fetcher", &self.fetcher.is_some())
             .finish()
     }
@@ -100,7 +134,124 @@ pub fn cache_path(dirs: &Dirs, plugin: &str, platform: &str) -> PathBuf {
         .join(format!("{platform}.json"))
 }
 
+/// `<cache>/index/<plugin>/keys.json`; the signature sits next to it as `.json.minisig`.
+pub fn keys_cache_path(dirs: &Dirs, plugin: &str) -> PathBuf {
+    dirs.index_cache().join(dir_name(plugin)).join("keys.json")
+}
+
 impl IndexLoader<'_> {
+    /// The keys that may sign `keys.plugin`'s indices, and any warnings about its keys file.
+    ///
+    /// Fails with `E_KEY_UNTRUSTED` when the plugin is not pre-approved and the user trusts
+    /// fewer of its anchors than its threshold. A keys file that cannot be fetched or does not
+    /// verify only removes its delegated keys, so it can never widen trust.
+    pub fn keyring(
+        &self,
+        keys: &PluginKeys<'_>,
+        options: &LoadOptions,
+    ) -> Result<(Keyring, Vec<Warning>)> {
+        let trust_file = trust_path(self.dirs);
+        let state = TrustState::load(&trust_file)?;
+        let anchors = if keys.preapproved {
+            TrustAnchors::preapproved(keys.plugin, keys.signing_keys, keys.threshold)?
+        } else {
+            TrustAnchors::confirmed(keys.plugin, keys.signing_keys, keys.threshold, &state)?
+        };
+        let mut warnings = Vec::new();
+        let keys_file = match keys.keys_url {
+            Some(url) => match self.load_keys_file(url, &anchors, &state, options)? {
+                Ok(file) => Some(file),
+                Err(reason) => {
+                    warnings.push(Warning {
+                        code: W_KEYS_FILE_UNAVAILABLE,
+                        message: format!(
+                            "using only the signing keys in the `{}` manifest: {reason}",
+                            keys.plugin
+                        ),
+                    });
+                    None
+                }
+            },
+            None => None,
+        };
+        Ok((
+            jtm_security::plugin_keyring(&anchors, keys_file.as_ref(), &state),
+            warnings,
+        ))
+    }
+
+    /// Finds the newest valid copy of the keys file at `url`, records it and caches it. The
+    /// inner error explains why no copy was usable; the outer one is a failure to write state.
+    fn load_keys_file(
+        &self,
+        url: &str,
+        anchors: &TrustAnchors,
+        state: &TrustState,
+        options: &LoadOptions,
+    ) -> Result<std::result::Result<KeysFile, String>> {
+        let plugin = anchors.plugin.as_str();
+        let cache_file = keys_cache_path(self.dirs, plugin);
+        let mut copies: Vec<IndexCopy> = self
+            .embedded_keys
+            .iter()
+            .filter(|e| e.url == url)
+            .map(|e| IndexCopy {
+                source: SourceKind::Embedded,
+                origin: "the embedded snapshot".to_owned(),
+                data: e.data.to_vec(),
+                signature: e.signature.to_vec(),
+            })
+            .collect();
+        copies.extend(read_local(&cache_file, SourceKind::Cache)?);
+        let mut problems = Vec::new();
+        if !options.offline
+            && (options.refresh || copies.is_empty())
+            && let Some(fetcher) = self.fetcher
+        {
+            match fetch_copy(fetcher, url, SourceKind::Remote) {
+                Ok(Some(copy)) => copies.push(copy),
+                Ok(None) => problems.push(format!("{url} was not found")),
+                Err(err) => problems.push(err.to_string()),
+            }
+        }
+
+        let mut best: Option<(IndexCopy, KeysFile)> = None;
+        for copy in copies {
+            let checked = KeysFile::load(&copy.data, &copy.signature, anchors, options.now)
+                .and_then(|file| {
+                    jtm_security::check_keys_file(&file, plugin, state)?;
+                    Ok(file)
+                });
+            match checked {
+                Ok(file)
+                    if best
+                        .as_ref()
+                        .is_none_or(|(_, b)| file.sequence > b.sequence) =>
+                {
+                    best = Some((copy, file));
+                }
+                Ok(_) => {}
+                Err(err) => problems.push(format!("{}: {err}", copy.origin)),
+            }
+        }
+        let Some((copy, file)) = best else {
+            if problems.is_empty() {
+                problems.push(format!("no copy of {url} is available"));
+            }
+            return Ok(Err(problems.join("; ")));
+        };
+
+        TrustState::update(&trust_path(self.dirs), |state| {
+            let seen = jtm_security::check_keys_file(&file, plugin, state)?;
+            let changed = state.record_keys_file(plugin, seen);
+            Ok(((), changed))
+        })?;
+        if copy.source == SourceKind::Remote {
+            write_cache(&cache_file, &copy.data, &copy.signature)?;
+        }
+        Ok(Ok(file))
+    }
+
     /// Gathers every available copy, verifies each against `keyring`, and returns the valid
     /// one with the highest sequence.
     pub fn load(
@@ -217,40 +368,6 @@ impl IndexLoader<'_> {
             warnings,
         })
     }
-}
-
-/// The keys trusted for `plugin`'s indices, each group able to accept an index on its own:
-/// the `keys.json` index keys (first-party plugins), the signing keys pinned in the plugin's
-/// manifest (third-party plugins), and keys the user added with `jtm trust add`.
-pub fn keyring_for(
-    plugin: &str,
-    manifest_keys: &[String],
-    keys_json: Option<&KeysFile>,
-    state: &TrustState,
-) -> Result<Keyring> {
-    let mut keyring = Keyring::new();
-    if let Some(keys) = keys_json {
-        keyring = keyring.with(keys.group());
-    }
-    if !manifest_keys.is_empty() {
-        let scope = Scope::plugins([plugin]).map_err(JtmError::internal)?;
-        let keys = manifest_keys
-            .iter()
-            .map(|k| {
-                Ok(TrustedKey {
-                    key: PublicKey::parse(k).map_err(|e| JtmError::internal(e.to_string()))?,
-                    scope: scope.clone(),
-                    expires: None,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        keyring = keyring.with(KeyGroup {
-            origin: format!("the `{plugin}` plugin manifest"),
-            keys,
-            threshold: 1,
-        });
-    }
-    Ok(keyring.with(state.user_group()))
 }
 
 /// Fills `{os}` and `{arch}` from a platform such as `linux-musl-x64` (`linux-musl`, `x64`).

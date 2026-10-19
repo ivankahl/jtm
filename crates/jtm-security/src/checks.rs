@@ -110,9 +110,9 @@ pub fn check_index(
     })
 }
 
-/// Refuses a `keys.json` older than one already seen. Returns what to record.
-pub fn check_keys_json(keys: &KeysFile, state: &TrustState) -> Result<Seen> {
-    if let Some(seen) = &state.keys_json {
+/// Refuses a keys file for `plugin` older than one already seen. Returns what to record.
+pub fn check_keys_file(keys: &KeysFile, plugin: &str, state: &TrustState) -> Result<Seen> {
+    if let Some(seen) = state.keys_files.get(plugin) {
         check_rollback(KEYS_FILE, seen, keys.sequence, &keys.sha256)?;
     }
     Ok(Seen {

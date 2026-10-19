@@ -1,5 +1,5 @@
-//! `keys.json`: the root-signed list of keys allowed to sign first-party indices (SPEC.md
-//! section 9).
+//! Keys files: a plugin's list of delegated, short-lived index keys, signed by the plugin's
+//! trust anchors (SPEC.md section 9).
 //!
 //! ```json
 //! {
@@ -12,54 +12,31 @@
 //! }
 //! ```
 //!
-//! The file is verified against the root keys embedded in jtm before it is parsed. `threshold`
-//! is how many distinct listed keys must sign each index; `sequence` grows with every publish
-//! so an old `keys.json`, which may still list a revoked key, can be refused (rollback checks
-//! live with the rest of the trust state).
+//! A plugin whose manifest sets `[index] keys_url` publishes one. It is verified against the
+//! plugin's trust anchors before it is parsed. `threshold` is how many distinct listed keys must
+//! sign each index; `sequence` grows with every publish so an old file, which may still list a
+//! revoked key, can be refused (rollback checks live with the rest of the trust state). The
+//! first-party plugins share one keys file signed by the jtm root keys, so `scope` names which
+//! of them each key may sign for; a key is only ever used for a plugin its scope names.
 
 use std::collections::BTreeSet;
 
 use serde::Deserialize;
 
+use crate::anchors::TrustAnchors;
 use crate::error::{Error, Result};
 use crate::key::{KeyGroup, PublicKey, Scope, TrustedKey};
 use crate::signature::{self, Subject, Verified};
 use crate::time::Timestamp;
 
-/// The only `keys.json` format this build understands.
+/// The only keys file format this build understands.
 pub const KEYS_FORMAT: u64 = 1;
 /// The file name, used in messages and for the signature next to it.
 pub const KEYS_FILE: &str = "keys.json";
-/// The largest `keys.json` accepted.
+/// The largest keys file accepted.
 pub const MAX_KEYS_FILE: usize = 1024 * 1024;
 
-/// The offline root keys that sign `keys.json`, embedded in each jtm release.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RootOfTrust {
-    pub keys: Vec<PublicKey>,
-    /// How many distinct root keys must sign `keys.json`.
-    pub threshold: u32,
-}
-
-impl RootOfTrust {
-    fn group(&self) -> KeyGroup {
-        KeyGroup {
-            origin: "root keys".to_owned(),
-            keys: self
-                .keys
-                .iter()
-                .map(|key| TrustedKey {
-                    key: key.clone(),
-                    scope: Scope::Any,
-                    expires: None,
-                })
-                .collect(),
-            threshold: self.threshold,
-        }
-    }
-}
-
-/// A verified `keys.json`.
+/// A verified keys file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeysFile {
     // SPEC-QUESTION: section 9 gives every listed key "a scope, a sequence and an expires date".
@@ -71,11 +48,11 @@ pub struct KeysFile {
     pub keys: Vec<IndexKey>,
     /// Lowercase hex SHA-256 of the raw bytes, for rollback checks.
     pub sha256: String,
-    /// Which root keys signed it.
+    /// Which anchor keys signed it.
     pub verified: Verified,
 }
 
-/// One index-signing key listed in `keys.json`.
+/// One index-signing key listed in a keys file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexKey {
     pub key: PublicKey,
@@ -84,12 +61,12 @@ pub struct IndexKey {
 }
 
 impl KeysFile {
-    /// Verifies `data` against the root keys, then parses it. Nothing in `data` is parsed until
-    /// the root signatures meet their threshold.
+    /// Verifies `data` against `anchors`, then parses it. Nothing in `data` is parsed until the
+    /// anchor signatures meet their threshold. Delegated keys never sign a keys file.
     pub fn load(
         data: &[u8],
         signatures: &[u8],
-        root: &RootOfTrust,
+        anchors: &TrustAnchors,
         now: Timestamp,
     ) -> Result<KeysFile> {
         let invalid = |message: String| Error::Invalid {
@@ -101,10 +78,10 @@ impl KeysFile {
         }
         let subject = Subject {
             file: KEYS_FILE,
-            plugin: None,
+            plugin: &anchors.plugin,
         };
-        let root = crate::key::Keyring::new().with(root.group());
-        let verified = signature::verify(data, signatures, &root, subject, now)?;
+        let anchors_only = crate::key::Keyring::new().with(anchors.group());
+        let verified = signature::verify(data, signatures, &anchors_only, subject, now)?;
         let raw: RawKeysFile = serde_json::from_slice(data).map_err(|e| invalid(e.to_string()))?;
         raw.validate(crate::sha256_hex(data), verified)
             .map_err(invalid)
@@ -206,8 +183,9 @@ mod tests {
     const EARLIER: &str = "2026-01-01T00:00:00Z";
     const INDEX: &[u8] = br#"{"plugin":"demo"}"#;
 
-    fn root(keys: &[&TestKey], threshold: u32) -> RootOfTrust {
-        RootOfTrust {
+    fn root(keys: &[&TestKey], threshold: u32) -> TrustAnchors {
+        TrustAnchors {
+            plugin: "demo".into(),
             keys: keys.iter().map(|k| k.public()).collect(),
             threshold,
         }
@@ -229,7 +207,7 @@ mod tests {
     fn index_subject() -> Subject<'static> {
         Subject {
             file: "demo-linux-x64.json",
-            plugin: Some("demo"),
+            plugin: "demo",
         }
     }
 
@@ -396,13 +374,13 @@ mod tests {
     }
 }
 
-/// First-party key rotation: a new `keys.json` signed by the root replaces index keys without
-/// a jtm release, and a cross-signed `keys.json` carries old and new releases across a root
-/// rotation.
+/// Key rotation, shown for the first-party set: a new keys file signed by the anchors (the jtm
+/// root keys) replaces index keys without a jtm release, and a keys file cross-signed by old and
+/// new anchors carries old and new releases across an anchor rotation.
 #[cfg(test)]
 mod rotation_tests {
     use super::*;
-    use crate::checks::check_keys_json;
+    use crate::checks::check_keys_file;
     use crate::key::Keyring;
     use crate::testing::TestKey;
     use crate::trust::TrustState;
@@ -415,7 +393,7 @@ mod rotation_tests {
     fn subject() -> Subject<'static> {
         Subject {
             file: "demo-linux-x64.json",
-            plugin: Some("demo"),
+            plugin: "demo",
         }
     }
 
@@ -437,17 +415,18 @@ mod rotation_tests {
     fn accept(
         data: &[u8],
         sig: &[u8],
-        root: &RootOfTrust,
+        root: &TrustAnchors,
         state: &mut TrustState,
     ) -> Result<Keyring> {
         let file = KeysFile::load(data, sig, root, NOW)?;
-        let seen = check_keys_json(&file, state)?;
-        state.record_keys_json(seen);
+        let seen = check_keys_file(&file, "demo", state)?;
+        state.record_keys_file("demo", seen);
         Ok(Keyring::new().with(file.group()))
     }
 
-    fn root(keys: &[&TestKey]) -> RootOfTrust {
-        RootOfTrust {
+    fn root(keys: &[&TestKey]) -> TrustAnchors {
+        TrustAnchors {
+            plugin: "demo".into(),
             keys: keys.iter().map(|k| k.public()).collect(),
             threshold: 1,
         }
@@ -541,11 +520,15 @@ mod rotation_tests {
             "keys": [{ "key": idx.public_str(), "scope": ["marketplace"], "expires": LATER }]
         }))
         .unwrap();
-        let file = KeysFile::load(&data, &r.sign(&data), &root(&[&r]), NOW).unwrap();
+        let anchors = TrustAnchors {
+            plugin: "marketplace".into(),
+            ..root(&[&r])
+        };
+        let file = KeysFile::load(&data, &r.sign(&data), &anchors, NOW).unwrap();
         let ring = Keyring::new().with(file.group());
         let marketplace = Subject {
             file: "marketplace.json",
-            plugin: Some("marketplace"),
+            plugin: "marketplace",
         };
         signature::verify(INDEX, &idx.sign(INDEX), &ring, marketplace, NOW).unwrap();
         assert!(signature::verify(INDEX, &idx.sign(INDEX), &ring, subject(), NOW).is_err());

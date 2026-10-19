@@ -1,8 +1,9 @@
-//! Signature verification, keys.json, trust state and index load checks for jtm.
+//! Signature verification, trust anchors, keys files, trust state and index load checks for jtm.
 //!
 //! Everything here works on raw bytes first: a signed file is verified before any of it reaches
 //! a parser (SPEC.md section 9).
 
+pub mod anchors;
 pub mod checks;
 pub mod error;
 pub mod index;
@@ -16,11 +17,12 @@ pub mod trust;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use checks::{ExpiryPolicy, IndexRequest, Warning, check_index, check_keys_json};
+pub use anchors::{TrustAnchors, plugin_keyring};
+pub use checks::{ExpiryPolicy, IndexRequest, Warning, check_index, check_keys_file};
 pub use error::{Error, Result};
 pub use index::{ArchiveKind, IndexEntry, IndexFile, LoadedIndex};
 pub use key::{KeyGroup, KeyId, KeyParseError, Keyring, PublicKey, Scope, TrustedKey};
-pub use keys_json::{IndexKey, KeysFile, RootOfTrust};
+pub use keys_json::{IndexKey, KeysFile};
 pub use select::{IndexCopy, Selected, Selection, select};
 pub use signature::{Subject, Verified, verify};
 pub use time::Timestamp;

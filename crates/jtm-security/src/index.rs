@@ -251,7 +251,7 @@ mod tests {
     fn subject() -> Subject<'static> {
         Subject {
             file: "demo-linux-x64.json",
-            plugin: Some("demo"),
+            plugin: "demo",
         }
     }
 
