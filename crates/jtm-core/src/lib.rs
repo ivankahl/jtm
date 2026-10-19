@@ -7,6 +7,7 @@ pub mod error;
 pub mod indices;
 pub mod platform;
 pub mod spec;
+pub mod trust;
 
 pub use config::{Config, ConfigInputs, Settings};
 pub use context::{ColorChoice, Context, GlobalFlags, Terminal, Verbosity};
