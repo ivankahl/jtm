@@ -171,8 +171,11 @@ fn strip_components_and_default_alias_are_optional() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/manifests/valid/demo.toml"),
     )
     .unwrap()
-    .replace("strip_components = 1\n", "")
-    .replace("default_alias = \"latest\"\n", "");
+    // Drop whole lines rather than matching `\n`: Windows checkouts use CRLF line endings.
+    .lines()
+    .filter(|line| !line.starts_with("strip_components") && !line.starts_with("default_alias"))
+    .collect::<Vec<_>>()
+    .join("\n");
     let m = Manifest::parse(&text).unwrap();
     assert_eq!(m.layout.strip_components, StripComponents::Auto);
     assert_eq!(m.versions.default_alias, None);
