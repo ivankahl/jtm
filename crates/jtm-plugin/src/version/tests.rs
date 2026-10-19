@@ -95,8 +95,68 @@ fn java_rejects_malformed_versions() {
             "21-ea-x+3",
             "v21",
             "21 ",
-            "1.8.0_392",
             "21/0",
+            "21.0.5+11.",
+            "21.0.5+11/x",
+            "21.0.5+11_",
+            "1.8.0_x",
+            "1.8_422",
+            "1.8.0_422-bx",
+            "8ux",
+            "8u",
+            "8u422-b",
+        ],
+    );
+}
+
+/// Java 8 as vendors and the Adoptium API spell it orders exactly like its JEP 223 form.
+#[test]
+fn java_legacy_versions() {
+    let java = VersionScheme::Java;
+    assert_equivalent(
+        java,
+        &[
+            ("1.8.0_422-b05", "8.0.422+5"),
+            ("8u422-b05", "8.0.422+5"),
+            ("8u422", "8.0.422"),
+            ("1.8.0_422", "8.0.422"),
+            ("1.8.0_05-b13", "8.0.5+13"),
+        ],
+    );
+    assert_increasing(
+        java,
+        &[
+            "8u412-b08",
+            "1.8.0_422-b05",
+            "8.0.422+6",
+            "8u432",
+            "8u432-b06",
+            "11.0.25+9",
+        ],
+    );
+    assert_eq!(
+        v(java, "8u422-b05").canonical().as_deref(),
+        Some("8.0.422+5")
+    );
+    assert_eq!(v(java, "1.8.0_422").canonical().as_deref(), Some("8.0.422"));
+    assert_eq!(v(java, "21.0.5+11").canonical(), None);
+    assert!(!v(java, "8u422-b05").is_prerelease());
+}
+
+/// Vendor text after the build is optional text, compared in natural order.
+#[test]
+fn java_vendor_build_suffixes() {
+    assert_increasing(
+        VersionScheme::Java,
+        &[
+            "21.0.5+11",
+            "21.0.5+11-LTS",
+            "21.0.5+11.1",
+            "21.0.5+11.2",
+            "21.0.5+11.10",
+            "21.0.5+11_openj9-0.48.0",
+            "21.0.5+11_openj9-0.49.0",
+            "21.0.5+12",
         ],
     );
 }
@@ -418,6 +478,20 @@ fn prefix_matching_uses_whole_segments() {
         (VersionScheme::Java, "21.0.5+11", "21.0.5+11.1", false),
         (VersionScheme::Java, "210.1", "21", false),
         (VersionScheme::Java, "21.0.5", "", false),
+        (VersionScheme::Java, "8u422-b05", "8", true),
+        (VersionScheme::Java, "8u422-b05", "8.0.422", true),
+        (VersionScheme::Java, "8u422-b05", "8.0.422+5", true),
+        (VersionScheme::Java, "8u422-b05", "8u422", true),
+        (VersionScheme::Java, "8u422-b05", "80", false),
+        (VersionScheme::Java, "1.8.0_422-b05", "8", true),
+        (VersionScheme::Java, "1.8.0_422-b05", "1.8", true),
+        (VersionScheme::Java, "1.8.0_422-b05", "11", false),
+        (
+            VersionScheme::Java,
+            "21.0.5+11_openj9-0.48.0",
+            "21.0.5+11",
+            true,
+        ),
         (VersionScheme::Maven, "3.9.9", "3", true),
         (VersionScheme::Maven, "3.9.9", "3.9", true),
         (VersionScheme::Maven, "3.9.9", "3.9.9", true),
@@ -496,22 +570,38 @@ fn version_text() -> impl Strategy<Value = String> {
 /// Text shaped like each scheme's grammar, so most samples parse.
 fn shaped_text(scheme: VersionScheme) -> BoxedStrategy<String> {
     match scheme {
-        VersionScheme::Java => (
-            numbers(),
-            prop::option::of(prop_oneof![Just("ea".to_owned()), token()]),
-            prop::option::of(0u32..40),
-        )
-            .prop_map(|(n, pre, build)| {
-                let mut s = n;
-                if let Some(pre) = pre {
-                    s = format!("{s}-{pre}");
+        VersionScheme::Java => prop_oneof![
+            4 => (
+                numbers(),
+                prop::option::of(prop_oneof![Just("ea".to_owned()), token()]),
+                prop::option::of(0u32..40),
+                prop::option::of((prop::sample::select(vec!["-", "_", "."]), token())),
+            )
+                .prop_map(|(n, pre, build, opt)| {
+                    let mut s = n;
+                    if let Some(pre) = pre {
+                        s = format!("{s}-{pre}");
+                    }
+                    if let Some(build) = build {
+                        s = format!("{s}+{build}");
+                        if let Some((sep, text)) = opt {
+                            s = format!("{s}{sep}{text}");
+                        }
+                    }
+                    s
+                }),
+            1 => (1u32..12, 0u32..500, prop::option::of(0u32..20), any::<bool>()).prop_map(
+                |(major, update, build, dotted)| {
+                    let build = build.map(|b| format!("-b{b:02}")).unwrap_or_default();
+                    if dotted {
+                        format!("1.{major}.0_{update}{build}")
+                    } else {
+                        format!("{major}u{update}{build}")
+                    }
                 }
-                if let Some(build) = build {
-                    s = format!("{s}+{build}");
-                }
-                s
-            })
-            .boxed(),
+            ),
+        ]
+        .boxed(),
         VersionScheme::SemverLoose => (
             numbers(),
             prop::option::of(prop::collection::vec(token(), 1..3)),

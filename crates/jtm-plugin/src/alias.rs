@@ -4,32 +4,85 @@
 //! `[aliases]` table against the entries of a version index.
 
 use crate::manifest::{Alias, Manifest};
-use crate::version::{Version, VersionScheme};
+use crate::version::{MaybeVersion, Version, VersionScheme};
 
 /// What the resolver needs from a version index entry.
 pub trait Candidate {
     fn variant(&self) -> &str;
     fn version(&self) -> &str;
     fn tags(&self) -> &[String];
+
+    /// The version parsed under `scheme`, or kept raw when it does not parse.
+    fn parsed(&self, scheme: Option<VersionScheme>) -> MaybeVersion {
+        MaybeVersion::parse(scheme, self.version())
+    }
 }
 
-/// Why an alias could not be resolved.
+/// Why a version or alias could not be resolved.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum AliasError {
+pub enum ResolveError {
     #[error("`{tool}` has no alias `{alias}`")]
-    Unknown { tool: String, alias: String },
+    AliasUnknown { tool: String, alias: String },
 
     #[error("alias `{alias}` of `{tool}` matches no `{variant}` version")]
-    NoMatch {
+    AliasNoMatch {
         tool: String,
         alias: String,
         variant: String,
     },
 
+    #[error("no `{variant}` version of `{tool}` matches `{value}`")]
+    VersionNotFound {
+        tool: String,
+        variant: String,
+        value: String,
+    },
+
     /// Script aliases and script version schemes need the Luau engine, which is not available
     /// yet.
-    #[error("alias `{alias}` of `{tool}` needs a plugin script, which this jtm cannot run yet")]
-    ScriptUnsupported { tool: String, alias: String },
+    #[error("resolving `{spec}` for `{tool}` needs a plugin script, which this jtm cannot run yet")]
+    ScriptUnsupported { tool: String, spec: String },
+}
+
+/// Resolves the version or alias `value` to one `variant` entry in `candidates`, in this order:
+///
+/// 1. An entry whose version did not parse under the plugin's scheme and is exactly `value`.
+///    Such entries cannot be ordered, so this is the only way to select them.
+/// 2. An alias named `value`, as [`resolve_alias`] does.
+/// 3. The highest entry whose version starts with the segments of `value`, as
+///    [`select_highest`] does.
+pub fn resolve_value<'c, C: Candidate>(
+    manifest: &Manifest,
+    value: &str,
+    variant: &str,
+    candidates: &'c [C],
+) -> Result<&'c C, ResolveError> {
+    let scheme = manifest.versions.scheme.builtin();
+    let exact_raw = candidates.iter().find(|c| {
+        c.variant() == variant && matches!(c.parsed(scheme), MaybeVersion::Raw(raw) if raw == value)
+    });
+    if let Some(found) = exact_raw {
+        return Ok(found);
+    }
+    if manifest.aliases.contains_key(value) {
+        return resolve_alias(manifest, value, variant, candidates);
+    }
+    let scheme = scheme.ok_or_else(|| ResolveError::ScriptUnsupported {
+        tool: manifest.name.clone(),
+        spec: value.to_owned(),
+    })?;
+    select_highest(
+        scheme,
+        candidates,
+        variant,
+        value,
+        manifest.versions.include_prereleases,
+    )
+    .ok_or_else(|| ResolveError::VersionNotFound {
+        tool: manifest.name.clone(),
+        variant: variant.to_owned(),
+        value: value.to_owned(),
+    })
 }
 
 /// Resolves the alias `name` to the matching `variant` entry in `candidates`.
@@ -40,22 +93,24 @@ pub enum AliasError {
 ///   `rc` or `ea` exists to select them.
 /// - `fixed`: the highest version matching the `target` prefix, as [`select_highest`] does.
 /// - `script`: not supported yet.
+///
+/// Entries whose version does not parse are never ranked, so no alias selects them.
 pub fn resolve_alias<'c, C: Candidate>(
     manifest: &Manifest,
     name: &str,
     variant: &str,
     candidates: &'c [C],
-) -> Result<&'c C, AliasError> {
+) -> Result<&'c C, ResolveError> {
     let alias = manifest
         .aliases
         .get(name)
-        .ok_or_else(|| AliasError::Unknown {
+        .ok_or_else(|| ResolveError::AliasUnknown {
             tool: manifest.name.clone(),
             alias: name.to_owned(),
         })?;
-    let script = || AliasError::ScriptUnsupported {
+    let script = || ResolveError::ScriptUnsupported {
         tool: manifest.name.clone(),
-        alias: name.to_owned(),
+        spec: name.to_owned(),
     };
     let scheme = manifest.versions.scheme.builtin().ok_or_else(script)?;
     let include_prereleases = manifest.versions.include_prereleases;
@@ -72,7 +127,7 @@ pub fn resolve_alias<'c, C: Candidate>(
         }
         Alias::Script {} => return Err(script()),
     };
-    found.ok_or_else(|| AliasError::NoMatch {
+    found.ok_or_else(|| ResolveError::AliasNoMatch {
         tool: manifest.name.clone(),
         alias: name.to_owned(),
         variant: variant.to_owned(),
@@ -97,6 +152,20 @@ pub fn select_highest<'c, C: Candidate>(
     })
 }
 
+/// Orders entries for display, such as in `jtm available`: parsed versions highest first, then
+/// versions that did not parse, as written and in index order.
+pub fn sorted_for_display<C: Candidate>(
+    scheme: Option<VersionScheme>,
+    candidates: &[C],
+) -> Vec<&C> {
+    let (mut parsed, raw): (Vec<_>, Vec<_>) = candidates
+        .iter()
+        .map(|c| (c, c.parsed(scheme)))
+        .partition(|(_, v)| v.parsed().is_some());
+    parsed.sort_by(|(_, a), (_, b)| b.parsed().cmp(&a.parsed()));
+    parsed.into_iter().chain(raw).map(|(c, _)| c).collect()
+}
+
 /// The highest `variant` entry that `keep` accepts. Entries whose version does not parse under
 /// `scheme` are never selected.
 fn highest<'c, C: Candidate>(
@@ -108,7 +177,10 @@ fn highest<'c, C: Candidate>(
     candidates
         .iter()
         .filter(|c| c.variant() == variant)
-        .filter_map(|c| Some((c, scheme.parse(c.version()).ok()?)))
+        .filter_map(|c| match c.parsed(Some(scheme)) {
+            MaybeVersion::Parsed(version) => Some((c, version)),
+            MaybeVersion::Raw(_) => None,
+        })
         .filter(|(c, version)| keep(c, version))
         .max_by(|(_, a), (_, b)| a.cmp(b))
         .map(|(c, _)| c)
@@ -265,14 +337,14 @@ custom = { kind = "script" }"#,
         let m = jdk();
         assert_eq!(
             resolve_alias(&m, "stable", "temurin", &index).unwrap_err(),
-            AliasError::Unknown {
+            ResolveError::AliasUnknown {
                 tool: "demo".into(),
                 alias: "stable".into()
             }
         );
         assert_eq!(
             resolve_alias(&m, "ea", "corretto", &index).unwrap_err(),
-            AliasError::NoMatch {
+            ResolveError::AliasNoMatch {
                 tool: "demo".into(),
                 alias: "ea".into(),
                 variant: "corretto".into()
@@ -280,14 +352,14 @@ custom = { kind = "script" }"#,
         );
         assert!(matches!(
             resolve_alias(&m, "lts", "zulu", &index),
-            Err(AliasError::NoMatch { .. })
+            Err(ResolveError::AliasNoMatch { .. })
         ));
     }
 
     #[test]
     fn script_aliases_are_stubbed() {
         let err = resolve_alias(&jdk(), "custom", "temurin", &jdk_index()).unwrap_err();
-        assert!(matches!(err, AliasError::ScriptUnsupported { .. }));
+        assert!(matches!(err, ResolveError::ScriptUnsupported { .. }));
     }
 
     #[test]
@@ -321,7 +393,7 @@ custom = { kind = "script" }"#,
         assert!(
             matches!(
                 resolve_alias(&m, "4", "default", &index),
-                Err(AliasError::NoMatch { .. })
+                Err(ResolveError::AliasNoMatch { .. })
             ),
             "4.x has only pre-releases"
         );
@@ -397,7 +469,7 @@ compare_versions = "compare"
         let m = Manifest::parse(text).unwrap();
         let index = [entry("default", "1", &[])];
         let err = resolve_alias(&m, "latest", "default", &index);
-        assert!(matches!(err, Err(AliasError::ScriptUnsupported { .. })));
+        assert!(matches!(err, Err(ResolveError::ScriptUnsupported { .. })));
     }
 
     #[test]
@@ -415,5 +487,133 @@ compare_versions = "compare"
         assert_eq!(pick("210"), Some("210.1"));
         assert_eq!(pick("2"), Some("2.1"));
         assert_eq!(pick("3"), None);
+    }
+
+    fn jdk_with_vendor_strings() -> Vec<Entry> {
+        vec![
+            entry("temurin", "8u412-b08", &["lts"]),
+            entry("temurin", "1.8.0_422-b05", &["lts"]),
+            entry("temurin", "21.0.5+11", &["lts"]),
+            entry("temurin", "21.0.5_custom", &["lts"]),
+            entry("temurin", "21.0.6+7_openj9-0.48.0", &["lts"]),
+            entry("corretto", "21.0.5_custom", &[]),
+        ]
+    }
+
+    #[test]
+    fn legacy_and_vendor_versions_are_ranked() {
+        let index = jdk_with_vendor_strings();
+        let m = jdk();
+        let pick = |value| resolve_value(&m, value, "temurin", &index).map(|e| e.version);
+        assert_eq!(pick("8"), Ok("1.8.0_422-b05"));
+        assert_eq!(pick("21"), Ok("21.0.6+7_openj9-0.48.0"));
+        assert_eq!(pick("lts"), Ok("21.0.6+7_openj9-0.48.0"));
+    }
+
+    #[test]
+    fn unparsed_versions_are_only_selected_by_exact_text() {
+        let index = jdk_with_vendor_strings();
+        let m = jdk();
+        let pick = |value, variant| resolve_value(&m, value, variant, &index).map(|e| e.version);
+        assert_eq!(pick("21.0.5_custom", "temurin"), Ok("21.0.5_custom"));
+        assert_eq!(pick("21.0.5_custom", "corretto"), Ok("21.0.5_custom"));
+        assert_eq!(
+            pick("21.0.5", "temurin"),
+            Ok("21.0.5+11"),
+            "a prefix never picks raw"
+        );
+        assert_eq!(
+            pick("21.0.5_cust", "temurin"),
+            Err(ResolveError::VersionNotFound {
+                tool: "demo".into(),
+                variant: "temurin".into(),
+                value: "21.0.5_cust".into(),
+            })
+        );
+        assert!(matches!(
+            pick("22", "corretto"),
+            Err(ResolveError::VersionNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_value_prefers_aliases_over_prefixes() {
+        let index = jdk_index();
+        let m = jdk();
+        // `21` is both an alias and a prefix; the alias wins, and here they agree.
+        assert_eq!(
+            resolve_value(&m, "21", "temurin", &index).unwrap().version,
+            "21.0.5+11"
+        );
+        assert_eq!(
+            resolve_value(&m, "ea", "temurin", &index).unwrap().version,
+            "24-ea+20"
+        );
+        assert_eq!(
+            resolve_value(&m, "23.0", "temurin", &index)
+                .unwrap()
+                .version,
+            "23.0.1+11"
+        );
+    }
+
+    #[test]
+    fn script_schemes_still_select_exact_versions() {
+        let text = r#"
+schema = 1
+name = "demo"
+display_name = "Demo"
+[versions]
+scheme = "script"
+default_alias = "latest"
+[aliases]
+latest = { kind = "highest" }
+[index]
+url = "https://example.test/demo.json"
+signing_keys = ["RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB"]
+format = 1
+[layout]
+strip_components = 1
+bin_dirs = ["bin"]
+[executables]
+unix = ["demo"]
+[hooks]
+compare_versions = "compare"
+"#;
+        let m = Manifest::parse(text).unwrap();
+        let index = [
+            entry("default", "2024.1", &[]),
+            entry("default", "2024.2", &[]),
+        ];
+        assert_eq!(
+            resolve_value(&m, "2024.2", "default", &index)
+                .unwrap()
+                .version,
+            "2024.2"
+        );
+        assert!(matches!(
+            resolve_value(&m, "2024", "default", &index),
+            Err(ResolveError::ScriptUnsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn display_order_puts_raw_versions_last() {
+        let index = jdk_with_vendor_strings();
+        let order: Vec<&str> = sorted_for_display(Some(VersionScheme::Java), &index)
+            .iter()
+            .map(|e| e.version)
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "21.0.6+7_openj9-0.48.0",
+                "21.0.5+11",
+                "1.8.0_422-b05",
+                "8u412-b08",
+                "21.0.5_custom",
+                "21.0.5_custom",
+            ]
+        );
     }
 }

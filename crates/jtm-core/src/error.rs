@@ -519,20 +519,25 @@ fn key_prefix(key: &str) -> String {
     }
 }
 
-impl From<jtm_plugin::AliasError> for JtmError {
-    fn from(err: jtm_plugin::AliasError) -> Self {
-        use jtm_plugin::AliasError as A;
+impl From<jtm_plugin::ResolveError> for JtmError {
+    fn from(err: jtm_plugin::ResolveError) -> Self {
+        use jtm_plugin::ResolveError as R;
         match err {
-            A::Unknown { tool, alias } => JtmError::AliasUnknown { tool, alias },
-            A::NoMatch {
+            R::AliasUnknown { tool, alias } => JtmError::AliasUnknown { tool, alias },
+            R::AliasNoMatch {
                 tool,
-                alias,
+                alias: value,
                 variant,
+            }
+            | R::VersionNotFound {
+                tool,
+                variant,
+                value,
             } => JtmError::VersionNotFound {
                 tool,
-                spec: format!("{variant}:{alias}"),
+                spec: format!("{variant}:{value}"),
             },
-            A::ScriptUnsupported { .. } => JtmError::internal(err.to_string()),
+            R::ScriptUnsupported { .. } => JtmError::internal(err.to_string()),
         }
     }
 }
@@ -722,23 +727,30 @@ mod tests {
     }
 
     #[test]
-    fn alias_errors_map_to_not_found_codes() {
-        use jtm_plugin::AliasError as A;
-        let unknown = JtmError::from(A::Unknown {
+    fn resolve_errors_map_to_not_found_codes() {
+        use jtm_plugin::ResolveError as R;
+        let unknown = JtmError::from(R::AliasUnknown {
             tool: "demo".into(),
             alias: "stable".into(),
         });
         assert_eq!(unknown.code(), "E_ALIAS_UNKNOWN");
-        let no_match = JtmError::from(A::NoMatch {
+        let no_match = JtmError::from(R::AliasNoMatch {
             tool: "demo".into(),
             alias: "lts".into(),
             variant: "zulu".into(),
         });
         assert_eq!(no_match.code(), "E_VERSION_NOT_FOUND");
         assert_eq!(no_match.details()["spec"], "zulu:lts");
-        let script = JtmError::from(A::ScriptUnsupported {
+        let not_found = JtmError::from(R::VersionNotFound {
             tool: "demo".into(),
-            alias: "custom".into(),
+            variant: "default".into(),
+            value: "9.9".into(),
+        });
+        assert_eq!(not_found.code(), "E_VERSION_NOT_FOUND");
+        assert_eq!(not_found.details()["spec"], "default:9.9");
+        let script = JtmError::from(R::ScriptUnsupported {
+            tool: "demo".into(),
+            spec: "custom".into(),
         });
         assert_eq!(script.code(), "E_INTERNAL");
     }

@@ -75,6 +75,41 @@ impl VersionScheme {
     }
 }
 
+/// A version string from an index: parsed under the plugin's scheme, or kept as written when it
+/// does not parse. Raw versions cannot be ordered, so they are never picked as the highest
+/// match; they are only selected by their exact text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaybeVersion {
+    Parsed(Version),
+    Raw(String),
+}
+
+impl MaybeVersion {
+    /// Parses `input` under `scheme`, or keeps it raw. `None` means the plugin orders versions
+    /// with a script, so every version stays raw until the script engine exists.
+    pub fn parse(scheme: Option<VersionScheme>, input: &str) -> MaybeVersion {
+        match scheme.map(|scheme| scheme.parse(input)) {
+            Some(Ok(version)) => MaybeVersion::Parsed(version),
+            _ => MaybeVersion::Raw(input.to_owned()),
+        }
+    }
+
+    /// The version exactly as written.
+    pub fn as_str(&self) -> &str {
+        match self {
+            MaybeVersion::Parsed(version) => version.as_str(),
+            MaybeVersion::Raw(raw) => raw,
+        }
+    }
+
+    pub fn parsed(&self) -> Option<&Version> {
+        match self {
+            MaybeVersion::Parsed(version) => Some(version),
+            MaybeVersion::Raw(_) => None,
+        }
+    }
+}
+
 impl fmt::Display for VersionScheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -137,12 +172,27 @@ impl Version {
 
     /// Whether `prefix` is a whole-segment prefix of this version: `21` matches `21.0.5+11` but
     /// not `210.1`, and `8.11-rc` matches `8.11-rc-1`. A full version matches itself.
+    ///
+    /// A version written in an older form also matches through its modern spelling, so `8`
+    /// matches `8u422-b05` as well as `8.0.422+5`.
     pub fn matches_prefix(&self, prefix: &str) -> bool {
         let want = segments(prefix);
-        let have = segments(&self.raw);
-        !want.is_empty()
-            && want.len() <= have.len()
-            && want.iter().zip(&have).all(|(w, h)| w.same_as(h))
+        let matches = |text: &str| {
+            let have = segments(text);
+            !want.is_empty()
+                && want.len() <= have.len()
+                && want.iter().zip(&have).all(|(w, h)| w.same_as(h))
+        };
+        matches(&self.raw) || self.canonical().is_some_and(|c| matches(&c))
+    }
+
+    /// The modern spelling of a version written in an older form, such as `8.0.422+5` for
+    /// `8u422-b05`; `None` when the version is already in its scheme's usual form.
+    pub fn canonical(&self) -> Option<String> {
+        match &self.key {
+            Key::Java(key) => key.canonical(),
+            Key::Maven(_) | Key::Loose(_) => None,
+        }
     }
 
     /// Compares two versions under their scheme's rules only, so `21` and `21.0.0` are equal.
