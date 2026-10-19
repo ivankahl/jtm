@@ -85,6 +85,36 @@ pub fn resolve_value<'c, C: Candidate>(
     })
 }
 
+/// Resolves a spec without a version, such as a bare `maven`: the plugin's `default_alias`, or
+/// without one the highest version, skipping pre-releases unless `include_prereleases` is set.
+pub fn resolve_default<'c, C: Candidate>(
+    manifest: &Manifest,
+    variant: &str,
+    candidates: &'c [C],
+) -> Result<&'c C, ResolveError> {
+    if let Some(alias) = &manifest.versions.default_alias {
+        return resolve_alias(manifest, alias, variant, candidates);
+    }
+    let scheme =
+        manifest
+            .versions
+            .scheme
+            .builtin()
+            .ok_or_else(|| ResolveError::ScriptUnsupported {
+                tool: manifest.name.clone(),
+                spec: manifest.name.clone(),
+            })?;
+    let include_prereleases = manifest.versions.include_prereleases;
+    highest(scheme, candidates, variant, |_, version| {
+        include_prereleases || !version.is_prerelease()
+    })
+    .ok_or_else(|| ResolveError::VersionNotFound {
+        tool: manifest.name.clone(),
+        variant: variant.to_owned(),
+        value: "(default)".to_owned(),
+    })
+}
+
 /// Resolves the alias `name` to the matching `variant` entry in `candidates`.
 ///
 /// - `highest`: the highest version, skipping pre-releases unless the plugin sets
@@ -617,5 +647,34 @@ compare_versions = "compare"
                 "21.0.5_custom",
             ]
         );
+    }
+
+    #[test]
+    fn bare_specs_use_the_default_alias_or_the_highest_version() {
+        let index = jdk_index();
+        let mut m = jdk();
+        let pick = |m: &Manifest, variant| resolve_default(m, variant, &index).map(|e| e.version);
+        assert_eq!(
+            pick(&m, "temurin"),
+            Ok("23.0.1+11"),
+            "default_alias = latest"
+        );
+
+        m.versions.default_alias = Some("lts".into());
+        assert_eq!(pick(&m, "temurin"), Ok("21.0.5+11"));
+
+        m.versions.default_alias = None;
+        assert_eq!(
+            pick(&m, "temurin"),
+            Ok("23.0.1+11"),
+            "highest, skipping 24-ea"
+        );
+        assert_eq!(pick(&m, "corretto"), Ok("23.0.2+7"));
+        m.versions.include_prereleases = true;
+        assert_eq!(pick(&m, "temurin"), Ok("24-ea+20"));
+        assert!(matches!(
+            pick(&m, "zulu"),
+            Err(ResolveError::VersionNotFound { .. })
+        ));
     }
 }

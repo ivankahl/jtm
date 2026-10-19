@@ -60,7 +60,8 @@ pub struct Versions {
     pub scheme: Scheme,
     pub default_variant: Option<String>,
     /// The alias a spec without a version resolves to, such as `latest` for a bare `maven`.
-    pub default_alias: String,
+    /// Without one, a bare spec resolves to the highest version, as a `highest` alias would.
+    pub default_alias: Option<String>,
     #[serde(default)]
     pub variants: Vec<String>,
     #[serde(default)]
@@ -119,7 +120,7 @@ pub struct Index {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layout {
-    /// Required, so every plugin states its archive layout rather than relying on a guess.
+    #[serde(default)]
     pub strip_components: StripComponents,
     /// The tool home inside the archive per OS, keyed by the names in [`OS_NAMES`], such as
     /// `macos = "Contents/Home"`.
@@ -136,10 +137,11 @@ impl Layout {
 }
 
 /// How many leading path components to remove from every archive entry, written
-/// `strip_components = <n>` (0 to 16) or `strip_components = "auto"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `strip_components = <n>` (0 to 16) or `strip_components = "auto"`, the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StripComponents {
     /// Strip a single top-level directory if the archive has exactly one.
+    #[default]
     Auto,
     Count(u32),
 }
@@ -351,10 +353,12 @@ impl Manifest {
             ),
             _ => {}
         }
-        if !self.aliases.contains_key(&versions.default_alias) {
+        if let Some(alias) = &versions.default_alias
+            && !self.aliases.contains_key(alias)
+        {
             p.push(
                 "versions.default_alias",
-                format!("`{}` is not defined in `[aliases]`", versions.default_alias),
+                format!("`{alias}` is not defined in `[aliases]`"),
             );
         }
         if versions.scheme == Scheme::Script && self.hooks.compare_versions.is_none() {

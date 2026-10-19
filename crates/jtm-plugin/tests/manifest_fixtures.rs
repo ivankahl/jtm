@@ -41,7 +41,7 @@ fn spec_maven_example_parses() {
     assert_eq!(m.display_name, "Apache Maven");
     assert_eq!(m.min_jtm.as_deref(), Some("0.1.0"));
     assert_eq!(m.versions.scheme, Scheme::Maven);
-    assert_eq!(m.versions.default_alias, "latest");
+    assert_eq!(m.versions.default_alias.as_deref(), Some("latest"));
     assert!(!m.versions.include_prereleases);
     assert_eq!(m.default_variant(), "default");
     assert!(m.has_variant("default"));
@@ -163,6 +163,19 @@ fn env_allows_any_variable_jtm_does_not_own() {
     );
     let m = Manifest::parse(&text).unwrap();
     assert_eq!(m.env["JAVA_TOOL_OPTIONS"], "-Dfile.encoding=UTF-8\n-Xmx1g");
+}
+
+#[test]
+fn strip_components_and_default_alias_are_optional() {
+    let text = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/manifests/valid/demo.toml"),
+    )
+    .unwrap()
+    .replace("strip_components = 1\n", "")
+    .replace("default_alias = \"latest\"\n", "");
+    let m = Manifest::parse(&text).unwrap();
+    assert_eq!(m.layout.strip_components, StripComponents::Auto);
+    assert_eq!(m.versions.default_alias, None);
 }
 
 #[test]

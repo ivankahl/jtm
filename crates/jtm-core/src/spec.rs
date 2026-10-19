@@ -15,7 +15,7 @@ use crate::error::{JtmError, Result};
 pub struct ToolSpec {
     /// The plugin name, such as `java` or `acme/flyway`.
     pub tool: String,
-    /// What follows `@`; `None` means the plugin's `default_alias`.
+    /// What follows `@`; `None` means the plugin's default, as `resolve_default` resolves it.
     pub selector: Option<Selector>,
 }
 

@@ -71,7 +71,7 @@ The CLI uses nvm-style verbs with a `<tool>@<spec>` argument; every command supp
 - `java@temurin:21` is Temurin, newest installable 21.x.
 - `java@21` is the plugin's default variant (Temurin for Java), newest 21.x.
 - `java@lts` resolves the plugin-defined `lts` alias.
-- `maven@3.9.9` is an exact version. `maven` alone means the plugin's `default_alias`.
+- `maven@3.9.9` is an exact version. `maven` alone means the plugin's `default_alias`, or the highest version when the plugin defines none.
 - Partial versions match by numeric segment prefix: `21` matches `21.0.5` but not `210.1`.
 
 ### Commands
@@ -227,10 +227,10 @@ jtm-plugin-maven/
 | Section | Required | Purpose |
 | --- | --- | --- |
 | top level | Yes | `schema` (manifest version, starts at 1), `name`, `display_name`, `description`, `homepage`, `license`, `min_jtm` |
-| `[versions]` | Yes | `scheme` (`java`, `maven`, `semver-loose`, or `script`), `default_variant`, `default_alias` (required: the alias a bare `<tool>` resolves to), `variants`, `include_prereleases` |
+| `[versions]` | Yes | `scheme` (`java`, `maven`, `semver-loose`, or `script`), `default_variant`, `default_alias` (the alias a bare `<tool>` resolves to; without one, the highest version), `variants`, `include_prereleases` |
 | `[aliases]` | No | Named aliases and how each resolves: `highest`, `index-tag`, `fixed`, or `script` |
 | `[index]` | Yes | `url` template, `signing_keys` (Ed25519 public keys), `format` |
-| `[layout]` | Yes | How to find the tool home inside the archive: required `strip_components`, a number of leading directories to strip or `"auto"` (strip a single top-level directory), per-OS `home_subdir` table keyed by `windows`, `macos` or `linux` (for example `home_subdir = { macos = "Contents/Home" }` for JDKs), `bin_dirs` |
+| `[layout]` | Yes | How to find the tool home inside the archive: `strip_components`, a number of leading directories to strip or `"auto"` (strip a single top-level directory, the default), per-OS `home_subdir` table keyed by `windows`, `macos` or `linux` (for example `home_subdir = { macos = "Contents/Home" }` for JDKs), `bin_dirs` |
 | `[executables]` | Yes | Executables the tool provides, per OS, used by which and doctor checks (`mvn` and `mvn.cmd`) |
 | `[env]` | No | Variables to set when active, using `{home}` and `{bin}` placeholders, for example `JAVA_HOME = "{home}"` |
 | `[requires]` | No | Runtime dependencies, for example Maven requires `java >= 8`; used for warnings, never auto-installs |
