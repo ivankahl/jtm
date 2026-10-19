@@ -8,6 +8,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use jtm_plugin::names::check_plugin_name;
 
+use crate::time::Timestamp;
+
 /// The 8-byte key id minisign embeds in every key and signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct KeyId(pub(crate) [u8; 8]);
@@ -148,6 +150,14 @@ impl Scope {
 pub struct TrustedKey {
     pub key: PublicKey,
     pub scope: Scope,
+    /// After this time no signature by the key is accepted. `None` never expires.
+    pub expires: Option<Timestamp>,
+}
+
+impl TrustedKey {
+    pub fn is_expired(&self, now: Timestamp) -> bool {
+        self.expires.is_some_and(|expires| now >= expires)
+    }
 }
 
 /// Keys that are trusted together: a signed file is accepted by the group when at least

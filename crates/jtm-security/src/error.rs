@@ -19,6 +19,11 @@ pub enum Error {
         /// The command that would trust the key, for `details.resolve`.
         resolve: String,
     },
+
+    /// A correctly signed file that is not what jtm expects: malformed, an unsupported format,
+    /// or failing validation.
+    #[error("{file} is signed but not valid: {message}")]
+    Invalid { file: String, message: String },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

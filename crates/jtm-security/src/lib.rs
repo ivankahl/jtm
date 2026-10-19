@@ -5,11 +5,15 @@
 
 pub mod error;
 pub mod key;
+pub mod keys_json;
 pub mod signature;
+pub mod time;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 pub use error::{Error, Result};
 pub use key::{KeyGroup, KeyId, KeyParseError, Keyring, PublicKey, Scope, TrustedKey};
+pub use keys_json::{IndexKey, KeysFile, RootOfTrust};
 pub use signature::{Subject, Verified, verify};
+pub use time::Timestamp;

@@ -273,6 +273,11 @@ pub enum JtmError {
     #[error("index {index} is not bound to {expected}")]
     IndexBinding { index: String, expected: String },
 
+    /// A correctly signed index or `keys.json` that is malformed, in an unsupported format, or
+    /// fails validation.
+    #[error("{file} is signed but not valid: {message}")]
+    SignedFileInvalid { file: String, message: String },
+
     #[error("hash mismatch for {url}: expected {expected}, got {actual}")]
     HashMismatch {
         url: String,
@@ -349,7 +354,12 @@ impl JtmError {
             JtmError::KeyUntrusted { .. } => ErrorCode::KeyUntrusted,
             JtmError::IndexExpired { .. } => ErrorCode::IndexExpired,
             JtmError::IndexRollback { .. } => ErrorCode::IndexRollback,
-            JtmError::IndexBinding { .. } => ErrorCode::IndexBinding,
+            // SPEC-QUESTION: section 12 has no code for a signed file that does not validate.
+            // Its signed content does not describe what was asked for, which is what a binding
+            // failure means, so it shares E_INDEX_BINDING.
+            JtmError::IndexBinding { .. } | JtmError::SignedFileInvalid { .. } => {
+                ErrorCode::IndexBinding
+            }
             JtmError::HashMismatch { .. } => ErrorCode::HashMismatch,
             JtmError::SizeExceeded { .. } => ErrorCode::SizeExceeded,
             JtmError::ArchiveUnsafe { .. } => ErrorCode::ArchiveUnsafe,
@@ -432,7 +442,9 @@ impl JtmError {
             JtmError::HostUnsupported { host } => obj([("host", host.as_str().into())]),
             JtmError::Network { url, .. } => obj([("url", url.as_str().into())]),
             JtmError::Offline { action } => obj([("action", action.as_str().into())]),
-            JtmError::SignatureInvalid { file, .. } => obj([("file", file.as_str().into())]),
+            JtmError::SignatureInvalid { file, .. } | JtmError::SignedFileInvalid { file, .. } => {
+                obj([("file", file.as_str().into())])
+            }
             JtmError::KeyUntrusted { key_id, resolve } => obj([
                 ("key_id", key_id.as_str().into()),
                 ("resolve", resolve.as_str().into()),
@@ -550,6 +562,7 @@ impl From<jtm_security::Error> for JtmError {
             S::KeyUntrusted {
                 key_id, resolve, ..
             } => JtmError::KeyUntrusted { key_id, resolve },
+            S::Invalid { file, message } => JtmError::SignedFileInvalid { file, message },
             other => JtmError::internal(other.to_string()),
         }
     }
@@ -787,6 +800,12 @@ mod tests {
             untrusted.details()["resolve"],
             "jtm trust add <public key> --scope demo"
         );
+        let invalid = JtmError::from(jtm_security::Error::Invalid {
+            file: "keys.json".into(),
+            message: "lists no keys".into(),
+        });
+        assert_eq!(invalid.code(), "E_INDEX_BINDING");
+        assert_eq!(invalid.details()["file"], "keys.json");
     }
 
     #[test]

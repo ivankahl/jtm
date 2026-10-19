@@ -531,6 +531,8 @@ dependencies = [
  "jtm-plugin",
  "minisign",
  "minisign-verify",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

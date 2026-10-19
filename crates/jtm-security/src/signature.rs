@@ -8,7 +8,8 @@
 use std::collections::BTreeSet;
 
 use crate::error::{Error, Result};
-use crate::key::{KeyGroup, KeyId, Keyring};
+use crate::key::{KeyGroup, KeyId, Keyring, TrustedKey};
+use crate::time::Timestamp;
 
 /// The largest signature file accepted, far more than [`MAX_SIGNATURES`] need.
 pub const MAX_SIGNATURE_FILE: usize = 64 * 1024;
@@ -42,15 +43,16 @@ struct Parsed {
 /// Verifies `signatures`, the contents of a `.minisig` file, over the raw `data` bytes.
 ///
 /// `data` is never parsed. The file is accepted when some group in `keyring` has at least its
-/// threshold of distinct keys, each with a scope covering `subject.plugin`, whose signatures
-/// verify. When none does, the error says why, preferring the most alarming reason: a signature
-/// by a trusted key that does not match the bytes, then too few signatures, then keys that are
-/// not trusted for this file.
+/// threshold of distinct keys, each unexpired at `now` and with a scope covering
+/// `subject.plugin`, whose signatures verify. When none does, the error says why, preferring the
+/// most alarming reason: a signature by a trusted key that does not match the bytes, then a
+/// signature by an expired key, then too few signatures, then keys not trusted for this file.
 pub fn verify(
     data: &[u8],
     signatures: &[u8],
     keyring: &Keyring,
     subject: Subject<'_>,
+    now: Timestamp,
 ) -> Result<Verified> {
     let invalid = |message: String| Error::SignatureInvalid {
         file: subject.file.to_owned(),
@@ -59,12 +61,17 @@ pub fn verify(
     let parsed = parse(signatures).map_err(invalid)?;
 
     let mut tampered = false;
+    let mut expired: Option<&TrustedKey> = None;
     let mut short: Option<(&KeyGroup, usize)> = None;
     for group in &keyring.groups {
         let mut signers = BTreeSet::new();
         for sig in &parsed {
             for trusted in group.keys.iter().filter(|k| k.key.id() == sig.key_id) {
                 if !trusted.scope.covers(subject.plugin) {
+                    continue;
+                }
+                if trusted.is_expired(now) {
+                    expired = Some(trusted);
                     continue;
                 }
                 match trusted.key.inner().verify(data, &sig.signature, false) {
@@ -91,6 +98,13 @@ pub fn verify(
             "a signature by a trusted key does not match the file; it may have been tampered with"
                 .to_owned(),
         ));
+    }
+    if let Some(key) = expired {
+        let expires = key.expires.map(|t| t.to_string()).unwrap_or_default();
+        return Err(invalid(format!(
+            "it is signed by key {}, which expired at {expires}",
+            key.key.id()
+        )));
     }
     if let Some((group, found)) = short {
         return Err(invalid(format!(
@@ -184,6 +198,7 @@ mod tests {
     use crate::testing::TestKey;
 
     const DATA: &[u8] = br#"{"format":1,"plugin":"demo"}"#;
+    const NOW: Timestamp = Timestamp::from_unix(1_800_000_000);
 
     fn subject() -> Subject<'static> {
         Subject {
@@ -200,6 +215,7 @@ mod tests {
                 .map(|k| TrustedKey {
                     key: k.public(),
                     scope: Scope::plugins(scope.iter().copied()).unwrap(),
+                    expires: None,
                 })
                 .collect(),
             threshold,
@@ -219,6 +235,7 @@ mod tests {
             &sig,
             &ring(vec![group(&[&key], &["demo"], 1)]),
             subject(),
+            NOW,
         )
         .unwrap();
         assert_eq!(verified.signers, vec![key.public().id()]);
@@ -235,6 +252,7 @@ mod tests {
             &sig,
             &ring(vec![group(&[&trusted], &["demo"], 1)]),
             subject(),
+            NOW,
         )
         .unwrap_err();
         match err {
@@ -256,7 +274,7 @@ mod tests {
         for i in [0, DATA.len() / 2, DATA.len() - 1] {
             let mut tampered = DATA.to_vec();
             tampered[i] ^= 0x01;
-            let err = verify(&tampered, &sig, &keyring, subject()).unwrap_err();
+            let err = verify(&tampered, &sig, &keyring, subject(), NOW).unwrap_err();
             assert!(
                 matches!(err, Error::SignatureInvalid { .. }),
                 "byte {i}: {err:?}"
@@ -270,7 +288,7 @@ mod tests {
         let sig = key.sign(DATA);
         let keyring = ring(vec![group(&[&key], &["demo"], 1)]);
         for len in [0, 1, DATA.len() - 1] {
-            let err = verify(&DATA[..len], &sig, &keyring, subject()).unwrap_err();
+            let err = verify(&DATA[..len], &sig, &keyring, subject(), NOW).unwrap_err();
             assert!(matches!(err, Error::SignatureInvalid { .. }), "{len}");
         }
     }
@@ -299,7 +317,7 @@ mod tests {
         comment[2] = "trusted comment: something else";
         cases.push(comment.join("\n").into_bytes());
         for (i, bad) in cases.iter().enumerate() {
-            let err = verify(DATA, bad, &keyring, subject()).unwrap_err();
+            let err = verify(DATA, bad, &keyring, subject(), NOW).unwrap_err();
             assert!(
                 matches!(err, Error::SignatureInvalid { .. }),
                 "case {i}: {err:?}"
@@ -316,9 +334,23 @@ mod tests {
             &sig,
             &ring(vec![group(&[&key], &["other"], 1)]),
             subject(),
+            NOW,
         )
         .unwrap_err();
         assert!(matches!(err, Error::KeyUntrusted { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn expired_key_is_rejected() {
+        let key = TestKey::generate();
+        let sig = key.sign(DATA);
+        let mut expiring = group(&[&key], &["demo"], 1);
+        expiring.keys[0].expires = Some(Timestamp::from_unix(NOW.unix() + 1));
+        verify(DATA, &sig, &ring(vec![expiring.clone()]), subject(), NOW).unwrap();
+        expiring.keys[0].expires = Some(NOW);
+        let err = verify(DATA, &sig, &ring(vec![expiring]), subject(), NOW).unwrap_err();
+        assert!(matches!(err, Error::SignatureInvalid { .. }), "{err:?}");
+        assert!(err.to_string().contains("expired"), "{err}");
     }
 
     #[test]
@@ -334,6 +366,7 @@ mod tests {
             &sig,
             &ring(vec![group(&[&key], &["demo"], 1)]),
             keys_json,
+            NOW,
         )
         .unwrap_err();
         assert!(matches!(err, Error::KeyUntrusted { .. }), "{err:?}");
@@ -349,14 +382,14 @@ mod tests {
         let keyring = ring(vec![group(&[&a, &b, &c], &["demo"], 2)]);
 
         let one = a.sign(DATA);
-        let err = verify(DATA, &one, &keyring, subject()).unwrap_err();
+        let err = verify(DATA, &one, &keyring, subject(), NOW).unwrap_err();
         assert!(err.to_string().contains("needs 2 signatures"), "{err}");
 
         let same_twice = [a.sign(DATA), a.sign(DATA)].concat();
-        assert!(verify(DATA, &same_twice, &keyring, subject()).is_err());
+        assert!(verify(DATA, &same_twice, &keyring, subject(), NOW).is_err());
 
         let two = [a.sign(DATA), c.sign(DATA)].concat();
-        let verified = verify(DATA, &two, &keyring, subject()).unwrap();
+        let verified = verify(DATA, &two, &keyring, subject(), NOW).unwrap();
         assert_eq!(verified.signers.len(), 2);
     }
 
@@ -374,7 +407,7 @@ mod tests {
                 ..group(&[&user], &["demo"], 1)
             },
         ]);
-        let verified = verify(DATA, &user.sign(DATA), &keyring, subject()).unwrap();
+        let verified = verify(DATA, &user.sign(DATA), &keyring, subject(), NOW).unwrap();
         assert_eq!(verified.group, "user trust store");
     }
 
@@ -385,7 +418,7 @@ mod tests {
         let mut tampered = DATA.to_vec();
         tampered[0] ^= 1;
         let sig = [a.sign(DATA), b.sign(DATA)].concat();
-        let err = verify(&tampered, &sig, &keyring, subject()).unwrap_err();
+        let err = verify(&tampered, &sig, &keyring, subject(), NOW).unwrap_err();
         assert!(err.to_string().contains("tampered"), "{err}");
     }
 
@@ -398,6 +431,7 @@ mod tests {
             &sig,
             &ring(vec![group(&[&key], &["demo"], 1)]),
             subject(),
+            NOW,
         )
         .unwrap_err();
         assert!(matches!(err, Error::SignatureInvalid { .. }), "{err:?}");
@@ -408,13 +442,13 @@ mod tests {
         let key = TestKey::generate();
         let keyring = ring(vec![group(&[&key], &["demo"], 1)]);
         let many = key.sign(DATA).repeat(MAX_SIGNATURES + 1);
-        assert!(verify(DATA, &many, &keyring, subject()).is_err());
+        assert!(verify(DATA, &many, &keyring, subject(), NOW).is_err());
         let huge = vec![b'a'; MAX_SIGNATURE_FILE + 1];
-        assert!(verify(DATA, &huge, &keyring, subject()).is_err());
+        assert!(verify(DATA, &huge, &keyring, subject(), NOW).is_err());
         let crlf = String::from_utf8(key.sign(DATA))
             .unwrap()
             .replace('\n', "\r\n");
-        verify(DATA, crlf.as_bytes(), &keyring, subject()).unwrap();
+        verify(DATA, crlf.as_bytes(), &keyring, subject(), NOW).unwrap();
     }
 
     fn flip_base64(line: &str) -> String {
