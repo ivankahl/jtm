@@ -659,3 +659,143 @@ fn a_bad_keys_file_only_drops_its_delegated_keys() {
     assert_eq!(loaded.warnings[0].code, W_KEYS_FILE_UNAVAILABLE);
     assert!(!keys_cache_path(&f.dirs, "demo").exists());
 }
+
+#[test]
+fn two_keys_file_copies_at_the_same_sequence_refuse_the_whole_file() {
+    let f = Fixture::new();
+    let (root, a, b) = (
+        TestKey::generate(),
+        TestKey::generate(),
+        TestKey::generate(),
+    );
+    let anchors = [root.public_str()];
+    let cache_file = keys_cache_path(&f.dirs, "demo");
+    let (cached, cached_sig) = keys_file(5, &[&a], &[&root]);
+    f.write(&cache_file, (cached.clone(), cached_sig));
+
+    // The network serves different content at the same sequence.
+    let mut net = FakeNet::default();
+    net.serve(KEYS_URL, keys_file(5, &[&b], &[&root]));
+    net.serve(REMOTE_EXPANDED, index_signed_by(&root, 1));
+    let loaded = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
+        .unwrap();
+    let warning = loaded
+        .warnings
+        .iter()
+        .find(|w| w.code == W_KEYS_FILE_UNAVAILABLE)
+        .expect("the conflict is reported");
+    assert!(
+        warning.message.contains("differ while claiming sequence 5"),
+        "{warning:?}"
+    );
+    // Neither copy is accepted: nothing is recorded and the cache is left alone.
+    assert!(!f.state().keys_files.contains_key("demo"));
+    assert_eq!(fs::read(&cache_file).unwrap(), cached);
+
+    // Both copies' delegated keys are dropped; only the anchors verify.
+    let loader = f.loader(Some(&net), &[]);
+    let keys = PluginKeys {
+        plugin: "demo",
+        signing_keys: &anchors,
+        threshold: 1,
+        keys_url: Some(KEYS_URL),
+        origin: ManifestOrigin::Builtin,
+    };
+    let (keyring, warnings) = loader.keyring(&keys, &refresh()).unwrap();
+    assert!(warnings.iter().any(|w| w.code == W_KEYS_FILE_UNAVAILABLE));
+    let (data, sig) = index_signed_by(&b, 1);
+    let err = jtm_security::verify(
+        &data,
+        &sig,
+        &keyring,
+        jtm_security::Subject {
+            file: "demo-linux-x64.json",
+            plugin: "demo",
+        },
+        NOW,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, jtm_security::Error::KeyUntrusted { .. }),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_keys_file_copy_colliding_with_the_record_is_refused() {
+    let f = Fixture::new();
+    let (root, a, b) = (
+        TestKey::generate(),
+        TestKey::generate(),
+        TestKey::generate(),
+    );
+    let anchors = [root.public_str()];
+    let mut net = FakeNet::default();
+    net.serve(KEYS_URL, keys_file(5, &[&a], &[&root]));
+    net.serve(REMOTE_EXPANDED, index_signed_by(&a, 1));
+    let loaded = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
+        .unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    assert_eq!(f.state().keys_files["demo"].sequence, 5);
+
+    // The network now serves a different keys file claiming the recorded sequence.
+    net.serve(KEYS_URL, keys_file(5, &[&b], &[&root]));
+    net.serve(REMOTE_EXPANDED, index_signed_by(&root, 2));
+    let loaded = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
+        .unwrap();
+    let warning = loaded
+        .warnings
+        .iter()
+        .find(|w| w.code == W_KEYS_FILE_UNAVAILABLE)
+        .expect("the conflict is reported");
+    assert!(
+        warning
+            .message
+            .contains("same as the newest copy already seen"),
+        "{warning:?}"
+    );
+    assert_eq!(f.state().keys_files["demo"].sequence, 5);
+}
+
+#[test]
+fn files_over_their_format_limit_are_refused_before_reading() {
+    // A signature file over its own 64 KiB limit fails even with small index bytes.
+    let f = Fixture::new();
+    let (data, sig) = f.signed(1, FUTURE);
+    f.write(&f.cache(), (data, sig));
+    fs::write(
+        signature_path(&f.cache()),
+        vec![b'a'; jtm_security::signature::MAX_SIGNATURE_FILE + 1],
+    )
+    .unwrap();
+    let err = f.load(&[], None, None, options()).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("larger than the limit for a signature file"),
+        "{err}"
+    );
+
+    // A keys file over its own 1 MiB limit is refused the same way.
+    let f = Fixture::new();
+    let keys_cache = keys_cache_path(&f.dirs, "demo");
+    fs::create_dir_all(keys_cache.parent().unwrap()).unwrap();
+    fs::write(
+        &keys_cache,
+        vec![b'a'; jtm_security::keys_json::MAX_KEYS_FILE + 1],
+    )
+    .unwrap();
+    let anchors = [TestKey::generate().public_str()];
+    let mut net = FakeNet::default();
+    net.serve(REMOTE_EXPANDED, index_signed_by(&f.key, 1));
+    let err = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, options())
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("larger than the limit for a keys file"),
+        "{err}"
+    );
+}

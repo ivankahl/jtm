@@ -46,7 +46,8 @@ struct Parsed {
 /// threshold of distinct keys, each unexpired at `now` and with a scope covering
 /// `subject.plugin`, whose signatures verify. When none does, the error says why, preferring the
 /// most alarming reason: a signature by a trusted key that does not match the bytes, then a
-/// signature by an expired key, then too few signatures, then keys not trusted for this file.
+/// legacy-format signature, then a signature by an expired key, then too few signatures, then
+/// keys not trusted for this file.
 pub fn verify(
     data: &[u8],
     signatures: &[u8],
@@ -61,6 +62,7 @@ pub fn verify(
     let parsed = parse(signatures).map_err(invalid)?;
 
     let mut tampered = false;
+    let mut legacy: Option<KeyId> = None;
     let mut expired: Option<&TrustedKey> = None;
     let mut short: Option<(&KeyGroup, usize)> = None;
     for group in &keyring.groups {
@@ -78,6 +80,12 @@ pub fn verify(
                     Ok(()) => {
                         signers.insert(sig.key_id);
                     }
+                    // The signature was made over the raw bytes instead of their hash; it is
+                    // refused on purpose, not a sign of tampering.
+                    Err(minisign_verify::Error::UnexpectedAlgorithm) => {
+                        legacy = Some(sig.key_id);
+                    }
+                    // `UnexpectedKeyId` cannot occur: the filter above matches ids already.
                     Err(_) => tampered = true,
                 }
             }
@@ -98,6 +106,12 @@ pub fn verify(
             "a signature by a trusted key does not match the file; it may have been tampered with"
                 .to_owned(),
         ));
+    }
+    if let Some(key_id) = legacy {
+        return Err(invalid(format!(
+            "it is signed by key {key_id} in the legacy minisign format, which jtm refuses; ask \
+             the publisher to re-sign it with a pre-hashed signature"
+        )));
     }
     if let Some(key) = expired {
         let expires = key.expires.map(|t| t.to_string()).unwrap_or_default();
@@ -411,6 +425,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::SignatureInvalid { .. }), "{err:?}");
+        // The file is not called tampered with: the legacy format is refused by policy.
+        assert!(err.to_string().contains("legacy"), "{err}");
+        assert!(!err.to_string().contains("tampered"), "{err}");
     }
 
     #[test]

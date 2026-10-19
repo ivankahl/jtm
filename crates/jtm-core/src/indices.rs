@@ -220,7 +220,12 @@ impl IndexLoader<'_> {
                 signature: e.signature.to_vec(),
             })
             .collect();
-        copies.extend(read_local(&cache_file, SourceKind::Cache)?);
+        copies.extend(read_local(
+            &cache_file,
+            SourceKind::Cache,
+            jtm_security::keys_json::MAX_KEYS_FILE,
+            "the limit for a keys file",
+        )?);
         let mut problems = Vec::new();
         if !options.offline
             && (options.refresh || copies.is_empty())
@@ -233,31 +238,56 @@ impl IndexLoader<'_> {
             }
         }
 
-        let mut best: Option<(IndexCopy, KeysFile)> = None;
+        let mut valid: Vec<(IndexCopy, KeysFile)> = Vec::new();
+        let mut conflict: Option<String> = None;
         for copy in copies {
-            let checked = KeysFile::load(&copy.data, &copy.signature, anchors, options.now)
-                .and_then(|file| {
-                    jtm_security::check_keys_file(&file, plugin, state)?;
-                    Ok(file)
-                });
-            match checked {
-                Ok(file)
-                    if best
-                        .as_ref()
-                        .is_none_or(|(_, b)| file.sequence > b.sequence) =>
-                {
-                    best = Some((copy, file));
+            let loaded = match KeysFile::load(&copy.data, &copy.signature, anchors, options.now) {
+                Ok(file) => file,
+                Err(err) => {
+                    problems.push(format!("{}: {err}", copy.origin));
+                    continue;
                 }
-                Ok(_) => {}
+            };
+            match jtm_security::check_keys_file(&loaded, plugin, state) {
+                Ok(_) => valid.push((copy, loaded)),
+                // The same sequence as one already seen with different content is the conflict
+                // `select` refuses for an index: neither copy can be trusted, and the recorded
+                // copy is not at hand to fall back on, so the whole keys file is refused.
+                Err(jtm_security::Error::IndexRollback { seen, got, .. }) if seen == got => {
+                    conflict = Some(format!(
+                        "{}: keys.json has sequence {got}, the same as the newest copy already \
+                         seen but with different content",
+                        copy.origin
+                    ));
+                }
                 Err(err) => problems.push(format!("{}: {err}", copy.origin)),
             }
         }
-        let Some((copy, file)) = best else {
+        if let Some(message) = conflict {
+            return Ok(Err(message));
+        }
+        let Some(top) = valid.iter().map(|(_, file)| file.sequence).max() else {
             if problems.is_empty() {
                 problems.push(format!("no copy of {url} is available"));
             }
             return Ok(Err(problems.join("; ")));
         };
+        let mut best: Vec<(IndexCopy, KeysFile)> = valid
+            .into_iter()
+            .filter(|(_, file)| file.sequence == top)
+            .collect();
+        // The same rule as `select`: two valid copies that claim the same sequence with
+        // different content are a rollback, and neither can be trusted.
+        if best.iter().any(|(_, file)| file.sha256 != best[0].1.sha256) {
+            return Ok(Err(format!(
+                "copies from {} differ while claiming sequence {top}",
+                best.iter()
+                    .map(|(copy, _)| copy.origin.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            )));
+        }
+        let (copy, file) = best.swap_remove(0);
 
         TrustState::update(&trust_path(self.dirs), |state| {
             let seen = jtm_security::check_keys_file(&file, plugin, state)?;
@@ -294,12 +324,22 @@ impl IndexLoader<'_> {
                 signature: e.signature.to_vec(),
             })
             .collect();
-        copies.extend(read_local(&cache_file, SourceKind::Cache)?);
+        copies.extend(read_local(
+            &cache_file,
+            SourceKind::Cache,
+            jtm_security::index::MAX_INDEX_FILE,
+            "the limit for an index",
+        )?);
 
         let override_url = sources.override_url.map(|u| expand(u, sources.platform));
         let local_override = override_url.as_deref().and_then(local_path);
         if let Some(path) = &local_override {
-            copies.extend(read_local(path, SourceKind::Mirror)?);
+            copies.extend(read_local(
+                path,
+                SourceKind::Mirror,
+                jtm_security::index::MAX_INDEX_FILE,
+                "the limit for an index",
+            )?);
         }
 
         // A local override is read on every load; a network location only when refreshing or
@@ -414,16 +454,26 @@ fn signature_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// Reads a copy and its signature from disk. A missing file is no copy; a missing signature
-/// is a copy with an empty signature, so it is reported as unsigned rather than ignored.
-fn read_local(path: &Path, source: SourceKind) -> Result<Option<IndexCopy>> {
-    let data = match read_capped(path) {
+/// Reads a copy and its signature from disk, refusing either over the limit for its format. A
+/// missing file is no copy; a missing signature is a copy with an empty signature, so it is
+/// reported as unsigned rather than ignored.
+fn read_local(
+    path: &Path,
+    source: SourceKind,
+    limit: usize,
+    what: &str,
+) -> Result<Option<IndexCopy>> {
+    let data = match read_capped(path, limit, what) {
         Ok(data) => data,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(io_error(path, e)),
     };
     let sig_path = signature_path(path);
-    let signature = match read_capped(&sig_path) {
+    let signature = match read_capped(
+        &sig_path,
+        jtm_security::signature::MAX_SIGNATURE_FILE,
+        "the limit for a signature file",
+    ) {
         Ok(sig) => sig,
         Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(io_error(&sig_path, e)),
@@ -436,13 +486,13 @@ fn read_local(path: &Path, source: SourceKind) -> Result<Option<IndexCopy>> {
     }))
 }
 
-/// Reads a file, refusing one larger than any index can be before reading it.
-fn read_capped(path: &Path) -> io::Result<Vec<u8>> {
+/// Reads a file, refusing one larger than its format's limit before reading it.
+fn read_capped(path: &Path, limit: usize, what: &str) -> io::Result<Vec<u8>> {
     let len = fs::metadata(path)?.len();
-    if len > jtm_security::index::MAX_INDEX_FILE as u64 {
+    if len > limit as u64 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "larger than any index jtm accepts",
+            format!("larger than {what}"),
         ));
     }
     fs::read(path)

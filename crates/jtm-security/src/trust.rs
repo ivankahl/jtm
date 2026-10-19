@@ -261,7 +261,8 @@ impl TrustState {
 }
 
 /// Keeps the higher sequence. An equal sequence keeps the first hash seen; the rollback check
-/// refuses a copy that disagrees with it.
+/// refuses a copy that disagrees with it. An equal sequence with the same bytes may update
+/// where the copy came from, but only towards a stricter expiry policy.
 fn record(slot: std::collections::btree_map::Entry<'_, String, Seen>, seen: Seen) -> bool {
     use std::collections::btree_map::Entry;
     match slot {
@@ -272,12 +273,14 @@ fn record(slot: std::collections::btree_map::Entry<'_, String, Seen>, seen: Seen
         Entry::Occupied(mut o) => {
             let old = o.get();
             let newer = seen.sequence > old.sequence;
-            // A copy with the same content from a source with a different expiry policy, such
-            // as a mirror copy of what was first seen embedded, updates where it came from.
+            // A copy with the same content from a source with a different expiry policy may
+            // update where it came from, but only from the canonical remote: `check_index`
+            // judges a cached copy by its recorded source, so re-recording a remote copy as
+            // embedded or mirrored would turn an expired index from an error into a warning.
             let same_but_moved = seen.sequence == old.sequence
                 && seen.sha256 == old.sha256
-                && seen.source != old.source
-                && seen.source != Some(SourceKind::Cache);
+                && seen.source == Some(SourceKind::Remote)
+                && old.source != Some(SourceKind::Remote);
             if newer || same_but_moved {
                 o.insert(seen);
                 true
@@ -398,10 +401,26 @@ mod tests {
         assert!(!state.record_index("demo", "linux-x64", seen(4, "b", SourceKind::Remote)));
         assert!(!state.record_index("demo", "linux-x64", seen(5, "c", SourceKind::Remote)));
         assert!(!state.record_index("demo", "linux-x64", seen(5, "a", SourceKind::Cache)));
-        assert!(state.record_index("demo", "linux-x64", seen(5, "a", SourceKind::Mirror)));
+        // Same bytes from a source with a relaxed policy never downgrade a remote record.
+        assert!(!state.record_index("demo", "linux-x64", seen(5, "a", SourceKind::Mirror)));
+        assert!(!state.record_index("demo", "linux-x64", seen(5, "a", SourceKind::Embedded)));
+        assert_eq!(
+            state.seen_index("demo", "linux-x64").unwrap().source,
+            Some(SourceKind::Remote)
+        );
         assert!(state.record_index("demo", "linux-x64", seen(6, "d", SourceKind::Embedded)));
         assert_eq!(state.seen_index("demo", "linux-x64").unwrap().sha256, "d");
-        assert_eq!(state.seen_index("demo", "macos-x64"), None);
+
+        // A copy first seen embedded is promoted when the canonical remote serves it.
+        assert!(state.record_index("demo", "macos-x64", seen(3, "e", SourceKind::Embedded)));
+        assert!(!state.record_index("demo", "macos-x64", seen(3, "e", SourceKind::Mirror)));
+        assert!(state.record_index("demo", "macos-x64", seen(3, "e", SourceKind::Remote)));
+        assert_eq!(
+            state.seen_index("demo", "macos-x64").unwrap().source,
+            Some(SourceKind::Remote)
+        );
+        assert_eq!(state.seen_index("demo", "macos-x64").unwrap().sha256, "e");
+        assert_eq!(state.seen_index("demo", "linux-x64").unwrap().sha256, "d");
 
         assert!(state.record_keys_file("demo", seen(2, "k", SourceKind::Remote)));
         assert!(!state.record_keys_file("demo", seen(1, "j", SourceKind::Remote)));

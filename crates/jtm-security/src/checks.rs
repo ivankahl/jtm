@@ -373,6 +373,34 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_record_is_not_downgraded_by_an_embedded_copy() {
+        // The same bytes arriving embedded after the canonical remote must not relax the
+        // recorded source, or the cached copy of the remote content would only warn on expiry.
+        let mut state = state_with(1, "a", SourceKind::Remote);
+        state.record_index(
+            "demo",
+            "linux-x64",
+            Seen {
+                sequence: 1,
+                sha256: "a".into(),
+                source: Some(SourceKind::Embedded),
+            },
+        );
+        assert_eq!(
+            state.seen_index("demo", "linux-x64").unwrap().source,
+            Some(SourceKind::Remote)
+        );
+        let err = run(
+            &expired(1, "a"),
+            SourceKind::Cache,
+            &state,
+            ExpiryPolicy::RemoteOnly,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::IndexExpired { .. }), "{err:?}");
+    }
+
+    #[test]
     fn checks_run_binding_then_rollback_then_expiry() {
         let state = state_with(10, "a", SourceKind::Remote);
         let both = loaded("other", "linux-x64", 1, "b", NOW.unix());

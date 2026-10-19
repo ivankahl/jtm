@@ -14,6 +14,7 @@ E_KEY_UNTRUSTED          exit=7 retryable=false
 E_INDEX_EXPIRED          exit=5 retryable=false
 E_INDEX_ROLLBACK         exit=5 retryable=false
 E_INDEX_BINDING          exit=5 retryable=false
+E_INDEX_INVALID          exit=5 retryable=false
 E_HASH_MISMATCH          exit=5 retryable=false
 E_SIZE_EXCEEDED          exit=5 retryable=false
 E_ARCHIVE_UNSAFE         exit=5 retryable=false

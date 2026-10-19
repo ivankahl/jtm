@@ -43,8 +43,8 @@ impl TrustAnchors {
         let keys = keys
             .iter()
             .map(|k| {
-                PublicKey::parse(k).map_err(|e| Error::Invalid {
-                    file: format!("plugin `{plugin}` signing keys"),
+                PublicKey::parse(k).map_err(|e| Error::SigningKeys {
+                    plugin: plugin.to_owned(),
                     message: e.to_string(),
                 })
             })
@@ -118,8 +118,8 @@ impl TrustAnchors {
 /// 2. The delegated keys in the plugin's verified keys file, if it has one, at that file's
 ///    threshold and only where their scope names the plugin.
 /// 3. Other keys the user trusts for the plugin, such as a company key that re-signs an
-///    internal mirror, one signature each. Anchor keys are left out, so trusting an anchor
-///    never lowers the manifest's threshold.
+///    internal mirror, one signature each. Anchor keys and keys file keys are left out, so
+///    trusting a key that already counts toward a threshold never lowers that threshold.
 pub fn plugin_keyring(
     anchors: &TrustAnchors,
     keys_file: Option<&KeysFile>,
@@ -129,9 +129,15 @@ pub fn plugin_keyring(
     if let Some(file) = keys_file {
         keyring = keyring.with(file.group());
     }
+    let listed_in_keys_file = |key: &PublicKey| {
+        keys_file.is_some_and(|file| file.keys.iter().any(|listed| listed.key == *key))
+    };
     let mut user = state.user_group();
-    user.keys
-        .retain(|k| k.scope.covers(&anchors.plugin) && !anchors.keys.contains(&k.key));
+    user.keys.retain(|k| {
+        k.scope.covers(&anchors.plugin)
+            && !anchors.keys.contains(&k.key)
+            && !listed_in_keys_file(&k.key)
+    });
     if !user.keys.is_empty() {
         keyring = keyring.with(user);
     }
@@ -221,6 +227,40 @@ mod tests {
         assert!(verify(DATA, &a.sign(DATA), &ring, subject("acme/flyway"), NOW).is_err());
         let both = [a.sign(DATA), b.sign(DATA)].concat();
         verify(DATA, &both, &ring, subject("acme/flyway"), NOW).unwrap();
+    }
+
+    #[test]
+    fn trusting_a_keys_file_key_cannot_lower_its_threshold() {
+        let (root, a, b, company) = (
+            TestKey::generate(),
+            TestKey::generate(),
+            TestKey::generate(),
+            TestKey::generate(),
+        );
+        let data = serde_json::to_vec(&serde_json::json!({
+            "format": 1, "sequence": 1, "threshold": 2,
+            "keys": [
+                { "key": a.public_str(), "scope": ["java"], "expires": "2027-06-01T00:00:00Z" },
+                { "key": b.public_str(), "scope": ["java"], "expires": "2027-06-01T00:00:00Z" }
+            ]
+        }))
+        .unwrap();
+        let anchors = TrustAnchors::preapproved("java", &[root.public_str()], 1).unwrap();
+        let file = KeysFile::load(&data, &root.sign(&data), &anchors, NOW).unwrap();
+
+        // Trusting a listed key never turns it into a threshold-1 group.
+        let mut state = TrustState::default();
+        trust(&mut state, &a, "java");
+        let ring = plugin_keyring(&anchors, Some(&file), &state);
+        assert!(verify(DATA, &a.sign(DATA), &ring, subject("java"), NOW).is_err());
+        let both = [a.sign(DATA), b.sign(DATA)].concat();
+        verify(DATA, &both, &ring, subject("java"), NOW).unwrap();
+
+        // A key that counts toward no threshold still re-signs on its own.
+        trust(&mut state, &company, "java");
+        let ring = plugin_keyring(&anchors, Some(&file), &state);
+        let verified = verify(DATA, &company.sign(DATA), &ring, subject("java"), NOW).unwrap();
+        assert_eq!(verified.group, "user trust store");
     }
 
     #[test]

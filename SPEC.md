@@ -356,7 +356,7 @@ Each plugin publishes one signed JSON index per platform; jtm embeds a snapshot 
 3. **Cache.** `<JTM_HOME>/cache/index/<plugin>/<platform>.json` plus `.minisig`, written atomically after verification.
 4. **Override.** Any URL or local path the user configures (below).
 
-A plugin's keys file, when its manifest sets `keys_url`, comes from the same kinds of source: embedded (the first-party `keys.json`), cached at `<JTM_HOME>/cache/index/<plugin>/keys.json`, or fetched from `keys_url`. The copy with the highest valid `sequence` is used. A keys file that is missing or fails verification only removes its delegated keys; the plugin's signing keys still verify indices they sign directly.
+A plugin's keys file, when its manifest sets `keys_url`, comes from the same kinds of source: embedded (the first-party `keys.json`), cached at `<JTM_HOME>/cache/index/<plugin>/keys.json`, or fetched from `keys_url`. The copy with the highest valid `sequence` is used. Two copies that claim the same `sequence` with different content refuse the keys file, exactly as conflicting index copies are refused; the warning names them. A keys file that is missing, fails verification or conflicts only removes its delegated keys; the plugin's signing keys still verify indices they sign directly.
 
 At load time jtm verifies every available copy and uses the one with the highest valid `sequence`.
 
@@ -402,7 +402,7 @@ jtm never trusts a network location: an artifact is accepted only if its SHA-256
 
 Every plugin follows this chain; a simple third-party plugin can skip step 2 and sign its indices with its signing key directly. A third-party plugin's signing keys count only once a human confirms them, or `--trust-key` or `jtm trust add` names them (section 7); the marketplace entry is shown as evidence but grants nothing. Confirmed keys are stored, scoped to that plugin, in `<JTM_HOME>/state/trust.json` and recorded in `jtm.lock`. When fewer confirmed signing keys than the manifest's `threshold` are trusted, loading fails with `E_KEY_UNTRUSTED`, and `details.resolve` names a key to trust.
 
-A key the user trusts for a plugin may also re-sign that plugin's indices on its own, so a company can vet and re-sign an internal mirror. A trusted signing key never counts toward this, so confirming signing keys cannot lower the manifest's `threshold`.
+A key the user trusts for a plugin may also re-sign that plugin's indices on its own, so a company can vet and re-sign an internal mirror. A key that already counts toward a threshold — a manifest signing key or a key listed in the keys file — never also counts as such a user signature, so trusting one cannot lower a `threshold`.
 
 ### Key roles
 
@@ -424,7 +424,7 @@ A key the user trusts for a plugin may also re-sign that plugin's indices on its
 
 **Why the embedded keys are not signed at build time.** A signature checked inside the same binary cannot protect the binary's own contents: anyone able to alter the embedded anchors can alter the embedded verification key and the checking code with it. Build-time signing applies to release artifacts — the binaries and `SHA256SUMS`, verified outside jtm by package managers, installers and users — not to data inside the binary. The compiled-in root key list is the fixed root of trust, and changing it is a release (see the root rotation bullet above).
 
-Signatures use minisign (Ed25519). Clients verify with the `minisign-verify` crate; the publishing tool signs with `minisign`. Keys files support a `threshold` field from day one even if first-party starts at 1 of 1 for index keys.
+Signatures use minisign (Ed25519). Clients verify with the `minisign-verify` crate; the publishing tool signs with `minisign`. Only pre-hashed (`ED`) signatures are accepted; the legacy mode that signs raw bytes is refused, with a message asking the publisher to re-sign. Keys files support a `threshold` field from day one even if first-party starts at 1 of 1 for index keys.
 
 **Index key custody in v1.** The index key is a GitHub Actions secret that only the publish workflow can read, through a protected environment that requires a maintainer's approval and runs only on the default branch. Index keys expire after 90 days through `keys.json`, so a leaked key has a short life. Because the offline root key certifies index keys, moving custody to a cloud KMS or hardware signer later is an ordinary key rotation with no client changes. Sigstore keyless signing would need client-side changes, so it is not planned.
 
@@ -600,14 +600,16 @@ Success and no-op both exit 0 so `set -e` scripts keep working; the difference i
 | 2 | Usage error (bad flag, bad spec) | No |
 | 3 | Not found (tool, version, alias, platform) | No |
 | 4 | Network or I/O error | Yes |
-| 5 | Verification failure (signature, hash, rollback, expiry, unsafe archive, invalid plugin manifest) | No, report it |
+| 5 | Verification failure (signature, hash, rollback, expiry, invalid signed file, unsafe archive, invalid plugin manifest) | No, report it |
 | 6 | Lock or pin problem (outdated, mismatch, conflict) | No |
 | 7 | Trust required (untrusted plugin or key) | No, ask a human |
 | 8 | Partial success in a multi-tool command | Inspect `data` |
 
 ### Error codes
 
-Stable string codes, never renamed once released: `E_USAGE`, `E_TOOL_UNKNOWN`, `E_VERSION_NOT_FOUND`, `E_ALIAS_UNKNOWN`, `E_PLATFORM_UNSUPPORTED`, `E_NETWORK`, `E_OFFLINE`, `E_SIGNATURE_INVALID`, `E_KEY_UNTRUSTED`, `E_INDEX_EXPIRED`, `E_INDEX_ROLLBACK`, `E_INDEX_BINDING`, `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED`, `E_ARCHIVE_UNSAFE`, `E_LOCK_OUTDATED`, `E_LOCK_INDEX_MISMATCH`, `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_INPUT_REQUIRED`, `E_PLUGIN_SCRIPT_LIMIT`, `E_PLUGIN_INVALID`, `E_IN_USE`, `E_PERMISSION`, `E_INTERNAL`.
+Stable string codes, never renamed once released: `E_USAGE`, `E_TOOL_UNKNOWN`, `E_VERSION_NOT_FOUND`, `E_ALIAS_UNKNOWN`, `E_PLATFORM_UNSUPPORTED`, `E_NETWORK`, `E_OFFLINE`, `E_SIGNATURE_INVALID`, `E_KEY_UNTRUSTED`, `E_INDEX_EXPIRED`, `E_INDEX_ROLLBACK`, `E_INDEX_BINDING`, `E_INDEX_INVALID`, `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED`, `E_ARCHIVE_UNSAFE`, `E_LOCK_OUTDATED`, `E_LOCK_INDEX_MISMATCH`, `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_INPUT_REQUIRED`, `E_PLUGIN_SCRIPT_LIMIT`, `E_PLUGIN_INVALID`, `E_IN_USE`, `E_PERMISSION`, `E_INTERNAL`.
+
+Warning codes use the same stable form and travel in `warnings`; they never change the exit code: `W_INDEX_EXPIRED` (an expired index was accepted from a source where expiry is only a warning), `W_INDEX_COPY_REJECTED` (a copy that failed verification was ignored while a valid copy was used), `W_KEYS_FILE_UNAVAILABLE` (no usable keys file, so only the anchors verify), `W_INDEX_REFRESH_FAILED` (a refresh failed and a local copy was used) and `W_KEY_NOT_TRUSTED` (a `jtm trust remove` matched nothing).
 
 Four codes exit with 7, and they tell an agent whether a flag can help:
 
@@ -912,7 +914,7 @@ Suggested crates: `clap`, `serde`, `serde_json`, `toml`, `toml_edit`, `schemars`
 | T2.1 | Minisign signature verification over raw bytes, with scoped trusted keys | T0.3 | Valid, wrong-key, tampered-byte and truncated cases tested |
 | T2.2 | `keys.json` format: root-signed list of index keys with scope, threshold, sequence and expiry | T2.1 | Threshold 1 and 2 tested; expired and out-of-scope keys rejected |
 | T2.3 | Index file schema and loader that verifies before parsing | T2.2, T1.2 | Unsigned or tampered files never reach the JSON parser (test with malformed JSON plus bad signature) |
-| T2.4 | Binding, rollback and expiry checks with `state/trust.json` | T2.3 | `E_INDEX_BINDING`, `E_INDEX_ROLLBACK`, `E_INDEX_EXPIRED` each tested; expiry warning versus error per source kind |
+| T2.4 | Binding, rollback and expiry checks with `state/trust.json` | T2.3 | `E_INDEX_BINDING`, `E_INDEX_INVALID`, `E_INDEX_ROLLBACK`, `E_INDEX_EXPIRED` each tested; expiry warning versus error per source kind |
 | T2.5 | Index source selection: embedded, cache, remote, override; pick highest valid sequence | T2.4 | Mixed valid and invalid copies resolve to the correct one |
 | T2.6 | `jtm trust add/remove/list` | T2.4 | Keys persisted with scope; JSON output |
 

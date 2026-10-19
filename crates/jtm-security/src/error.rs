@@ -23,9 +23,14 @@ pub enum Error {
     },
 
     /// A correctly signed file that is not what jtm expects: malformed, an unsupported format,
-    /// or failing validation.
+    /// or failing validation. Maps to `E_INDEX_INVALID`.
     #[error("{file} is signed but not valid: {message}")]
     Invalid { file: String, message: String },
+
+    /// A plugin manifest whose `[index] signing_keys` are not usable public keys. Maps to
+    /// `E_PLUGIN_INVALID`.
+    #[error("plugin `{plugin}` signing keys are not valid: {message}")]
+    SigningKeys { plugin: String, message: String },
 
     /// The signed plugin or platform is not the one requested. Maps to `E_INDEX_BINDING`.
     #[error("{file} is signed for {got}, not {expected}")]
