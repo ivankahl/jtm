@@ -1,0 +1,18 @@
+[package]
+name = "jtm-cli"
+description = "Runtime manager for the JVM ecosystem: Java, Maven, Gradle, Kotlin and Spring Boot CLI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "jtm"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true
