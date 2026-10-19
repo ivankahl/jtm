@@ -64,3 +64,26 @@ fn no_arguments_shows_help_and_exits_with_usage_code() {
     let output = jtm().output().unwrap();
     assert_eq!(output.status.code(), Some(2));
 }
+
+#[test]
+fn invalid_env_value_is_a_usage_envelope() {
+    let output = jtm()
+        .args(["--version", "--json"])
+        .env("JTM_OFFLINE", "maybe")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let value = envelope(&output);
+    assert_eq!(value["error"]["code"], "E_USAGE");
+}
+
+#[test]
+fn verbose_logs_go_to_stderr_not_stdout() {
+    let output = jtm()
+        .args(["--version", "--json", "--verbose"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    envelope(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("resolved context"));
+}
