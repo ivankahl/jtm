@@ -6,7 +6,7 @@ jtm is a single-binary Rust runtime manager for the JVM ecosystem (Java, Maven, 
 
 ## Status
 
-Pre-code. Work is tracked as GitHub issues in `ivankahl/jtm`:
+Workspace scaffolded (T0.1); crates are empty stubs. Work is tracked as GitHub issues in `ivankahl/jtm`:
 
 - Milestone epics M0 to M10 are issues #1 to #11, labelled `epic` and `M<n>`.
 - Tickets T0.1 to T10.5 are issues #12 to #75, titled `[T<id>] ...`, attached as sub-issues of their epic. Each body lists its dependencies and "done when" criteria.
@@ -56,7 +56,3 @@ cargo test --workspace
 - **Stable codes.** `E_` error codes and exit codes 0 to 8 are never renamed or renumbered once released (section 12).
 - **Idempotence.** Re-running `install`, `sync`, `pin` or `default` with the same arguments is a no-op that reports `changed: false`.
 - **No admin rights.** All state lives in the user profile; Windows uses junctions and `HKCU`, never anything that needs elevation or Developer Mode.
-
-## Gotchas
-
-- The inherited `.gitignore` is a Java template: it ignores `*.zip` and `*.tar.gz` (which test fixture archives will need) and does not ignore `target/`. Fix it in T0.1.

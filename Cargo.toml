@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+repository = "https://github.com/ivankahl/jtm"
+authors = ["Ivan Kahl <hello@ivankahl.com>"]
+
+[workspace.dependencies]
+jtm-archive = { path = "crates/jtm-archive" }
+jtm-core = { path = "crates/jtm-core" }
+jtm-fetch = { path = "crates/jtm-fetch" }
+jtm-plugin = { path = "crates/jtm-plugin" }
+jtm-security = { path = "crates/jtm-security" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+print_stderr = "warn"
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,19 @@
+[package]
+name = "jtm-index"
+description = "Index generator, signer and publisher for jtm (CI only)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "jtm-index"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true
