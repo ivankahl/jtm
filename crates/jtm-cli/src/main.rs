@@ -1,35 +1,20 @@
 //! The `jtm` command-line interface.
 
+mod cli;
 mod logging;
 mod output;
 
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
 use clap::error::ErrorKind;
-use jtm_core::{ExitCode as JtmExitCode, JtmError};
+use jtm_core::{Context, ExitCode as JtmExitCode, GlobalFlags, JtmError, Terminal};
 use serde::Serialize;
 
+use crate::cli::Cli;
 use crate::output::{Format, Human, JTM_VERSION, Outcome, Renderer};
-
-/// Runtime manager for the JVM ecosystem.
-#[derive(Debug, Parser)]
-#[command(
-    name = "jtm",
-    disable_version_flag = true,
-    arg_required_else_help = true
-)]
-struct Cli {
-    /// Print the jtm version.
-    #[arg(short = 'V', long)]
-    version: bool,
-
-    /// Write one JSON envelope to stdout; logs go to stderr.
-    #[arg(long, global = true)]
-    json: bool,
-}
 
 #[derive(Debug, Serialize)]
 struct VersionData {
@@ -44,23 +29,40 @@ impl Human for VersionData {
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
-    // Decide the format before parsing so that usage errors honour `--json` too.
-    let format = if wants_json(&args) {
+
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(cli) => cli,
+        // Usage errors honour `--json` even though parsing failed.
+        Err(err) if wants_json(&args) && !is_informational(err.kind()) => {
+            return fail(
+                &mut Renderer::stdio(Format::Json),
+                "jtm",
+                &usage_error(&err),
+            );
+        }
+        Err(err) => {
+            let _ = err.print();
+            return ExitCode::from(u8::try_from(err.exit_code()).unwrap_or(1));
+        }
+    };
+
+    let flags = GlobalFlags::from(&cli.global);
+    let format = if flags.json {
         Format::Json
     } else {
         Format::Human
     };
-    logging::init(format);
     let mut renderer = Renderer::stdio(format);
-
-    let cli = match Cli::try_parse_from(&args) {
-        Ok(cli) => cli,
-        Err(err) if format == Format::Human || is_informational(err.kind()) => {
-            let _ = err.print();
-            return ExitCode::from(err.exit_code().clamp(0, 255) as u8);
-        }
-        Err(err) => return fail(&mut renderer, "jtm", &usage_error(&err)),
+    let terminal = Terminal {
+        stdin: io::stdin().is_terminal(),
+        stderr: io::stderr().is_terminal(),
     };
+    let ctx = match Context::resolve(&flags, |key| std::env::var_os(key), terminal) {
+        Ok(ctx) => ctx,
+        Err(err) => return fail(&mut renderer, "jtm", &err),
+    };
+    logging::init(&ctx);
+    tracing::debug!(?ctx, "resolved context");
 
     if cli.version {
         let outcome = Outcome {
