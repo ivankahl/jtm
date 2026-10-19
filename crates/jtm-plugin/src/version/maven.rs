@@ -1,8 +1,9 @@
-//! Maven's `ComparableVersion` ordering, ported from `org.apache.maven.artifact.versioning`.
+//! Maven's `ComparableVersion` ordering, ported from `org.apache.maven.artifact.versioning` as
+//! of Maven 3.9, with one deviation that keeps the ordering transitive (see [`parse`]).
 //!
-//! A version becomes a tree of items. `.` separates items in a list, while `-` and a change
-//! between digits and letters start a nested list. Trailing zeros and release qualifiers are
-//! dropped, so `1.0.0`, `1` and `1-ga` are equal. Qualifiers order as
+//! A version becomes a tree of items. `.` separates items in a list, while `-`, a change
+//! between digits and letters, and a qualifier after other items start a nested list. Trailing
+//! zeros and release qualifiers are dropped, so `1.0.0`, `1` and `1-ga` are equal. Qualifiers order as
 //! `alpha < beta < milestone < rc = cr < snapshot < (release) < sp < anything else`.
 
 use std::cmp::Ordering;
@@ -73,8 +74,16 @@ pub(super) fn parse(input: &str) -> Item {
                 let item = if i == start {
                     Item::Int(String::new())
                 } else {
+                    // Deviation from Maven 3.9, which nests a qualifier only before a digit or at
+                    // the end: a qualifier between separators, as in `0.rc.ea`, nests too.
+                    // Without this `0 < 0-ea < 0.rc.ea < 0` is a cycle, so "highest" would
+                    // depend on index order.
+                    if !is_digit && !stack[list].is_empty() {
+                        stack.push(Vec::new());
+                    }
                     parse_item(is_digit, &version[start..i])
                 };
+                let list = stack.len() - 1;
                 stack[list].push(item);
                 start = i + 1;
                 if c == b'-' {
@@ -83,6 +92,11 @@ pub(super) fn parse(input: &str) -> Item {
             }
             b'0'..=b'9' => {
                 if !is_digit && i > start {
+                    // Treat `.X` like `-X` for any qualifier X, so `1.0.0.X1 < 1.0.0-X2`.
+                    if !stack[list].is_empty() {
+                        stack.push(Vec::new());
+                    }
+                    let list = stack.len() - 1;
                     stack[list].push(Item::string(&version[start..i], true));
                     start = i;
                     stack.push(Vec::new());
@@ -100,6 +114,9 @@ pub(super) fn parse(input: &str) -> Item {
         }
     }
     if bytes.len() > start {
+        if !is_digit && !stack[stack.len() - 1].is_empty() {
+            stack.push(Vec::new());
+        }
         let list = stack.len() - 1;
         stack[list].push(parse_item(is_digit, &version[start..]));
     }

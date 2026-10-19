@@ -142,11 +142,100 @@ fn maven_ordering_matches_comparable_version() {
     assert_increasing(
         VersionScheme::Maven,
         &[
-            "2.0", "2-1", "2.0.a", "2.0.0.a", "2.0.2", "2.0.123", "2.1.0", "2.1-a", "2.1b",
-            "2.1-c", "2.1-1", "2.1.0.1", "2.2", "2.123", "11.a2", "11.a11", "11.b2", "11.b11",
-            "11.m2", "11.m11", "11", "11.a", "11b", "11c", "11m",
+            "2.0", "2.0.a", "2-1", "2.0.2", "2.0.123", "2.1.0", "2.1-a", "2.1b", "2.1-c", "2.1-1",
+            "2.1.0.1", "2.2", "2.123", "11.a2", "11.a11", "11.b2", "11.b11", "11.m2", "11.m11",
+            "11", "11.a", "11b", "11c", "11m",
         ],
     );
+}
+
+/// `testVersionComparing` and the regression tests from Maven's `ComparableVersionTest`.
+#[test]
+fn maven_upstream_regressions() {
+    let m = VersionScheme::Maven;
+    for pair in [
+        ["1", "2"],
+        ["1.5", "2"],
+        ["1.0.1", "1.1"],
+        ["1.0-alpha-1-SNAPSHOT", "1.0-alpha-1"],
+        ["1.0", "1.0-1"],
+        ["1.0.0", "1.0-1"],
+        ["2.0-1", "2.0.1"],
+        ["2.0.1-klm", "2.0.1-lmn"],
+        ["2.0.1", "2.0.1-xyz"],
+        ["2.0.1-xyz", "2.0.1-123"],
+        // MNG-5568
+        ["6.1.0rc3", "6.1.0"],
+        ["6.1.0rc3", "6.1H.5-beta"],
+        ["6.1.0", "6.1H.5-beta"],
+        // MNG-6572
+        ["20190126.230843", "1234567890.12345"],
+        ["1234567890.12345", "123456789012345.1H.5-beta"],
+        [
+            "123456789012345.1H.5-beta",
+            "12345678901234567890.1H.5-beta",
+        ],
+        // MNG-6964
+        ["1-0.alpha", "1"],
+        ["1-0.beta", "1"],
+        ["1-0.alpha", "1-0.beta"],
+    ] {
+        assert_increasing(m, &pair);
+    }
+    for x in [
+        "abc",
+        "alpha",
+        "a",
+        "beta",
+        "b",
+        "def",
+        "milestone",
+        "m",
+        "RC",
+    ] {
+        // MNG-7644: `1.0.0.X1 < 1.0.0-X2` and `2.0.X == 2-X == 2.0.0.X` for any qualifier X.
+        assert_increasing(m, &[&format!("1.0.0.{x}1"), &format!("1.0.0-{x}2")]);
+        assert_equivalent(
+            m,
+            &[
+                (&format!("2-{x}"), &format!("2.0.{x}")),
+                (&format!("2-{x}"), &format!("2.0.0.{x}")),
+            ],
+        );
+    }
+    for len in 1..20 {
+        assert_equivalent(m, &[(&format!("{}1", "0".repeat(len - 1)), "1")]);
+        assert_equivalent(m, &[(&"0".repeat(len), "0")]);
+    }
+}
+
+/// Cycles proptest found: `0.rc0 < 0 < 0-1 < 0.rc0` before Maven 3.9's MNG-7644 change, and
+/// `0 < 0-ea < 0.rc.ea < 0` in Maven 3.9 itself, which jtm's deviation fixes.
+#[test]
+fn maven_ordering_has_no_cycles_through_mid_list_qualifiers() {
+    let m = VersionScheme::Maven;
+    for triple in [
+        ["0.rc0", "0", "0-1"],
+        ["0", "0-ea", "0.rc.ea"],
+        ["0", "0-ea", "0.rc-ea"],
+    ] {
+        let mut versions: Vec<Version> = triple.iter().map(|s| v(m, s)).collect();
+        versions.sort_by(Version::cmp_precedence);
+        assert!(
+            versions[0].cmp_precedence(&versions[1]).is_le(),
+            "{triple:?}"
+        );
+        assert!(
+            versions[1].cmp_precedence(&versions[2]).is_le(),
+            "{triple:?}"
+        );
+        assert!(
+            versions[0].cmp_precedence(&versions[2]).is_le(),
+            "{triple:?}"
+        );
+    }
+    // Where jtm differs from Maven 3.9: a qualifier between separators nests like `-X`.
+    assert_equivalent(m, &[("1.rc.1", "1-rc.1"), ("0.rc.ea", "0-rc-ea")]);
 }
 
 #[test]
