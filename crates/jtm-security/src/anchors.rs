@@ -11,6 +11,12 @@
 //! - **Confirmed**: every other plugin. Only anchors the user has trusted for the plugin, by
 //!   answering the prompt, `--trust-key` or `jtm trust add`, count. Being listed in the
 //!   marketplace confirms nothing.
+//!
+//! Pre-approval is provenance, never file contents: [`TrustAnchors::preapproved`] must only be
+//! called for anchors that ship inside the jtm binary. A signature checked inside the same
+//! binary cannot protect the binary's own data, so nothing read from disk (including the
+//! unpacked `plugins/builtin` working copy), the marketplace or the network may take this path;
+//! that is what [`TrustAnchors::confirmed`] is for.
 
 use crate::error::{Error, Result};
 use crate::key::{KeyGroup, Keyring, PublicKey, Scope, TrustedKey};
@@ -29,6 +35,10 @@ pub struct TrustAnchors {
 impl TrustAnchors {
     /// Anchors trusted because they ship inside jtm: a first-party manifest's `signing_keys`,
     /// or the jtm root keys.
+    ///
+    /// Only call this for manifests compiled into jtm. Every other manifest's anchors go
+    /// through [`TrustAnchors::confirmed`], whatever the plugin is called and wherever the
+    /// manifest was read from.
     pub fn preapproved(plugin: &str, keys: &[String], threshold: u32) -> Result<TrustAnchors> {
         let keys = keys
             .iter()

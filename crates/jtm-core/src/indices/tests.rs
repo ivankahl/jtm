@@ -482,7 +482,7 @@ impl Fixture {
     fn load_plugin(
         &self,
         anchors: &[String],
-        preapproved: bool,
+        origin: ManifestOrigin,
         net: &FakeNet,
         options: LoadOptions,
     ) -> Result<PluginIndex> {
@@ -492,7 +492,7 @@ impl Fixture {
             signing_keys: anchors,
             threshold: 1,
             keys_url: Some(KEYS_URL),
-            preapproved,
+            origin,
         };
         let (keyring, mut warnings) = loader.keyring(&keys, &options)?;
         let sources = IndexSources {
@@ -521,20 +521,26 @@ fn a_keys_file_delegates_and_rotates_index_keys_without_prompts() {
     let mut net = FakeNet::default();
     net.serve(KEYS_URL, keys_file(1, &[&old], &[&root]));
     net.serve(REMOTE_EXPANDED, index_signed_by(&old, 1));
-    let loaded = f.load_plugin(&anchors, true, &net, refresh()).unwrap();
+    let loaded = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
+        .unwrap();
     assert_eq!(loaded.index.sequence, 1);
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
 
     // The publisher rotates to a new index key.
     net.serve(KEYS_URL, keys_file(2, &[&new], &[&root]));
     net.serve(REMOTE_EXPANDED, index_signed_by(&new, 2));
-    let loaded = f.load_plugin(&anchors, true, &net, refresh()).unwrap();
+    let loaded = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
+        .unwrap();
     assert_eq!(loaded.index.sequence, 2);
     assert_eq!(f.state().keys_files["demo"].sequence, 2);
 
     // The retired key no longer verifies anything.
     net.serve(REMOTE_EXPANDED, index_signed_by(&old, 3));
-    let loaded = f.load_plugin(&anchors, true, &net, refresh()).unwrap();
+    let loaded = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
+        .unwrap();
     assert_eq!(
         loaded.index.sequence, 2,
         "the copy signed by the old key is ignored"
@@ -551,7 +557,9 @@ fn a_keys_file_delegates_and_rotates_index_keys_without_prompts() {
     // Replaying the old keys file is refused; the cached current one stays in use.
     net.serve(KEYS_URL, keys_file(1, &[&old], &[&root]));
     net.serve(REMOTE_EXPANDED, index_signed_by(&new, 4));
-    let loaded = f.load_plugin(&anchors, true, &net, refresh()).unwrap();
+    let loaded = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
+        .unwrap();
     assert_eq!(loaded.index.sequence, 4);
 }
 
@@ -571,7 +579,7 @@ fn an_embedded_keys_file_works_offline() {
         signing_keys: &[root.public_str()],
         threshold: 1,
         keys_url: Some(KEYS_URL),
-        preapproved: true,
+        origin: ManifestOrigin::Builtin,
     };
     let offline = LoadOptions {
         offline: true,
@@ -601,7 +609,11 @@ fn a_third_party_plugin_needs_its_key_confirmed() {
     let mut net = FakeNet::default();
     net.serve(REMOTE_EXPANDED, index_signed_by(&author, 1));
 
-    let err = f.load_plugin(&anchors, false, &net, refresh()).unwrap_err();
+    // `demo` has the shape of a first-party name, but an external manifest's anchors are
+    // confirmed, never pre-approved: provenance decides, not the name.
+    let err = f
+        .load_plugin(&anchors, ManifestOrigin::External, &net, refresh())
+        .unwrap_err();
     assert_eq!(err.code(), "E_KEY_UNTRUSTED");
     assert_eq!(err.exit_code(), crate::ExitCode::TrustRequired);
     assert_eq!(
@@ -614,7 +626,9 @@ fn a_third_party_plugin_needs_its_key_confirmed() {
     );
 
     crate::trust::add_key(&f.dirs, &author.public_str(), &["demo".to_owned()], NOW).unwrap();
-    let loaded = f.load_plugin(&anchors, false, &net, refresh()).unwrap();
+    let loaded = f
+        .load_plugin(&anchors, ManifestOrigin::External, &net, refresh())
+        .unwrap();
     assert_eq!(loaded.index.sequence, 1);
 }
 
@@ -632,12 +646,16 @@ fn a_bad_keys_file_only_drops_its_delegated_keys() {
     net.serve(KEYS_URL, keys_file(1, &[&idx], &[&stranger]));
 
     net.serve(REMOTE_EXPANDED, index_signed_by(&idx, 1));
-    let err = f.load_plugin(&anchors, true, &net, refresh()).unwrap_err();
+    let err = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
+        .unwrap_err();
     assert_eq!(err.code(), "E_KEY_UNTRUSTED");
 
     // The anchors can still sign directly, with a warning about the keys file.
     net.serve(REMOTE_EXPANDED, index_signed_by(&root, 1));
-    let loaded = f.load_plugin(&anchors, true, &net, refresh()).unwrap();
+    let loaded = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
+        .unwrap();
     assert_eq!(loaded.warnings[0].code, W_KEYS_FILE_UNAVAILABLE);
     assert!(!keys_cache_path(&f.dirs, "demo").exists());
 }

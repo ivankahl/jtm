@@ -146,6 +146,10 @@ impl Dirs {
     }
 
     /// `<data>/plugins/builtin`, first-party manifests unpacked from the binary.
+    ///
+    /// A working copy for display and hooks only: the compiled-in manifests are authoritative,
+    /// trust decisions never read this directory, and a mismatch is repaired from the binary
+    /// and reported by `jtm doctor`.
     pub fn builtin_plugins(&self) -> PathBuf {
         self.plugins().join("builtin")
     }
