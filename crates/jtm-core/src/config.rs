@@ -554,63 +554,95 @@ fn read_file(layer: Layer, file: FileSource<'_>) -> Result<Vec<Entry>> {
                 "expected a table such as `[index]`",
             ));
         };
-        match section.as_str() {
-            "mirrors" => {
-                for (source, value) in inner {
-                    check_project_allowed(&origin, prefix, &Key::Mirror(source.clone()))?;
-                    if !source.starts_with("https://") {
-                        return Err(config_error(
-                            &origin,
-                            &format!("{path}.{source:?}"),
-                            "a mirror rewrites an `https://` URL prefix",
-                        ));
-                    }
-                    let key = Key::Mirror(source);
-                    entries.push(file_entry(&origin, prefix, key, value)?);
-                }
-            }
-            "plugins" => {
-                for (plugin, value) in inner {
-                    let plugin_path = format!("{path}.{plugin}");
-                    check_plugin_name(&plugin)
-                        .map_err(|(_, message)| config_error(&origin, &plugin_path, message))?;
-                    let toml::Value::Table(settings) = value else {
-                        return Err(config_error(&origin, &plugin_path, "expected a table"));
-                    };
-                    for (name, value) in settings {
-                        if name != "index_url" {
-                            return Err(config_error(
-                                &origin,
-                                &format!("{plugin_path}.{name}"),
-                                "unknown key; plugin settings support `index_url`",
-                            ));
-                        }
-                        let key = Key::PluginIndexUrl(plugin.clone());
-                        entries.push(file_entry(&origin, prefix, key, value)?);
-                    }
-                }
-            }
-            _ => {
-                if !KEYS.iter().any(|def| def.section == section) {
-                    return Err(config_error(&origin, &path, unknown_key_message()));
-                }
-                for (name, value) in inner {
-                    let Some(def) = KEYS
-                        .iter()
-                        .find(|def| def.section == section && def.name == name)
-                    else {
-                        return Err(config_error(
-                            &origin,
-                            &format!("{path}.{name}"),
-                            unknown_key_message(),
-                        ));
-                    };
-                    entries.push(file_entry(&origin, prefix, Key::Scalar(def), value)?);
-                }
-            }
-        }
+        let read = match section.as_str() {
+            "mirrors" => read_mirrors,
+            "plugins" => read_plugins,
+            _ => read_section,
+        };
+        read(&origin, prefix, &section, inner, &mut entries)?;
     }
     Ok(entries)
+}
+
+/// Reads `[mirrors]`: `https://` source prefixes mapped to replacement locations.
+fn read_mirrors(
+    origin: &Origin,
+    prefix: &str,
+    section: &str,
+    table: toml::Table,
+    entries: &mut Vec<Entry>,
+) -> Result<()> {
+    for (source, value) in table {
+        let key = Key::Mirror(source.clone());
+        check_project_allowed(origin, prefix, &key)?;
+        if !source.starts_with("https://") {
+            return Err(config_error(
+                origin,
+                &format!("{prefix}{section}.{source:?}"),
+                "a mirror rewrites an `https://` URL prefix",
+            ));
+        }
+        entries.push(file_entry(origin, prefix, key, value)?);
+    }
+    Ok(())
+}
+
+/// Reads `[plugins.<name>]` tables, which support only `index_url`.
+fn read_plugins(
+    origin: &Origin,
+    prefix: &str,
+    section: &str,
+    table: toml::Table,
+    entries: &mut Vec<Entry>,
+) -> Result<()> {
+    for (plugin, value) in table {
+        let plugin_path = format!("{prefix}{section}.{plugin}");
+        check_plugin_name(&plugin)
+            .map_err(|(_, message)| config_error(origin, &plugin_path, message))?;
+        let toml::Value::Table(settings) = value else {
+            return Err(config_error(origin, &plugin_path, "expected a table"));
+        };
+        for (name, value) in settings {
+            if name != "index_url" {
+                return Err(config_error(
+                    origin,
+                    &format!("{plugin_path}.{name}"),
+                    "unknown key; plugin settings support `index_url`",
+                ));
+            }
+            let key = Key::PluginIndexUrl(plugin.clone());
+            entries.push(file_entry(origin, prefix, key, value)?);
+        }
+    }
+    Ok(())
+}
+
+/// Reads a section of fixed keys, such as `[index]`.
+fn read_section(
+    origin: &Origin,
+    prefix: &str,
+    section: &str,
+    table: toml::Table,
+    entries: &mut Vec<Entry>,
+) -> Result<()> {
+    let path = format!("{prefix}{section}");
+    if !KEYS.iter().any(|def| def.section == section) {
+        return Err(config_error(origin, &path, unknown_key_message()));
+    }
+    for (name, value) in table {
+        let Some(def) = KEYS
+            .iter()
+            .find(|def| def.section == section && def.name == name)
+        else {
+            return Err(config_error(
+                origin,
+                &format!("{path}.{name}"),
+                unknown_key_message(),
+            ));
+        };
+        entries.push(file_entry(origin, prefix, Key::Scalar(def), value)?);
+    }
+    Ok(())
 }
 
 /// Hides credentials in a URL, such as `user:pass@` in `http://user:pass@proxy:8080`, so error

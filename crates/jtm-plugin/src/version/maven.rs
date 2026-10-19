@@ -51,83 +51,111 @@ impl Item {
 /// Parses any version text. Maven accepts every string, so this cannot fail.
 pub(super) fn parse(input: &str) -> Item {
     let version = input.to_ascii_lowercase();
-    let bytes = version.as_bytes();
-
-    // A stack of lists under construction; each nested list is pushed into its parent when it
-    // is closed, so the root ends up holding the whole tree.
-    let mut stack: Vec<Vec<Item>> = vec![Vec::new()];
+    let mut tree = TreeBuilder::new();
     let mut is_digit = false;
     let mut start = 0;
 
-    let parse_item = |is_digit: bool, text: &str| {
-        if is_digit {
-            Item::int(text)
-        } else {
-            Item::string(text, false)
-        }
-    };
-
-    for (i, &c) in bytes.iter().enumerate() {
-        let list = stack.len() - 1;
+    for (i, c) in version.bytes().enumerate() {
         match c {
             b'.' | b'-' => {
-                let item = if i == start {
-                    Item::Int(String::new())
+                if i == start {
+                    tree.push(Item::Int(String::new()));
                 } else {
-                    // Deviation from Maven 3.9, which nests a qualifier only before a digit or at
-                    // the end: a qualifier between separators, as in `0.rc.ea`, nests too.
+                    // Deviation from Maven 3.9, which nests a qualifier only before a digit or
+                    // at the end: a qualifier between separators, as in `0.rc.ea`, nests too.
                     // Without this `0 < 0-ea < 0.rc.ea < 0` is a cycle, so "highest" would
                     // depend on index order.
-                    if !is_digit && !stack[list].is_empty() {
-                        stack.push(Vec::new());
-                    }
-                    parse_item(is_digit, &version[start..i])
-                };
-                let list = stack.len() - 1;
-                stack[list].push(item);
+                    tree.push_token(is_digit, &version[start..i]);
+                }
                 start = i + 1;
                 if c == b'-' {
-                    stack.push(Vec::new());
+                    tree.open();
                 }
             }
             b'0'..=b'9' => {
                 if !is_digit && i > start {
                     // Treat `.X` like `-X` for any qualifier X, so `1.0.0.X1 < 1.0.0-X2`.
-                    if !stack[list].is_empty() {
-                        stack.push(Vec::new());
-                    }
-                    let list = stack.len() - 1;
-                    stack[list].push(Item::string(&version[start..i], true));
+                    tree.nest_if_not_empty();
+                    tree.push(Item::string(&version[start..i], true));
+                    tree.open();
                     start = i;
-                    stack.push(Vec::new());
                 }
                 is_digit = true;
             }
             _ => {
                 if is_digit && i > start {
-                    stack[list].push(parse_item(true, &version[start..i]));
+                    tree.push(Item::int(&version[start..i]));
+                    tree.open();
                     start = i;
-                    stack.push(Vec::new());
                 }
                 is_digit = false;
             }
         }
     }
-    if bytes.len() > start {
-        if !is_digit && !stack[stack.len() - 1].is_empty() {
-            stack.push(Vec::new());
+    if version.len() > start {
+        tree.push_token(is_digit, &version[start..]);
+    }
+    tree.finish()
+}
+
+/// The lists of a version tree under construction. Only the innermost list is open; each is
+/// pushed into its parent when the tree is finished, so the root ends up holding everything.
+struct TreeBuilder {
+    stack: Vec<Vec<Item>>,
+}
+
+impl TreeBuilder {
+    fn new() -> TreeBuilder {
+        TreeBuilder {
+            stack: vec![Vec::new()],
         }
-        let list = stack.len() - 1;
-        stack[list].push(parse_item(is_digit, &version[start..]));
     }
 
-    // Close nested lists innermost first, normalising each before it joins its parent.
-    let mut closed = normalize(stack.pop().unwrap_or_default());
-    while let Some(mut parent) = stack.pop() {
-        parent.push(Item::List(closed));
-        closed = normalize(parent);
+    fn current(&mut self) -> &mut Vec<Item> {
+        if self.stack.is_empty() {
+            self.stack.push(Vec::new());
+        }
+        let last = self.stack.len() - 1;
+        &mut self.stack[last]
     }
-    Item::List(closed)
+
+    fn push(&mut self, item: Item) {
+        self.current().push(item);
+    }
+
+    /// Starts a nested list inside the current one.
+    fn open(&mut self) {
+        self.stack.push(Vec::new());
+    }
+
+    /// Starts a nested list unless the current one is empty, so a qualifier that follows
+    /// other items is treated like `-X`.
+    fn nest_if_not_empty(&mut self) {
+        if !self.current().is_empty() {
+            self.open();
+        }
+    }
+
+    /// Pushes the text between separators: a number, or a qualifier that nests when it
+    /// follows other items.
+    fn push_token(&mut self, is_digit: bool, text: &str) {
+        if is_digit {
+            self.push(Item::int(text));
+        } else {
+            self.nest_if_not_empty();
+            self.push(Item::string(text, false));
+        }
+    }
+
+    /// Closes nested lists innermost first, normalising each before it joins its parent.
+    fn finish(mut self) -> Item {
+        let mut closed = normalize(self.stack.pop().unwrap_or_default());
+        while let Some(mut parent) = self.stack.pop() {
+            parent.push(Item::List(closed));
+            closed = normalize(parent);
+        }
+        Item::List(closed)
+    }
 }
 
 /// Drops trailing null items, looking through trailing nested lists.

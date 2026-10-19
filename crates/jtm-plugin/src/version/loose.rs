@@ -43,7 +43,7 @@ pub(super) fn parse(input: &str) -> Result<LooseKey, &'static str> {
             Some(
                 ids.into_iter()
                     .flat_map(split_digit_boundaries)
-                    .map(|id| id.to_ascii_lowercase())
+                    .map(str::to_ascii_lowercase)
                     .collect(),
             )
         }
