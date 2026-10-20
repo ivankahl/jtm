@@ -87,7 +87,12 @@ pub struct NetworkSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractSettings {
+    /// Total bytes an archive may expand to.
     pub max_bytes: u64,
+    /// Entries an archive may hold.
+    pub max_entries: u64,
+    /// Highest compression ratio, uncompressed bytes per compressed byte.
+    pub max_ratio: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -319,6 +324,26 @@ const KEYS: &[KeyDef] = &[
         default: Some(DefaultValue::Int(4 * GIB)),
         project: false,
     },
+    KeyDef {
+        section: "extract",
+        name: "max_entries",
+        kind: Kind::Int {
+            min: 1,
+            max: 100_000_000,
+        },
+        default: Some(DefaultValue::Int(200_000)),
+        project: false,
+    },
+    KeyDef {
+        section: "extract",
+        name: "max_ratio",
+        kind: Kind::Int {
+            min: 1,
+            max: 1_000_000,
+        },
+        default: Some(DefaultValue::Int(200)),
+        project: false,
+    },
 ];
 
 /// The identity of one configuration value.
@@ -476,6 +501,8 @@ impl Merged {
             },
             extract: ExtractSettings {
                 max_bytes: self.int("extract", "max_bytes"),
+                max_entries: self.int("extract", "max_entries"),
+                max_ratio: self.int("extract", "max_ratio"),
             },
             mirrors,
             plugins,

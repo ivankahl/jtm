@@ -80,7 +80,7 @@ The CLI uses nvm-style verbs with a `<tool>@<spec>` argument; every command supp
 
 | Command | Purpose | Notable flags |
 | --- | --- | --- |
-| `jtm install <spec>...` | Resolve, download, verify and extract one or more versions; never changes the default | `--dry-run`, `--force` (reinstall), `--latest`, `--platform <os-arch>` |
+| `jtm install <spec>...` | Resolve, download, verify and extract one or more versions; never changes the default | `--dry-run`, `--force` (reinstall), `--latest` |
 | `jtm uninstall <tool>@<version>` | Remove an install dir and clear any current link pointing at it | `--all-variants`, `--dry-run` |
 | `jtm use <spec>` | Activate a version in the current shell only | `--install` (install if missing), `--latest`, `--unset` |
 | `jtm default <spec>` | Set the persistent user-wide version; the only command that changes it | `--install`, `--latest` |
@@ -478,13 +478,13 @@ An install is idempotent and atomic: it either produces a complete, verified ins
 2. **Skip if installed.** If `tools/<plugin>/<variant>-<version>/.jtm-receipt.json` exists and its `sha256` matches the entry, return `already_installed`. `--force` skips this check.
 3. **Lock.** Take an exclusive file lock on `locks/<plugin>-<variant>-<version>.lock` so parallel shells or agents cannot race.
 4. **Check the download cache.** Archives are content-addressed at `cache/downloads/<sha256>`. A cached file is re-hashed before use.
-5. **Download** to `cache/downloads/<sha256>.part`, hashing as bytes arrive and aborting once `size` is exceeded. Network errors retry 3 times with backoff; resumed downloads re-hash from byte 0.
+5. **Download** to `cache/downloads/<sha256>.part`, hashing as bytes arrive and aborting once `size` is exceeded. Network errors (connecting, timeouts, a dropped transfer) retry 3 times with backoff; HTTP error statuses and TLS failures are not retried. Resumed downloads re-hash from byte 0.
 6. **Verify** the SHA-256 and size. A mismatch deletes the partial file, is never retried, and fails with `E_HASH_MISMATCH` showing expected and actual values and the URL actually used.
 7. **Extract** into `tools/.tmp/<random>` under the archive rules below.
 8. **Apply layout:** `strip_components`, or `auto` (strip a single top-level directory), then the per-OS `home_subdir`.
 9. **Run `post_extract`** if the plugin defines it, inside the Luau sandbox.
 10. **Sanity check** that each declared executable exists. Downloaded binaries are never executed during install.
-11. **Write the receipt** `.jtm-receipt.json`: plugin, manifest hash, variant, version, platform, final URL, sha256, size, index sequence, install time and jtm version.
+11. **Write the receipt** `.jtm-receipt.json`: plugin, manifest hash, variant, version, platform, final URL, sha256, size, index sequence, install time, jtm version, and the tool home relative to the install dir (after `home_subdir`).
 12. **Commit** with an atomic rename from the temp dir to `tools/<plugin>/<variant>-<version>`. On Windows, retry the rename for up to 10 seconds because antivirus scanners briefly lock new files.
 13. **Update the lockfile** if the command was run in a project with locking enabled. Installing never sets or changes the default, even for a tool's first install and even with `--yes`; the default is only ever set explicitly with `jtm default`.
 
@@ -492,12 +492,12 @@ An install is idempotent and atomic: it either produces a complete, verified ins
 
 | Rule | Detail |
 | --- | --- |
-| Formats | `zip`, `tar.gz` in v1; `tar.xz` behind a feature flag. Installers such as `.msi`, `.pkg` and `.dmg` are not supported |
-| Path safety | Reject absolute paths, `..` components, drive letters, UNC paths and NUL bytes. Every final path must stay inside the temp dir after normalisation |
+| Formats | `zip`, `tar.gz` and `tar.xz`. Installers such as `.msi`, `.pkg` and `.dmg` are not supported |
+| Path safety | Reject absolute paths, `..` components, NUL and other control characters, and every backslash and colon (which covers drive letters, UNC paths and NTFS alternate data streams), on every OS so an archive extracts the same everywhere. Every final path must stay inside the temp dir after normalisation |
 | Links | Symlinks and hard links allowed only if the target resolves inside the temp dir. On Windows, archive symlinks are materialised as file copies so no privilege is needed |
 | Special files | Device files, FIFOs and sockets are rejected |
 | Permissions | Executable bits preserved; setuid, setgid and sticky bits stripped |
-| Bomb limits | 4 GiB total uncompressed, 200,000 entries, and any single entry above a 200:1 compression ratio fails the install. All configurable |
+| Bomb limits | 4 GiB total uncompressed, 200,000 entries, and any single entry above a 200:1 compression ratio fails the install. The ratio is checked once an entry has produced 1 MiB, so small, highly compressible files such as license texts pass; a `tar.gz` or `tar.xz` stream does not record each entry's compressed size, so there the ratio applies to the stream as a whole. All configurable |
 | Windows paths | Extended-length `\\?\` paths so deep JDK trees exceed 260 characters safely |
 
 ### Concurrency and progress
@@ -607,9 +607,9 @@ Success and no-op both exit 0 so `set -e` scripts keep working; the difference i
 
 ### Error codes
 
-Stable string codes, never renamed once released: `E_USAGE`, `E_TOOL_UNKNOWN`, `E_VERSION_NOT_FOUND`, `E_ALIAS_UNKNOWN`, `E_PLATFORM_UNSUPPORTED`, `E_NETWORK`, `E_OFFLINE`, `E_SIGNATURE_INVALID`, `E_KEY_UNTRUSTED`, `E_INDEX_EXPIRED`, `E_INDEX_ROLLBACK`, `E_INDEX_BINDING`, `E_INDEX_INVALID`, `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED`, `E_ARCHIVE_UNSAFE`, `E_LOCK_OUTDATED`, `E_LOCK_INDEX_MISMATCH`, `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_INPUT_REQUIRED`, `E_PLUGIN_SCRIPT_LIMIT`, `E_PLUGIN_INVALID`, `E_IN_USE`, `E_PERMISSION`, `E_INTERNAL`.
+Stable string codes, never renamed once released: `E_USAGE`, `E_TOOL_UNKNOWN`, `E_VERSION_NOT_FOUND`, `E_ALIAS_UNKNOWN`, `E_PLATFORM_UNSUPPORTED`, `E_NETWORK`, `E_OFFLINE`, `E_SIGNATURE_INVALID`, `E_KEY_UNTRUSTED`, `E_INDEX_EXPIRED`, `E_INDEX_ROLLBACK`, `E_INDEX_BINDING`, `E_INDEX_INVALID`, `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED`, `E_ARCHIVE_UNSAFE`, `E_LOCK_OUTDATED`, `E_LOCK_INDEX_MISMATCH`, `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_INPUT_REQUIRED`, `E_PLUGIN_SCRIPT_LIMIT`, `E_PLUGIN_INVALID`, `E_IN_USE`, `E_PERMISSION`, `E_IO`, `E_INTERNAL`.
 
-Warning codes use the same stable form and travel in `warnings`; they never change the exit code: `W_INDEX_EXPIRED` (an expired index was accepted from a source where expiry is only a warning), `W_INDEX_COPY_REJECTED` (a copy that failed verification was ignored while a valid copy was used), `W_KEYS_FILE_UNAVAILABLE` (no usable keys file, so only the anchors verify), `W_INDEX_REFRESH_FAILED` (a refresh failed and a local copy was used) and `W_KEY_NOT_TRUSTED` (a `jtm trust remove` matched nothing).
+Warning codes use the same stable form and travel in `warnings`; they never change the exit code: `W_INDEX_EXPIRED` (an expired index was accepted from a source where expiry is only a warning), `W_INDEX_COPY_REJECTED` (a copy that failed verification was ignored while a valid copy was used), `W_KEYS_FILE_UNAVAILABLE` (no usable keys file, so only the anchors verify), `W_INDEX_REFRESH_FAILED` (a refresh failed and a local copy was used), `W_KEY_NOT_TRUSTED` (a `jtm trust remove` matched nothing) and `W_DEFAULT_CLEARED` (an uninstall removed the version the user default pointed at).
 
 Four codes exit with 7, and they tell an agent whether a flag can help:
 
@@ -626,7 +626,7 @@ Every exit-7 error puts the flag or command that would resolve it in `details.re
 
 - **Never prompts automation.** Scripts, CI, `--json` and MCP calls are non-interactive automatically (section 4). A step that would need confirmation fails with exit 7 and tells the human which command or flag to use.
 - **Idempotent.** Re-running `install`, `sync`, `pin` or `default` with the same arguments is a no-op.
-- **`--dry-run`** on `install`, `uninstall`, `sync`, `pin` and `lock` returns the plan (what would be downloaded, written or removed) with no side effects.
+- **`--dry-run`** on `install`, `uninstall`, `sync`, `pin` and `lock` returns the plan (what would be downloaded, written or removed) with no side effects. Verifying an index is not one: a dry run may cache a verified copy and record its sequence for rollback protection, exactly as any other command would.
 - **Deterministic.** No implicit index refresh in JSON, CI or MCP modes (section 8).
 - **`jtm describe --format markdown`** prints a short usage guide suitable for pasting into `AGENTS.md` or `CLAUDE.md`.
 
@@ -723,7 +723,9 @@ Layers merge in this order, later winning: built-in defaults, user config, proje
 | `network.extra_ca_file` | none | Extra PEM certificates |
 | `[mirrors]` | none | URL prefix rewrites |
 | `plugins.<name>.index_url` | from manifest | Replace a plugin's index location |
-| `extract.max_bytes` | `4 GiB` | Archive bomb limit |
+| `extract.max_bytes` | `4 GiB` | Archive bomb limit: total uncompressed size |
+| `extract.max_entries` | `200000` | Archive bomb limit: entries per archive |
+| `extract.max_ratio` | `200` | Archive bomb limit: compression ratio of any entry |
 
 Project files can never set `security.*`, `network.*`, `[mirrors]`, `extract.*`, `plugins.*.index_url` or `download.cache_dir`. A cloned repository must not be able to weaken verification, redirect downloads, or choose where jtm writes files; such keys in `.jtm.toml` are an error.
 

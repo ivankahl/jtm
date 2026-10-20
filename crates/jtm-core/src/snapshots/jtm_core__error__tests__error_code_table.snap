@@ -27,4 +27,5 @@ E_PLUGIN_SCRIPT_LIMIT    exit=1 retryable=false
 E_PLUGIN_INVALID         exit=5 retryable=false
 E_IN_USE                 exit=4 retryable=true
 E_PERMISSION             exit=4 retryable=false
+E_IO                     exit=4 retryable=false
 E_INTERNAL               exit=1 retryable=false

@@ -82,6 +82,8 @@ fn defaults_match_the_spec() {
     assert_eq!(s.network.proxy, None);
     assert_eq!(s.network.extra_ca_file, None);
     assert_eq!(s.extract.max_bytes, 4 * 1024 * 1024 * 1024);
+    assert_eq!(s.extract.max_entries, 200_000);
+    assert_eq!(s.extract.max_ratio, 200);
     assert!(s.mirrors.is_empty());
     assert!(s.plugins.is_empty());
     assert_eq!(
@@ -175,6 +177,14 @@ fn project_files_cannot_set_restricted_keys() {
         (
             "[settings.extract]\nmax_bytes = 99999999999".to_owned(),
             "settings.extract.max_bytes",
+        ),
+        (
+            "[settings.extract]\nmax_entries = 99999999".to_owned(),
+            "settings.extract.max_entries",
+        ),
+        (
+            "[settings.extract]\nmax_ratio = 99999".to_owned(),
+            "settings.extract.max_ratio",
         ),
         (
             format!("[settings.download]\ncache_dir = {path:?}"),
@@ -282,6 +292,8 @@ fn values_are_type_checked() {
         ),
         ("[network]\nproxy = \"ftp://proxy\"", "network.proxy"),
         ("[extract]\nmax_bytes = 0", "extract.max_bytes"),
+        ("[extract]\nmax_entries = 0", "extract.max_entries"),
+        ("[extract]\nmax_ratio = -1", "extract.max_ratio"),
         ("[extract]\nmax_bytes = \"4 GB\"", "extract.max_bytes"),
         (
             "[pin]\ndefault_format = \"Not A Format\"",
