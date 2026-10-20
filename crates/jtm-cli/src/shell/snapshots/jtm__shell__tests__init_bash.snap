@@ -17,3 +17,12 @@ jtm() {
     command '/opt/jtm'\''s/bin/jtm' "$@"
   fi
 }
+_jtm_hook() {
+  local __jtm_out
+  __jtm_out="$(command '/opt/jtm'\''s/bin/jtm' hook-env --shell bash)" && eval "$__jtm_out"
+}
+case ";${PROMPT_COMMAND-};" in
+  *";_jtm_hook;"*) ;;
+  *) PROMPT_COMMAND="_jtm_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+esac
+_jtm_hook

@@ -17,3 +17,11 @@ jtm() {
     command '/opt/jtm'\''s/bin/jtm' "$@"
   fi
 }
+_jtm_hook() {
+  local __jtm_out
+  __jtm_out="$(command '/opt/jtm'\''s/bin/jtm' hook-env --shell zsh)" && eval "$__jtm_out"
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _jtm_hook
+add-zsh-hook chpwd _jtm_hook
+_jtm_hook

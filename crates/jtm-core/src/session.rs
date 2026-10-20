@@ -51,7 +51,8 @@ pub struct Session<'a> {
     dirs: Dirs,
     settings: Settings,
     platform: Platform,
-    client: Option<Client>,
+    /// Built on first use: setting up TLS costs more than the shell hook can spend on a prompt.
+    client: std::sync::OnceLock<Option<Client>>,
     cache: DownloadCache,
 }
 
@@ -200,19 +201,27 @@ impl<'a> Session<'a> {
                 .clone()
                 .unwrap_or_else(|| dirs.downloads()),
         );
-        let client = if ctx.offline {
-            None
-        } else {
-            Some(Client::new(client_options(&settings))?)
-        };
         Ok(Session {
             ctx,
             dirs,
             settings,
             platform,
-            client,
+            client: std::sync::OnceLock::new(),
             cache,
         })
+    }
+
+    /// The HTTP client, or `None` offline.
+    fn client(&self) -> Result<Option<&Client>> {
+        if let Some(client) = self.client.get() {
+            return Ok(client.as_ref());
+        }
+        let client = if self.ctx.offline {
+            None
+        } else {
+            Some(Client::new(client_options(&self.settings))?)
+        };
+        Ok(self.client.get_or_init(|| client).as_ref())
     }
 
     /// The platform jtm runs on.
@@ -240,7 +249,7 @@ impl<'a> Session<'a> {
             dirs: &self.dirs,
             embedded: EMBEDDED_INDICES,
             embedded_keys: EMBEDDED_KEYS,
-            fetcher: self.client.as_ref().map(|c| c as &dyn Fetcher),
+            fetcher: self.client()?.map(|c| c as &dyn Fetcher),
         };
         let options = LoadOptions {
             refresh,
@@ -366,7 +375,7 @@ impl<'a> Session<'a> {
         };
         let archives = Archives {
             cache: &self.cache,
-            client: self.client.as_ref(),
+            client: self.client()?,
             mirrors: &self.settings.mirrors,
         };
 

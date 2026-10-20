@@ -119,7 +119,22 @@ jtm() {{
     command {exe} "$@"
   fi
 }}
-"#
+_jtm_hook() {{
+  local __jtm_out
+  __jtm_out="$(command {exe} hook-env --shell {name})" && eval "$__jtm_out"
+}}
+{hook}
+_jtm_hook
+"#,
+                hook = match shell {
+                    Shell::Zsh =>
+                        "autoload -Uz add-zsh-hook\nadd-zsh-hook precmd _jtm_hook\nadd-zsh-hook chpwd _jtm_hook",
+                    _ =>
+                        r#"case ";${PROMPT_COMMAND-};" in
+  *";_jtm_hook;"*) ;;
+  *) PROMPT_COMMAND="_jtm_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+esac"#,
+                }
             )
         }
         Shell::Fish => {
@@ -135,6 +150,10 @@ function jtm
         command {exe} $argv
     end
 end
+function _jtm_hook --on-variable PWD --on-event fish_prompt
+    command {exe} hook-env --shell fish | source
+end
+_jtm_hook
 "#
             )
         }
@@ -143,7 +162,7 @@ end
             format!(
                 r#"# jtm shell integration for PowerShell. Add to $PROFILE:
 #   Invoke-Expression ((& jtm shell-init pwsh) -join "`n")
-function jtm {{
+function global:jtm {{
     if ($args.Count -ge 1 -and $args[0] -eq 'use' -and -not ($args -contains '--json') -and -not ($args -contains '--help') -and -not ($args -contains '-h')) {{
         $rest = @($args | Select-Object -Skip 1)
         $out = & '{exe}' use --shell pwsh @rest
@@ -153,6 +172,15 @@ function jtm {{
         & '{exe}' @args
     }}
 }}
+function global:_jtm_hook {{
+    $out = & '{exe}' hook-env --shell pwsh
+    if ($LASTEXITCODE -eq 0 -and $out) {{ Invoke-Expression ($out -join "`n") }}
+}}
+if (-not $global:__jtm_prompt) {{
+    $global:__jtm_prompt = $function:prompt
+    function global:prompt {{ _jtm_hook; & $global:__jtm_prompt }}
+}}
+_jtm_hook
 "#
             )
         }

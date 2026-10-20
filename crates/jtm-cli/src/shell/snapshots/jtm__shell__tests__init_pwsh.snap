@@ -4,7 +4,7 @@ expression: text
 ---
 # jtm shell integration for PowerShell. Add to $PROFILE:
 #   Invoke-Expression ((& jtm shell-init pwsh) -join "`n")
-function jtm {
+function global:jtm {
     if ($args.Count -ge 1 -and $args[0] -eq 'use' -and -not ($args -contains '--json') -and -not ($args -contains '--help') -and -not ($args -contains '-h')) {
         $rest = @($args | Select-Object -Skip 1)
         $out = & '/opt/jtm''s/bin/jtm' use --shell pwsh @rest
@@ -14,3 +14,12 @@ function jtm {
         & '/opt/jtm''s/bin/jtm' @args
     }
 }
+function global:_jtm_hook {
+    $out = & '/opt/jtm''s/bin/jtm' hook-env --shell pwsh
+    if ($LASTEXITCODE -eq 0 -and $out) { Invoke-Expression ($out -join "`n") }
+}
+if (-not $global:__jtm_prompt) {
+    $global:__jtm_prompt = $function:prompt
+    function global:prompt { _jtm_hook; & $global:__jtm_prompt }
+}
+_jtm_hook

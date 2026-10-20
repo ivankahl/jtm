@@ -154,6 +154,12 @@ pub(crate) enum Command {
         #[arg(last = true, required = true, value_name = "COMMAND")]
         command: Vec<String>,
     },
+    /// Print the changes the shell hook applies at a prompt. Called by the hook itself.
+    #[command(hide = true)]
+    HookEnv {
+        #[arg(long, value_name = "SHELL")]
+        shell: String,
+    },
     /// Manage keys trusted to sign version indices.
     #[command(subcommand)]
     Trust(TrustCommand),

@@ -246,3 +246,136 @@ if ($null -eq $env:DEMO_HOME) {{ 'unset' }} else {{ $env:DEMO_HOME }}"#,
         check(&f, &out);
     }
 }
+
+/// A project pinning `demo@1.1` with a subdirectory, and an unrelated directory.
+fn project() -> (tempfile::TempDir, tempfile::TempDir) {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join(".jtm.toml"),
+        "[tools]\ndemo = \"1.1\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir(project.path().join("sub")).unwrap();
+    (project, tempfile::tempdir().unwrap())
+}
+
+/// Entering the project applies its pin; `jtm use` overrides it until the next directory
+/// change; leaving restores the original environment.
+fn check_switching(f: &Fixture, out: &str) {
+    let lines: Vec<&str> = out.lines().map(str::trim).collect();
+    assert_eq!(lines.len(), 5, "{out}");
+    assert_eq!(Path::new(lines[0]), f.install_dir("1.1.0"), "{out}");
+    assert_eq!(Path::new(lines[1]), f.install_dir("1.0.0"), "{out}");
+    assert_eq!(Path::new(lines[2]), f.install_dir("1.1.0"), "{out}");
+    assert_eq!(lines[3], "unset", "{out}");
+    let tools = f.home.path().join("tools").display().to_string();
+    assert!(
+        !lines[4].contains(&tools),
+        "PATH still has jtm entries: {out}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bash_and_zsh_switch_on_directory_change() {
+    let f = ready();
+    let (project, other) = project();
+    for shell in ["bash", "zsh"] {
+        let script = format!(
+            r#"eval "$('{exe}' shell-init {shell})"
+cd '{project}'; _jtm_hook
+echo "$DEMO_HOME"
+jtm use demo@1.0
+echo "$DEMO_HOME"
+cd sub; _jtm_hook
+echo "$DEMO_HOME"
+cd '{other}'; _jtm_hook
+echo "${{DEMO_HOME-unset}}"
+echo "$PATH""#,
+            exe = f.exe().display(),
+            project = project.path().display(),
+            other = other.path().display(),
+        );
+        if let Some(out) = run_shell(&f, shell, &["-c"], &script) {
+            check_switching(&f, &out);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn fish_switches_on_directory_change() {
+    let f = ready();
+    let (project, other) = project();
+    // fish runs the hook itself when PWD changes.
+    let script = format!(
+        r#"'{exe}' shell-init fish | source
+cd '{project}'
+echo $DEMO_HOME
+jtm use demo@1.0
+echo $DEMO_HOME
+cd sub
+echo $DEMO_HOME
+cd '{other}'
+if set -q DEMO_HOME; echo $DEMO_HOME; else; echo unset; end
+echo "$PATH""#,
+        exe = f.exe().display(),
+        project = project.path().display(),
+        other = other.path().display(),
+    );
+    if let Some(out) = run_shell(&f, "fish", &["-c"], &script) {
+        check_switching(&f, &out);
+    }
+}
+
+#[test]
+fn powershell_switches_on_directory_change() {
+    let f = ready();
+    let (project, other) = project();
+    let script = format!(
+        r#"Invoke-Expression ((& '{exe}' shell-init pwsh) -join "`n")
+Set-Location '{project}'; _jtm_hook
+Write-Output $env:DEMO_HOME
+jtm use demo@1.0
+Write-Output $env:DEMO_HOME
+Set-Location sub; _jtm_hook
+Write-Output $env:DEMO_HOME
+Set-Location '{other}'; _jtm_hook
+if ($null -eq $env:DEMO_HOME) {{ 'unset' }} else {{ $env:DEMO_HOME }}
+Write-Output $env:PATH"#,
+        exe = f.exe().display(),
+        project = project.path().display(),
+        other = other.path().display(),
+    );
+    if let Some(out) = run_shell(&f, "pwsh", &["-NoProfile", "-Command"], &script) {
+        check_switching(&f, &out);
+    }
+}
+
+#[test]
+fn the_hook_prints_nothing_when_nothing_changes() {
+    let f = ready();
+    let (project, _other) = project();
+    let first = f
+        .jtm()
+        .current_dir(project.path())
+        .args(["hook-env", "--shell", "bash"])
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    let script = String::from_utf8(first.stdout).unwrap();
+    assert!(script.contains("DEMO_HOME"), "{script}");
+
+    // Apply the first run's changes to the next run's environment.
+    let mut cmd = f.jtm();
+    cmd.current_dir(project.path())
+        .args(["hook-env", "--shell", "bash"]);
+    for line in script.lines() {
+        let line = line.strip_prefix("export ").unwrap();
+        let (name, value) = line.split_once('=').unwrap();
+        cmd.env(name, value.trim_matches('\''));
+    }
+    let second = cmd.output().unwrap();
+    assert!(second.status.success());
+    assert_eq!(String::from_utf8(second.stdout).unwrap(), "");
+}

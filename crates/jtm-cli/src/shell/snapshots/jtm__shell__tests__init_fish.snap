@@ -12,3 +12,7 @@ function jtm
         command '/opt/jtm\'s/bin/jtm' $argv
     end
 end
+function _jtm_hook --on-variable PWD --on-event fish_prompt
+    command '/opt/jtm\'s/bin/jtm' hook-env --shell fish | source
+end
+_jtm_hook

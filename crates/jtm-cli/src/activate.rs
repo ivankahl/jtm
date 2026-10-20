@@ -254,3 +254,39 @@ pub(crate) fn shell_init(shell: &str) -> Result<Outcome<ShellInitData>> {
         warnings: Vec::new(),
     })
 }
+
+/// The variable the hook keeps the last directory in, to notice directory changes.
+const HOOK_DIR_VAR: &str = "JTM_HOOK_DIR";
+
+/// The shell hook's work on every prompt (SPEC.md section 5): apply the project pins of the
+/// working directory and undo those of the last one. On a directory change, a session version
+/// of a tool the new directory pins is dropped, so the pin takes over. Prints nothing when
+/// nothing changes; warnings are shown only on a directory change.
+pub(crate) fn hook_env(ctx: &Context, shell: &str) -> Result<String> {
+    let shell = Shell::parse(shell)?;
+    let session = Session::open(ctx)?;
+    let mut here = here(&session)?;
+    let cwd = std::env::current_dir()
+        .map_err(|e| JtmError::io(".", e))?
+        .display()
+        .to_string();
+    let moved = std::env::var(HOOK_DIR_VAR).ok().as_deref() != Some(cwd.as_str());
+    if moved {
+        let pinned: Vec<String> = here.pins.pins.keys().cloned().collect();
+        for tool in pinned {
+            here.selected.remove(&tool);
+        }
+    }
+    let (overrides, found) = here.overrides(&[])?;
+    let mut changes = here.plan(&|key| std::env::var(key).ok(), &overrides);
+    if moved {
+        changes.push(Change::Set {
+            name: HOOK_DIR_VAR.to_owned(),
+            value: cwd,
+        });
+        for warning in found {
+            tracing::warn!("warning[{}]: {}", warning.code, warning.message);
+        }
+    }
+    shell::render(shell, &changes, PATH_SEPARATOR)
+}
