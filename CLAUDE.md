@@ -46,6 +46,36 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+## Commit messages
+
+Always use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): `<type>(<scope>): <description>`.
+
+- **Description:** imperative, lowercase, no trailing period, and the whole subject line at most 72 characters. When the commit belongs to a ticket, end the subject with its id, as in `feat(fetch): add the HTTP client with redirect policy (T3.1)`.
+- **Body:** explain what changed and why, wrapped at 72 characters.
+- **Types:** `feat`, `fix`, `refactor`, `perf`, `test`, `docs`, `build`, `ci`, `chore`, `revert`.
+- **Breaking changes:** mark them with `!` after the scope and a `BREAKING CHANGE:` footer. Changing an `E_` code or exit code is never allowed, breaking or not (see the invariants below).
+
+Pick the scope from this list:
+
+| Scope | Covers |
+| --- | --- |
+| `core` | `crates/jtm-core` |
+| `security` | `crates/jtm-security` |
+| `fetch` | `crates/jtm-fetch` |
+| `archive` | `crates/jtm-archive` |
+| `plugin` | `crates/jtm-plugin` |
+| `cli` | `crates/jtm-cli` |
+| `index` | `crates/jtm-index` |
+| `xtask` | `xtask/` |
+| `ci` | `.github/workflows/`, `sonar-project.properties` |
+| `deps` | Dependency additions, removals and version bumps (`Cargo.toml`, `Cargo.lock`) |
+| `workspace` | Root build and tooling config: `Cargo.toml` workspace settings, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `.cargo/` |
+| `spec` | `SPEC.md` |
+| `docs` | `README.md`, `GLOSSARY.md`, `docs/adr/` |
+| `agents` | `CLAUDE.md`, `docs/agents/`, `.claude/` |
+
+When a change spans two or three scopes, list them comma-separated, as in `fix(fetch,core): ...`. When it touches more than that, leave the scope out. If no scope fits, add a row to this table in the same commit instead of inventing one.
+
 ## Invariants that must never regress
 
 - **Verify before parse.** Index files are signature-checked on raw bytes before they reach a JSON parser (section 9).
