@@ -181,12 +181,32 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SHELL")]
         shell: String,
     },
+    /// Offer installed JDKs to Maven and Gradle toolchains, which IDEs read.
+    #[command(subcommand)]
+    Ide(IdeCommand),
     /// Manage jtm itself.
     #[command(subcommand, name = "self")]
     SelfCmd(SelfCommand),
     /// Manage keys trusted to sign version indices.
     #[command(subcommand)]
     Trust(TrustCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum IdeCommand {
+    /// Write installed JDKs into ~/.m2/toolchains.xml and Gradle's
+    /// org.gradle.java.installations.paths, leaving other entries alone.
+    Sync {
+        /// Show what would change without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Only update Maven's toolchains.xml.
+        #[arg(long, conflicts_with = "gradle_only")]
+        maven_only: bool,
+        /// Only update Gradle's gradle.properties.
+        #[arg(long)]
+        gradle_only: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

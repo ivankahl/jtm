@@ -119,6 +119,10 @@ windows = ["demo.cmd"]
 
 [env]
 DEMO_HOME = "{{home}}"
+
+[ide]
+maven_toolchain = "jdk"
+gradle_installations = true
 "#,
             self.key.public_str()
         );

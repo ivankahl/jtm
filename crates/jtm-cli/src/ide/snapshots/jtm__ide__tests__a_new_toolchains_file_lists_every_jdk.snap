@@ -1,0 +1,31 @@
+---
+source: crates/jtm-cli/src/ide/tests.rs
+expression: text
+---
+<?xml version="1.0" encoding="UTF-8"?>
+<toolchains>
+  <!-- >>> jtm: managed by `jtm ide sync`; edits between these markers are replaced -->
+  <toolchain>
+    <type>jdk</type>
+    <provides>
+      <version>17.0.13.11.1</version>
+      <vendor>corretto</vendor>
+      <id>jtm:java@corretto:17.0.13.11.1</id>
+    </provides>
+    <configuration>
+      <jdkHome>/data/tools/java/corretto-17 &amp; &lt;x&gt;</jdkHome>
+    </configuration>
+  </toolchain>
+  <toolchain>
+    <type>jdk</type>
+    <provides>
+      <version>21.0.5+11</version>
+      <vendor>temurin</vendor>
+      <id>jtm:java@temurin:21.0.5+11</id>
+    </provides>
+    <configuration>
+      <jdkHome>/data/tools/java/temurin-21.0.5+11</jdkHome>
+    </configuration>
+  </toolchain>
+  <!-- <<< jtm -->
+</toolchains>

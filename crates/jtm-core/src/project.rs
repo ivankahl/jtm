@@ -303,7 +303,7 @@ fn error(path: &Path, key: &str, message: impl Into<String>) -> JtmError {
 }
 
 /// Writes `bytes` to `path` through a temporary file in the same directory and a rename.
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| JtmError::io(dir, e))?;
     io::Write::write_all(&mut tmp, bytes).map_err(|e| JtmError::io(tmp.path(), e))?;

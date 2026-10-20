@@ -53,6 +53,8 @@ pub struct Manifest {
     pub interop: Vec<Interop>,
     #[serde(default)]
     pub hooks: Hooks,
+    #[serde(default)]
+    pub ide: Ide,
 }
 
 /// `[versions]`.
@@ -240,6 +242,20 @@ pub struct Hooks {
     pub post_extract: Option<String>,
 }
 
+/// `[ide]`: how `jtm ide sync` offers this tool's installs to build tools.
+// SPEC-QUESTION: section 7 has no such section. `jtm ide sync` needs to know which installs are
+// JDKs without the core naming a tool, so a plugin declares it here.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ide {
+    /// The Maven toolchain `<type>` to list installs under in `~/.m2/toolchains.xml`, such as
+    /// `jdk`.
+    pub maven_toolchain: Option<String>,
+    /// List installs in Gradle's `org.gradle.java.installations.paths`.
+    #[serde(default)]
+    pub gradle_installations: bool,
+}
+
 /// A rejected manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestError {
@@ -329,6 +345,11 @@ impl Manifest {
         self.validate_requires(p);
         self.validate_interop(p);
         self.validate_hooks(p);
+        if let Some(kind) = &self.ide.maven_toolchain
+            && let Err((_, message)) = check_name_segment(kind, "toolchain type")
+        {
+            p.push("ide.maven_toolchain", message);
+        }
     }
 
     fn validate_top_level(&self, p: &mut Problems) {

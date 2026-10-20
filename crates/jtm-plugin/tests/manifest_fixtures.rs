@@ -214,3 +214,21 @@ fn wrapper_interop_reads_a_distribution_url_pattern() {
     assert_eq!(wrapper.key.as_deref(), Some("distributionUrl"));
     assert_eq!(wrapper.pattern.as_deref(), Some("wrapped-{version}-*.zip"));
 }
+
+#[test]
+fn ide_declares_build_tool_toolchains() {
+    let text = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/manifests/valid/java.toml"),
+    )
+    .unwrap();
+    let m = Manifest::parse(&text).unwrap();
+    assert_eq!(m.ide.maven_toolchain.as_deref(), Some("jdk"));
+    assert!(m.ide.gradle_installations);
+    let demo = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/manifests/valid/demo.toml"),
+    )
+    .unwrap();
+    let m = Manifest::parse(&demo).unwrap();
+    assert_eq!(m.ide.maven_toolchain, None);
+    assert!(!m.ide.gradle_installations);
+}

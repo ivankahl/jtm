@@ -2,6 +2,7 @@
 
 mod activate;
 mod cli;
+mod ide;
 mod logging;
 mod output;
 mod project;
@@ -21,7 +22,7 @@ use clap::error::ErrorKind;
 use jtm_core::{Context, ExitCode as JtmExitCode, GlobalFlags, JtmError, Terminal};
 use serde::Serialize;
 
-use crate::cli::{Cli, Command, SelfCommand};
+use crate::cli::{Cli, Command, IdeCommand, SelfCommand};
 use crate::output::{Format, Human, JTM_VERSION, Outcome, Renderer};
 use crate::trust::TrustOutcome;
 
@@ -246,6 +247,22 @@ fn main() -> ExitCode {
             }
             Err(err) => fail(&mut renderer, "hook-env", &err),
         },
+        Some(Command::Ide(IdeCommand::Sync {
+            dry_run,
+            maven_only,
+            gradle_only,
+        })) => render(
+            &mut renderer,
+            "ide sync",
+            ide::sync(
+                &ctx,
+                ide::IdeOptions {
+                    dry_run,
+                    maven: !gradle_only,
+                    gradle: !maven_only,
+                },
+            ),
+        ),
         Some(Command::SelfCmd(SelfCommand::Setup { dry_run })) => {
             render(&mut renderer, "self setup", setup::setup(&ctx, dry_run))
         }
