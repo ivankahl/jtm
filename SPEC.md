@@ -150,7 +150,7 @@ The active version of a tool comes from the first layer that sets it, in a fixed
 
 jtm activates versions with environment variables and directory links only. There are no shims or launcher binaries, so `java` on `PATH` is always the real executable.
 
-**Defaults: current links.** `jtm default` points `<data>/current/<tool>` at the chosen install dir: a directory junction on Windows (no admin rights or Developer Mode needed) and a symlink on macOS and Linux. `jtm self setup` adds `current/<tool>/<bin_dir>` for each tool to the user `PATH` once, and sets each plugin's `[env]` variables to the link path, for example `JAVA_HOME=<data>/current/java`. Changing the default only retargets the link, so new processes, IDEs and services pick it up with no environment change.
+**Defaults: current links.** `jtm default` points `<data>/current/<tool>` at the chosen install's tool home: a directory junction on Windows (no admin rights or Developer Mode needed) and a symlink on macOS and Linux. The tool home is the install dir plus the `home` the receipt records (section 10), which differs only when the manifest sets `home_subdir`: for a macOS JDK the link points at `…/temurin-21.0.5+11/Contents/Home`, not the bundle root. So `{home}` in `[env]` is the link itself on every OS, and anything registered against `current/<tool>` sees a usable home. The cost is that the link never reaches a bundle's root, such as its `Info.plist`, and finding the install a link belongs to means checking which install dir contains the link's target. `jtm self setup` adds `current/<tool>/<bin_dir>` for each tool to the user `PATH` once, and sets each plugin's `[env]` variables to the link path, for example `JAVA_HOME=<data>/current/java`. Changing the default only retargets the link, so new processes, IDEs and services pick it up with no environment change.
 
 - On Unix, retargeting is atomic: a new symlink is created beside the old one and renamed over it.
 - On Windows, a junction cannot be renamed over an existing one, so jtm creates the new junction under a temporary name, removes the old one, then renames, retrying while a scanner holds it. The gap is milliseconds; a process started in that window may not find `java`.
@@ -689,7 +689,7 @@ All state lives in per-user directories following each OS's conventions, and set
 
 ```text
 <data>/
-  current/<tool>          # junction or symlink to the default install; bin dir on PATH
+  current/<tool>          # junction or symlink to the default install's tool home; bin dir on PATH
   tools/
     java/temurin-21.0.5+11/   # install dir with .jtm-receipt.json
     maven/default-3.9.9/

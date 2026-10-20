@@ -859,9 +859,8 @@ impl<'a> Session<'a> {
             variant: Some(found.variant.clone()),
             value: found.version.clone(),
         };
-        // SPEC-QUESTION: section 5 says the link points at the install dir. It points at the
-        // tool home inside it instead, so `[env]` values such as `{home}` stay correct through
-        // the link for layouts like a macOS JDK's `Contents/Home`.
+        // The link points at the tool home, not the install dir (SPEC.md section 5), so `{home}`
+        // stays a valid home through the link for layouts like a macOS JDK's `Contents/Home`.
         let link_changed = links::set(&link, &found.home)?;
         let default_changed = defaults.set(tool, selector);
         if default_changed {
