@@ -267,6 +267,48 @@ fn exec_passes_the_exit_code_through() {
     assert_eq!(output.status.code(), Some(3));
 }
 
+#[cfg(unix)]
+#[test]
+fn exec_reports_a_signal_as_128_plus_its_number() {
+    let f = ready();
+    let project = tempfile::tempdir().unwrap();
+    let output = f
+        .jtm()
+        .current_dir(project.path())
+        .args(["exec", "demo@1.0", "--", "sh", "-c", "kill -9 $$"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(137));
+}
+
+#[test]
+fn exec_shows_warnings_before_running_the_command() {
+    let f = ready();
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join(".jtm.toml"),
+        "[tools]\ndemo = \"9.9\"\n",
+    )
+    .unwrap();
+    let probe = if cfg!(windows) {
+        vec!["cmd", "/c", "exit 0"]
+    } else {
+        vec!["sh", "-c", "exit 0"]
+    };
+    let output = f
+        .jtm()
+        .current_dir(project.path())
+        .env_remove("JTM_SESSION_DEMO")
+        .arg("exec")
+        .arg("--")
+        .args(&probe)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("warning[W_NOT_INSTALLED]"), "{stderr}");
+}
+
 #[test]
 fn activation_uses_the_locked_version() {
     let f = ready();
@@ -342,5 +384,29 @@ fn pin_from_a_subdirectory_writes_the_project_file() {
     assert_eq!(
         fs::read_to_string(project.path().join(".jtm.toml")).unwrap(),
         "[tools]\ndemo = \"1.1\"\n"
+    );
+}
+
+#[test]
+fn an_invalid_session_value_is_ignored_and_can_be_unset() {
+    let f = ready();
+    let project = tempfile::tempdir().unwrap();
+    let output = f
+        .jtm()
+        .current_dir(project.path())
+        .env("JTM_SESSION_DEMO", "not a spec!")
+        .args(["--json", "use", "demo", "--unset"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{value}");
+    assert_eq!(value["warnings"][0]["code"], "W_SESSION_INVALID", "{value}");
+    let changes = value["data"]["changes"].as_array().unwrap();
+    assert!(
+        changes
+            .iter()
+            .any(|c| c["name"] == "JTM_SESSION_DEMO" && c.get("value").is_none()),
+        "{value}"
     );
 }

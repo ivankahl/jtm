@@ -266,7 +266,7 @@ pub(crate) fn exec(
             .stdin(Stdio::null())
             .output()
             .map_err(|e| JtmError::io(&command[0], e))?;
-        let code = output.status.code().unwrap_or(1);
+        let code = exit_code(output.status);
         Ok((
             outcome(
                 code,
@@ -276,10 +276,29 @@ pub(crate) fn exec(
             0,
         ))
     } else {
+        // Nothing is rendered after the child runs, so warnings go to stderr first.
+        let mut stderr = io::stderr().lock();
+        for warning in warnings(found.clone()) {
+            let _ = writeln!(stderr, "warning[{}]: {}", warning.code, warning.message);
+        }
+        drop(stderr);
         let status = child.status().map_err(|e| JtmError::io(&command[0], e))?;
-        let code = status.code().unwrap_or(1);
+        let code = exit_code(status);
         Ok((outcome(code, String::new(), String::new()), code))
     }
+}
+
+/// The exit code to pass on for a child's `status`: its own code, or for a child killed by a
+/// signal, 128 plus the signal number as shells report it.
+pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    status.code().unwrap_or(1)
 }
 
 fn build_command(here: &Here<'_, '_>, command: &[String], changes: &[Change]) -> Result<Command> {

@@ -214,7 +214,9 @@ fn main() -> ExitCode {
                     let _ = renderer.success(&outcome);
                     JtmExitCode::Success.into()
                 } else {
-                    ExitCode::from(u8::try_from(code).unwrap_or(1))
+                    // Pass the child's code on whole: `ExitCode` holds only 0 to 255, which
+                    // would lose a Windows code such as 0xC000013A for Ctrl+C.
+                    std::process::exit(code)
                 }
             }
             Err(err) => fail(&mut renderer, "exec", &err),
