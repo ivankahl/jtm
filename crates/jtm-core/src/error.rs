@@ -345,9 +345,8 @@ pub enum JtmError {
     LockIndexMismatch { tool: String, message: String },
 
     /// A third-party plugin's manifest differs from the one `jtm.lock` recorded (SPEC.md
-    /// section 11). Maps to `E_LOCK_INDEX_MISMATCH`.
-    // SPEC-QUESTION: section 12 has no code for a changed plugin manifest; it is a lock
-    // mismatch like a changed hash, and exits 6.
+    /// section 11). Maps to `E_LOCK_INDEX_MISMATCH` and exits 6: it is a lock mismatch like a
+    /// changed hash.
     #[error(
         "plugin `{tool}` changed since jtm.lock recorded it (manifest sha256 {locked}, now \
          {actual}); check the change, then run `jtm lock --upgrade {tool}`"

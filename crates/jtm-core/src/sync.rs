@@ -656,9 +656,9 @@ fn sorted(tool: &LockedTool) -> LockedTool {
 
 /// The lockfile's record of `plugin`.
 pub fn locked_plugin(plugin: &Plugin) -> LockedPlugin {
-    // SPEC-QUESTION: where a third-party plugin came from is recorded by `jtm plugin add`
-    // (T9.3). Until then an external plugin is locked by its manifest hash and the revision in
-    // its directory name, with source `external`.
+    // Until `jtm plugin add` (T9.3) records where a third-party plugin came from, it is locked
+    // by its manifest hash and the revision in its directory name, with source `external`
+    // (SPEC.md section 11).
     let (source, rev) = match plugin.origin {
         crate::indices::ManifestOrigin::Builtin => ("builtin".to_owned(), None),
         crate::indices::ManifestOrigin::External => {

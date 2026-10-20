@@ -565,7 +565,7 @@ sha256 = "<hex>"
 - **`--frozen`:** fail with `E_LOCK_OUTDATED` instead of rewriting. Intended for CI.
 - **Removed from index:** a locked version no longer in the index still installs from the locked URL and hash, with a warning.
 - **Hash disagreement** with the index for the same version is `E_LOCK_INDEX_MISMATCH` (section 9).
-- **Third-party plugins** are fetched at the locked `rev` and rejected if the manifest hash differs, with `E_LOCK_INDEX_MISMATCH`, until `jtm lock --upgrade <tool>` accepts the change.
+- **Third-party plugins** are fetched at the locked `rev` and rejected if the manifest hash differs, with `E_LOCK_INDEX_MISMATCH`, until `jtm lock --upgrade <tool>` accepts the change. Until `jtm plugin add` (T9.3) records a plugin's source URL, a third-party plugin is locked with `source = "external"` and the `rev` taken from its `<name>@<rev>` directory; the manifest hash check applies either way.
 - Output is deterministic (sorted by tool, then platform) so diffs stay small.
 - **Mirrors apply to locked URLs.** `[mirrors]` rewrites apply to URLs read from `jtm.lock` as well as to index URLs, so a committed lockfile still works behind a corporate proxy. The locked hash is checked as usual.
 

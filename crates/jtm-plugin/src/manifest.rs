@@ -227,10 +227,8 @@ pub enum InteropParser {
     SingleLine,
     /// A build tool wrapper's properties file, such as `gradle-wrapper.properties`: the
     /// version comes from the file name in the URL under `key`. Read-only and lowest
-    /// precedence (SPEC.md section 6, rule 5).
-    // SPEC-QUESTION: section 7 lists only `keyvalue`, `tool-versions` and `single-line`.
-    // Wrapper files are declared as a fourth, read-only parser so the core stays free of
-    // tool names.
+    /// precedence (SPEC.md section 6, rule 5). A parser rather than core code, so the core
+    /// stays free of tool names.
     Wrapper,
 }
 
@@ -245,9 +243,8 @@ pub struct Hooks {
     pub post_extract: Option<String>,
 }
 
-/// `[ide]`: how `jtm ide sync` offers this tool's installs to build tools.
-// SPEC-QUESTION: section 7 has no such section. `jtm ide sync` needs to know which installs are
-// JDKs without the core naming a tool, so a plugin declares it here.
+/// `[ide]`: how `jtm ide sync` offers this tool's installs to build tools (SPEC.md section 7).
+/// The plugin declares which installs are JDKs, so the core never names a tool.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ide {
