@@ -1,0 +1,47 @@
+# The Maven example from SPEC.md section 7, with a well-formed key in place of the
+# "RWS...base64..." placeholder.
+schema = 1
+name = "wrapped"
+display_name = "Apache Maven"
+homepage = "https://maven.apache.org"
+min_jtm = "0.1.0"
+
+[versions]
+scheme = "maven"
+default_alias = "latest"
+include_prereleases = false
+
+[aliases]
+latest = { kind = "highest" }
+"3" = { kind = "fixed", target = "3" }   # newest 3.x
+
+[index]
+url = "https://github.com/jtm-dev/index/releases/download/maven-{index_version}/maven-{os}-{arch}.json"
+signing_keys = ["RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB"]
+format = 1
+
+[layout]
+strip_components = 1
+bin_dirs = ["bin"]
+
+[executables]
+unix = ["mvn", "mvnDebug"]
+windows = ["mvn.cmd", "mvnDebug.cmd"]
+
+[env]
+MAVEN_HOME = "{home}"
+M2_HOME = "{home}"
+
+[requires]
+java = ">=8"
+
+[[interop]]
+file = ".sdkmanrc"
+parser = "keyvalue"
+key = "wrapped"
+
+[[interop]]
+file = "wrapped/wrapper/wrapped-wrapper.properties"
+parser = "wrapper"
+key = "distributionUrl"
+pattern = "wrapped-{version}-*.zip"

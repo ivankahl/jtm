@@ -201,3 +201,16 @@ fn validation_reports_every_problem() {
     let paths: Vec<&str> = err.problems.iter().map(|p| p.path.as_str()).collect();
     assert_eq!(paths, ["name", "index.format", "env.PATH"]);
 }
+
+#[test]
+fn wrapper_interop_reads_a_distribution_url_pattern() {
+    let text = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/manifests/valid/wrapped.toml"),
+    )
+    .unwrap();
+    let m = Manifest::parse(&text).unwrap();
+    let wrapper = &m.interop[1];
+    assert_eq!(wrapper.parser, InteropParser::Wrapper);
+    assert_eq!(wrapper.key.as_deref(), Some("distributionUrl"));
+    assert_eq!(wrapper.pattern.as_deref(), Some("wrapped-{version}-*.zip"));
+}

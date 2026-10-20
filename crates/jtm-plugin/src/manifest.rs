@@ -206,6 +206,9 @@ pub struct Interop {
     /// Use the `parse_interop` and `format_interop` hooks instead of `mapping`.
     #[serde(default)]
     pub script: bool,
+    /// For `wrapper`: the distribution file name, with `{version}` where the version is and
+    /// `*` for any text, such as `gradle-{version}-*.zip`.
+    pub pattern: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -217,6 +220,13 @@ pub enum InteropParser {
     ToolVersions,
     /// The whole file is one value, as in `.java-version`.
     SingleLine,
+    /// A build tool wrapper's properties file, such as `gradle-wrapper.properties`: the
+    /// version comes from the file name in the URL under `key`. Read-only and lowest
+    /// precedence (SPEC.md section 6, rule 5).
+    // SPEC-QUESTION: section 7 lists only `keyvalue`, `tool-versions` and `single-line`.
+    // Wrapper files are declared as a fourth, read-only parser so the core stays free of
+    // tool names.
+    Wrapper,
 }
 
 /// `[hooks]`: names of `plugin.lua` functions.
@@ -571,15 +581,41 @@ impl Manifest {
                     format!("{path}.key"),
                     "parser `single-line` reads the whole file and takes no key",
                 ),
-                (InteropParser::Keyvalue | InteropParser::ToolVersions, None) => p.push(
+                (
+                    InteropParser::Keyvalue | InteropParser::ToolVersions | InteropParser::Wrapper,
+                    None,
+                ) => p.push(
                     format!("{path}.key"),
-                    "parsers `keyvalue` and `tool-versions` need the key to read",
+                    "parsers `keyvalue`, `tool-versions` and `wrapper` need the key to read",
                 ),
                 (_, Some(key)) if !is_interop_text(key) => p.push(
                     format!("{path}.key"),
                     "keys use letters, digits, `.`, `-` and `_`",
                 ),
                 _ => {}
+            }
+            match (interop.parser, &interop.pattern) {
+                (InteropParser::Wrapper, None) => p.push(
+                    format!("{path}.pattern"),
+                    "parser `wrapper` needs the distribution file name pattern, such as \
+                     `tool-{version}-*.zip`",
+                ),
+                (InteropParser::Wrapper, Some(pattern)) => {
+                    if let Err(message) = check_wrapper_pattern(pattern) {
+                        p.push(format!("{path}.pattern"), message);
+                    }
+                }
+                (_, Some(_)) => p.push(
+                    format!("{path}.pattern"),
+                    "only parser `wrapper` takes a pattern",
+                ),
+                (_, None) => {}
+            }
+            if interop.parser == InteropParser::Wrapper && !interop.mapping.is_empty() {
+                p.push(
+                    format!("{path}.mapping"),
+                    "parser `wrapper` reads a version only and takes no mapping",
+                );
             }
             if interop.script {
                 if !interop.mapping.is_empty() {
@@ -627,6 +663,27 @@ impl Manifest {
                 );
             }
         }
+    }
+}
+
+/// Checks a wrapper file name pattern: one `{version}`, `*` wildcards, and otherwise the
+/// characters of a file name.
+fn check_wrapper_pattern(pattern: &str) -> Result<(), String> {
+    if pattern.matches("{version}").count() != 1 {
+        return Err(format!(
+            "`{pattern}` must contain `{{version}}` exactly once"
+        ));
+    }
+    let rest = pattern.replace("{version}", "");
+    if rest
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+' | b'*'))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{pattern}` is a file name: letters, digits, `.`, `-`, `_`, `+` and `*`"
+        ))
     }
 }
 

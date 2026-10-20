@@ -252,6 +252,13 @@ pub enum JtmError {
     #[error("unknown tool `{tool}`")]
     ToolUnknown { tool: String },
 
+    /// A pin file pins a tool no installed plugin provides.
+    #[error(
+        "{} pins `{tool}`, but no plugin `{tool}` is installed; add it with `jtm plugin add {tool}`",
+        file.display()
+    )]
+    PinToolUnknown { tool: String, file: PathBuf },
+
     #[error("no version of `{tool}` matches `{spec}`")]
     VersionNotFound { tool: String, spec: String },
 
@@ -393,7 +400,9 @@ impl JtmError {
             JtmError::InvalidManifest { .. }
             | JtmError::PluginSigningKeys { .. }
             | JtmError::LayoutMismatch { .. } => ErrorCode::PluginInvalid,
-            JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
+            JtmError::ToolUnknown { .. } | JtmError::PinToolUnknown { .. } => {
+                ErrorCode::ToolUnknown
+            }
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
             JtmError::PlatformUnsupported { .. } | JtmError::HostUnsupported { .. } => {
@@ -485,6 +494,11 @@ impl JtmError {
                 ("key", key.as_str().into()),
             ]),
             JtmError::ToolUnknown { tool } => obj([("tool", tool.as_str().into())]),
+            JtmError::PinToolUnknown { tool, file } => obj([
+                ("tool", tool.as_str().into()),
+                ("file", path(file)),
+                ("resolve", format!("jtm plugin add {tool}").into()),
+            ]),
             JtmError::VersionNotFound { tool, spec } => obj([
                 ("tool", tool.as_str().into()),
                 ("spec", spec.as_str().into()),

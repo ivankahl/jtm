@@ -1,6 +1,7 @@
 //! Manifest schema, version schemes, aliases, interop parsers and Luau sandbox for jtm.
 
 pub mod alias;
+pub mod interop;
 pub mod manifest;
 pub mod names;
 pub mod version;

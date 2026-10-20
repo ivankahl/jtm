@@ -6,6 +6,7 @@ pub mod dirs;
 pub mod error;
 pub mod indices;
 pub mod install;
+pub mod pins;
 pub mod platform;
 pub mod plugins;
 pub mod project;
