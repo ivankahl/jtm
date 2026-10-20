@@ -40,6 +40,10 @@ pub(crate) enum Command {
         /// Refresh the index first, so the newest versions are considered.
         #[arg(long)]
         latest: bool,
+        /// Resolve for another platform, such as `linux-x64`, and only download and verify
+        /// its archive into the cache.
+        #[arg(long, value_name = "OS-ARCH")]
+        platform: Option<String>,
     },
     /// Remove an installed version and clear a current link that points at it.
     Uninstall {
@@ -242,6 +246,7 @@ mod tests {
                 dry_run,
                 force,
                 latest,
+                platform: None,
             }) => {
                 assert_eq!(specs, ["a@1", "b"]);
                 assert!(dry_run && force && !latest);

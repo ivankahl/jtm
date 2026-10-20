@@ -74,7 +74,10 @@ proptest! {
         let entries: Vec<E> = entries
             .into_iter()
             .filter(|e| match e {
-                E::File(n, ..) | E::Dir(n) | E::Symlink(n, _) => names.insert(n.clone()),
+                // The zip writer stores directories with one trailing `/`.
+                E::File(n, ..) | E::Dir(n) | E::Symlink(n, _) => {
+                    names.insert(n.trim_end_matches('/').to_owned())
+                }
                 E::Hard(..) | E::Special(..) => false,
             })
             .collect();

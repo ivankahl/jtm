@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use jtm_fetch::{Client, ClientOptions, DownloadCache};
@@ -21,7 +22,7 @@ use crate::indices::{
     EmbeddedIndex, EmbeddedKeysFile, Fetcher, IndexLoader, IndexSources, LoadOptions, PluginIndex,
     PluginKeys, cache_path,
 };
-use crate::install::{self, Archives, InstallRequest, Progress, Receipt, Status};
+use crate::install::{self, Archives, InstallRequest, Progress, Receipt, Status, VersionId};
 use crate::platform::Platform;
 use crate::plugins::{BUILTIN, Plugin, Registry};
 use crate::spec::ToolSpec;
@@ -37,20 +38,20 @@ const EMBEDDED_KEYS: &[EmbeddedKeysFile] = &[];
 /// Everything an operation needs: directories, configuration, the platform and the network.
 #[derive(Debug)]
 pub struct Session<'a> {
-    pub ctx: &'a Context,
-    pub dirs: Dirs,
-    pub settings: Settings,
-    pub platform: Platform,
+    ctx: &'a Context,
+    dirs: Dirs,
+    settings: Settings,
+    platform: Platform,
     client: Option<Client>,
     cache: DownloadCache,
 }
 
-/// One version as install, uninstall and list report it.
+/// One version on disk, as install, uninstall and list report it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VersionItem {
-    pub tool: String,
-    pub variant: String,
-    pub version: String,
+    #[serde(flatten)]
+    pub id: VersionId,
+    /// The install dir, or for an archive downloaded for another platform, the cached archive.
     pub path: String,
 }
 
@@ -59,12 +60,12 @@ pub struct VersionItem {
 pub struct InstallItem {
     #[serde(flatten)]
     pub version: VersionItem,
-    /// `installed`, `already_installed` or, for a dry run, `would_install`.
-    pub status: &'static str,
+    pub platform: String,
+    pub status: Status,
     pub url: String,
     pub sha256: String,
     pub size: u64,
-    /// Whether the archive is already in the download cache.
+    /// Whether the archive was already in the download cache.
     pub cached: bool,
 }
 
@@ -103,6 +104,17 @@ pub struct InstallOptions {
     pub dry_run: bool,
     /// Refresh the index first, so the newest versions are seen.
     pub latest: bool,
+    /// Resolve against another platform's index. Its archive is downloaded and verified into
+    /// the cache but never extracted, since it cannot run here.
+    pub platform: Option<Platform>,
+}
+
+/// Options for [`Session::uninstall`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UninstallOptions {
+    /// Remove the version from every variant, not only the default one.
+    pub all_variants: bool,
+    pub dry_run: bool,
 }
 
 /// Options for [`Session::available`].
@@ -113,6 +125,19 @@ pub struct AvailableOptions {
     /// Include every variant, not only the default.
     pub all: bool,
 }
+
+/// A spec resolved against a verified index, ready to install.
+#[derive(Debug, Clone)]
+pub struct Planned {
+    plugin: Plugin,
+    entry: IndexEntry,
+    platform: Platform,
+    index_sequence: u64,
+    warnings: Vec<Warning>,
+}
+
+/// The outcome of installing one spec, and the warnings met on the way.
+pub type InstallResult = Result<(InstallItem, Vec<Warning>)>;
 
 impl<'a> Session<'a> {
     /// Opens a session from the process environment.
@@ -153,6 +178,11 @@ impl<'a> Session<'a> {
         })
     }
 
+    /// The platform jtm runs on.
+    pub fn platform(&self) -> Platform {
+        self.platform
+    }
+
     pub fn registry(&self) -> Registry<'_> {
         Registry {
             dirs: &self.dirs,
@@ -164,9 +194,9 @@ impl<'a> Session<'a> {
         self.registry().find(name)
     }
 
-    /// Loads and verifies `plugin`'s index for this platform. `refresh` fetches a new copy as
+    /// Loads and verifies `plugin`'s index for `platform`. `refresh` fetches a new copy as
     /// `jtm update` does.
-    pub fn index(&self, plugin: &Plugin, refresh: bool) -> Result<PluginIndex> {
+    pub fn index(&self, plugin: &Plugin, platform: Platform, refresh: bool) -> Result<PluginIndex> {
         let manifest = &plugin.manifest;
         let name = manifest.name.as_str();
         let loader = IndexLoader {
@@ -200,7 +230,7 @@ impl<'a> Session<'a> {
         let mut index = loader.load(
             &IndexSources {
                 plugin: name,
-                platform: self.platform.as_str(),
+                platform: platform.as_str(),
                 remote_url: &remote_url,
                 override_url,
             },
@@ -215,7 +245,7 @@ impl<'a> Session<'a> {
     /// Whether a spec that local data cannot resolve may refresh the index (SPEC.md section
     /// 8): never offline, in JSON mode or under CI, and otherwise per `index.auto_refresh`,
     /// once the cached copy is older than `index.ttl_hours`.
-    fn may_auto_refresh(&self, plugin: &str) -> bool {
+    fn may_auto_refresh(&self, plugin: &str, platform: Platform) -> bool {
         if self.ctx.offline || self.ctx.json || self.ctx.ci {
             return false;
         }
@@ -225,7 +255,7 @@ impl<'a> Session<'a> {
             AutoRefresh::Tty => self.ctx.interactive,
         };
         let ttl = Duration::from_secs(u64::from(self.settings.index.ttl_hours) * 3600);
-        let stale = fs::metadata(cache_path(&self.dirs, plugin, self.platform.as_str()))
+        let stale = fs::metadata(cache_path(&self.dirs, plugin, platform.as_str()))
             .and_then(|m| m.modified())
             .map_or(true, |at| {
                 SystemTime::now().duration_since(at).unwrap_or_default() >= ttl
@@ -233,20 +263,25 @@ impl<'a> Session<'a> {
         allowed && stale
     }
 
-    /// Resolves `spec` to one index entry, refreshing the index once when local data cannot
-    /// resolve it and the refresh policy allows.
+    /// Resolves `spec` to one entry of `platform`'s index, refreshing the index once when
+    /// local data cannot resolve it and the refresh policy allows.
     pub fn resolve(
         &self,
         spec: &ToolSpec,
         plugin: &Plugin,
+        platform: Platform,
         refresh: bool,
     ) -> Result<(IndexEntry, PluginIndex)> {
-        let index = self.index(plugin, refresh)?;
+        let index = self.index(plugin, platform, refresh)?;
         match select(spec, plugin, &index.index.entries) {
             Ok(entry) => Ok((entry.clone(), index)),
-            Err(err) if !refresh && is_not_found(&err) && self.may_auto_refresh(&spec.tool) => {
+            Err(err)
+                if !refresh
+                    && is_not_found(&err)
+                    && self.may_auto_refresh(&spec.tool, platform) =>
+            {
                 tracing::info!(tool = %spec.tool, "refreshing the index to resolve the spec");
-                let index = self.index(plugin, true)?;
+                let index = self.index(plugin, platform, true)?;
                 let entry = select(spec, plugin, &index.index.entries)?.clone();
                 Ok((entry, index))
             }
@@ -254,70 +289,160 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// Installs the version `spec` resolves to, or with `dry_run` reports what would happen.
+    /// Resolves `spec` for installing.
+    pub fn plan(&self, spec: &ToolSpec, options: InstallOptions) -> Result<Planned> {
+        let plugin = self.plugin(&spec.tool)?;
+        let platform = options.platform.unwrap_or(self.platform);
+        let (entry, index) = self.resolve(spec, &plugin, platform, options.latest)?;
+        Ok(Planned {
+            plugin,
+            entry,
+            platform,
+            index_sequence: index.index.sequence,
+            warnings: index.warnings,
+        })
+    }
+
+    /// Installs a planned version, or with `dry_run` reports what would happen.
     // SPEC-QUESTION: a dry run still verifies the index, which caches a fetched copy and
     // records its sequence; neither changes what is installed, and skipping the record would
     // weaken rollback protection.
-    pub fn install(
+    pub fn execute(
         &self,
-        spec: &ToolSpec,
+        planned: Planned,
         options: InstallOptions,
         progress: &mut dyn FnMut(Progress),
-    ) -> Result<(InstallItem, Vec<Warning>)> {
-        let plugin = self.plugin(&spec.tool)?;
-        let (entry, index) = self.resolve(spec, &plugin, options.latest)?;
-        let path = install::install_path(&self.dirs, &spec.tool, &entry.variant, &entry.version)?;
+    ) -> InstallResult {
+        let Planned {
+            plugin,
+            entry,
+            platform,
+            index_sequence,
+            warnings,
+        } = planned;
+        let id = VersionId::of(&plugin.manifest.name, &entry);
         let cached = self.cache.path(&entry.sha256).is_ok_and(|p| p.is_file());
-        let item = |status: &'static str, path: &Path| InstallItem {
+        let item = |status: Status, path: &Path, url: &str| InstallItem {
             version: VersionItem {
-                tool: spec.tool.clone(),
-                variant: entry.variant.clone(),
-                version: entry.version.clone(),
+                id: id.clone(),
                 path: path.display().to_string(),
             },
+            platform: platform.as_str().to_owned(),
             status,
-            url: entry.url.clone(),
+            url: url.to_owned(),
             sha256: entry.sha256.clone(),
             size: entry.size,
             cached,
-        };
-
-        if options.dry_run {
-            let installed =
-                !options.force && Receipt::read(&path).is_some_and(|r| r.sha256 == entry.sha256);
-            let status = if installed {
-                "already_installed"
-            } else {
-                "would_install"
-            };
-            return Ok((item(status, &path), index.warnings));
-        }
-
-        let request = InstallRequest {
-            manifest: &plugin.manifest,
-            manifest_sha256: &plugin.sha256,
-            entry: &entry,
-            platform: self.platform,
-            index_sequence: index.index.sequence,
-            force: options.force,
         };
         let archives = Archives {
             cache: &self.cache,
             client: self.client.as_ref(),
             mirrors: &self.settings.mirrors,
         };
+
+        // SPEC-QUESTION: `install --platform` for another platform cannot produce a usable
+        // install dir, so it downloads and verifies the archive into the cache only, which is
+        // what seeding a shared cache or mirror needs.
+        if platform != self.platform {
+            let path = self.cache.path(&entry.sha256)?;
+            if options.dry_run {
+                let status = if cached {
+                    Status::AlreadyDownloaded
+                } else {
+                    Status::WouldDownload
+                };
+                return Ok((item(status, &path, &entry.url), warnings));
+            }
+            let got = archives.get(&entry, progress)?;
+            progress(Progress::Verified);
+            let status = match got.origin {
+                jtm_fetch::Origin::Network => Status::Downloaded,
+                jtm_fetch::Origin::Cache => Status::AlreadyDownloaded,
+            };
+            return Ok((item(status, &got.path, &got.url), warnings));
+        }
+
+        let dest = id.install_dir(&self.dirs)?;
+        if options.dry_run {
+            let installed =
+                !options.force && Receipt::read(&dest).is_some_and(|r| r.sha256 == entry.sha256);
+            let status = if installed {
+                Status::AlreadyInstalled
+            } else {
+                Status::WouldInstall
+            };
+            return Ok((item(status, &dest, &entry.url), warnings));
+        }
+        let request = InstallRequest {
+            manifest: &plugin.manifest,
+            manifest_sha256: &plugin.sha256,
+            entry: &entry,
+            platform,
+            index_sequence,
+            force: options.force,
+        };
         let limits = jtm_archive::Limits {
             max_bytes: self.settings.extract.max_bytes,
+            max_entries: self.settings.extract.max_entries,
+            max_ratio: self.settings.extract.max_ratio,
             ..jtm_archive::Limits::default()
         };
         let done = install::install(&self.dirs, &archives, &request, &limits, progress)?;
-        let status = match done.status {
-            Status::Installed => "installed",
-            Status::AlreadyInstalled => "already_installed",
-        };
-        let mut item = item(status, &done.path);
-        item.url = done.receipt.url;
-        Ok((item, index.warnings))
+        Ok((item(done.status, &done.path, &done.receipt.url), warnings))
+    }
+
+    /// Installs the version `spec` resolves to, or with `dry_run` reports what would happen.
+    pub fn install(
+        &self,
+        spec: &ToolSpec,
+        options: InstallOptions,
+        progress: &mut dyn FnMut(Progress),
+    ) -> InstallResult {
+        let planned = self.plan(spec, options)?;
+        self.execute(planned, options, progress)
+    }
+
+    /// Installs several specs: indices are loaded and specs resolved one at a time, then up to
+    /// `download.concurrency` versions download and extract in parallel. Results are in the
+    /// order of `specs`; `progress` receives each spec's position.
+    pub fn install_all(
+        &self,
+        specs: &[ToolSpec],
+        options: InstallOptions,
+        progress: &(dyn Fn(usize, Progress) + Sync),
+    ) -> Vec<InstallResult> {
+        let mut results: Vec<Option<InstallResult>> = specs.iter().map(|_| None).collect();
+        let mut work = Vec::new();
+        for (i, spec) in specs.iter().enumerate() {
+            match self.plan(spec, options) {
+                Ok(planned) => work.push((i, planned)),
+                Err(err) => results[i] = Some(Err(err)),
+            }
+        }
+        let workers = (self.settings.download.concurrency.max(1) as usize).min(work.len());
+        let queue = Mutex::new(work.into_iter());
+        let done = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    loop {
+                        let next = queue.lock().map(|mut q| q.next()).ok().flatten();
+                        let Some((i, planned)) = next else { break };
+                        let result = self.execute(planned, options, &mut |p| progress(i, p));
+                        if let Ok(mut done) = done.lock() {
+                            done.push((i, result));
+                        }
+                    }
+                });
+            }
+        });
+        for (i, result) in done.into_inner().unwrap_or_default() {
+            results[i] = Some(result);
+        }
+        results
+            .into_iter()
+            .map(|r| r.unwrap_or_else(|| Err(JtmError::internal("an install did not finish"))))
+            .collect()
     }
 
     /// Every installed version, optionally of one tool, sorted by tool, variant and version.
@@ -341,9 +466,11 @@ impl<'a> Session<'a> {
                 }
                 found.push(InstalledItem {
                     version: VersionItem {
-                        tool: receipt.plugin,
-                        variant: receipt.variant,
-                        version: receipt.version,
+                        id: VersionId {
+                            tool: receipt.plugin,
+                            variant: receipt.variant,
+                            version: receipt.version,
+                        },
                         path: dir.display().to_string(),
                     },
                     platform: receipt.platform,
@@ -353,7 +480,7 @@ impl<'a> Session<'a> {
         }
         let schemes: BTreeMap<String, Option<jtm_plugin::VersionScheme>> = found
             .iter()
-            .map(|i| i.version.tool.clone())
+            .map(|i| i.version.id.tool.clone())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .map(|t| {
@@ -365,7 +492,7 @@ impl<'a> Session<'a> {
             })
             .collect();
         found.sort_by(|a, b| {
-            let (a, b) = (&a.version, &b.version);
+            let (a, b) = (&a.version.id, &b.version.id);
             let scheme = schemes.get(&a.tool).copied().flatten();
             a.tool
                 .cmp(&b.tool)
@@ -389,7 +516,7 @@ impl<'a> Session<'a> {
     ) -> Result<(Available, Vec<Warning>)> {
         let plugin = self.plugin(tool)?;
         let manifest = &plugin.manifest;
-        let index = self.index(&plugin, false)?;
+        let index = self.index(&plugin, self.platform, false)?;
         let variant = options
             .variant
             .clone()
@@ -430,7 +557,8 @@ impl<'a> Session<'a> {
                 variant: e.variant.clone(),
                 version: e.version.clone(),
                 tags: e.tags.clone(),
-                installed: install::install_path(&self.dirs, tool, &e.variant, &e.version)
+                installed: VersionId::of(tool, e)
+                    .install_dir(&self.dirs)
                     .ok()
                     .and_then(|p| Receipt::read(&p))
                     .is_some_and(|r| r.sha256 == e.sha256),
@@ -475,15 +603,15 @@ impl<'a> Session<'a> {
             (None, false) => match self.plugin(&spec.tool) {
                 Ok(plugin) => Some(plugin.manifest.default_variant().to_owned()),
                 // A removed plugin's installs can still be uninstalled by exact version.
-                Err(err) if err.code() == "E_TOOL_UNKNOWN" => None,
+                Err(JtmError::ToolUnknown { .. }) => None,
                 Err(err) => return Err(err),
             },
         };
         let matches: Vec<InstalledItem> = self
             .list(Some(&spec.tool))?
             .into_iter()
-            .filter(|i| i.version.version == selector.value)
-            .filter(|i| variant.as_ref().is_none_or(|v| *v == i.version.variant))
+            .filter(|i| i.version.id.version == selector.value)
+            .filter(|i| variant.as_ref().is_none_or(|v| *v == i.version.id.variant))
             .collect();
         if matches.is_empty() {
             return Err(JtmError::VersionNotFound {
@@ -503,20 +631,19 @@ impl<'a> Session<'a> {
     pub fn uninstall(
         &self,
         spec: &ToolSpec,
-        all_variants: bool,
-        dry_run: bool,
+        options: UninstallOptions,
     ) -> Result<(Vec<VersionItem>, Vec<Warning>)> {
-        let found = self.find_installed(spec, all_variants)?;
+        let found = self.find_installed(spec, options.all_variants)?;
         let mut removed = Vec::new();
         let mut warnings = Vec::new();
         for item in found {
             let v = item.version;
-            if !dry_run {
-                let _lock = install::lock_version(&self.dirs, &v.tool, &v.variant, &v.version)?;
+            if !options.dry_run {
+                let _lock = v.id.lock(&self.dirs)?;
                 let path = PathBuf::from(&v.path);
                 // Decided before the move, cleared only once it succeeded, so `E_IN_USE`
                 // leaves both the install and the default as they were.
-                let link = self.current_link_to(&v.tool, &path);
+                let link = self.current_link_to(&v.id.tool, &path);
                 let trashed = install::move_to_trash(&self.dirs, &path)?;
                 install::remove_trash(&trashed);
                 if let Some(link) = link
@@ -525,8 +652,8 @@ impl<'a> Session<'a> {
                     warnings.push(Warning {
                         code: W_DEFAULT_CLEARED,
                         message: format!(
-                            "{}@{}:{} was the default; no version of `{}` is the default now",
-                            v.tool, v.variant, v.version, v.tool
+                            "{} was the default; no version of `{}` is the default now",
+                            v.id, v.id.tool
                         ),
                     });
                 }
@@ -560,7 +687,7 @@ pub fn load_config(dirs: &Dirs, env: &dyn Fn(&str) -> Option<OsString>) -> Resul
     let text = match fs::read_to_string(&dirs.config_file) {
         Ok(text) => Some(text),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => return Err(install::io_error(&dirs.config_file, e)),
+        Err(e) => return Err(JtmError::io(&dirs.config_file, e)),
     };
     Config::load(&ConfigInputs {
         user: text.as_deref().map(|text| FileSource {
@@ -608,7 +735,7 @@ fn read_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(install::io_error(dir, e)),
+        Err(e) => return Err(JtmError::io(dir, e)),
     };
     let mut dirs: Vec<PathBuf> = entries
         .flatten()

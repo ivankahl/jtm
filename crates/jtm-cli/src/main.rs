@@ -85,18 +85,27 @@ fn main() -> ExitCode {
             dry_run,
             force,
             latest,
+            platform,
         }) => {
+            let platform = match platform.as_deref().map(str::parse).transpose() {
+                Ok(platform) => platform,
+                Err(err) => return fail(&mut renderer, "install", &err),
+            };
             let options = jtm_core::session::InstallOptions {
                 force,
                 dry_run,
                 latest,
+                platform,
             };
             match tools::install(&ctx, &specs, options) {
                 Ok((outcome, code)) => {
                     let _ = renderer.success(&outcome);
                     code.into()
                 }
-                Err(err) => fail(&mut renderer, "install", &err),
+                Err(failure) => {
+                    let _ = renderer.failure_with("install", &failure.error, failure.details());
+                    failure.error.exit_code().into()
+                }
             }
         }
         Some(Command::Uninstall {
@@ -106,7 +115,14 @@ fn main() -> ExitCode {
         }) => render(
             &mut renderer,
             "uninstall",
-            tools::uninstall(&ctx, &spec, all_variants, dry_run),
+            tools::uninstall(
+                &ctx,
+                &spec,
+                jtm_core::session::UninstallOptions {
+                    all_variants,
+                    dry_run,
+                },
+            ),
         ),
         Some(Command::List { tool }) => {
             render(&mut renderer, "list", tools::list(&ctx, tool.as_deref()))

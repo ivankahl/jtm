@@ -17,6 +17,10 @@ pub enum Error {
     #[error("the archive is malformed: {message}")]
     Malformed { message: String },
 
+    /// This build cannot extract the format, such as `tar.xz` without the `xz` feature.
+    #[error("this jtm was built without {format} support")]
+    Unsupported { format: &'static str },
+
     /// Reading the archive or writing the destination failed.
     #[error("cannot access {}: {source}", path.display())]
     Io {

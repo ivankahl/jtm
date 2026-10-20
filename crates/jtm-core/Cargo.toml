@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# tar.xz archives (SPEC.md section 10). Off by default.
+xz = ["jtm-archive/xz"]
+
 [dependencies]
 jtm-archive.workspace = true
 jtm-fetch.workspace = true

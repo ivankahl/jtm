@@ -3,7 +3,7 @@
 //!
 //! `strip_components = <n>` is applied while extracting; `"auto"` strips a single top-level
 //! directory afterwards, when the archive has exactly one. The per-OS `home_subdir` then names
-//! the tool home inside what remains, such as `Contents/Home` in a macOS JDK. The whole tree is
+//! the tool home inside what remains, such as a macOS app bundle's `Contents/Home`. The whole tree is
 //! kept, so links from the home to elsewhere in the archive keep working.
 
 use std::fs;
@@ -46,26 +46,23 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
         plugin: plugin.to_owned(),
         message,
     };
-    let io_err = |path: &Path, e: io::Error| {
-        JtmError::internal(format!("cannot read {}: {e}", path.display()))
-    };
 
     let mut root = extracted.to_path_buf();
     if layout.strip_components == StripComponents::Auto {
         let mut entries = fs::read_dir(extracted)
-            .map_err(|e| io_err(extracted, e))?
+            .map_err(|e| JtmError::io(extracted, e))?
             .collect::<io::Result<Vec<_>>>()
-            .map_err(|e| io_err(extracted, e))?;
+            .map_err(|e| JtmError::io(extracted, e))?;
         if entries.len() == 1 {
             let only = entries.remove(0);
-            let kind = only.file_type().map_err(|e| io_err(&only.path(), e))?;
+            let kind = only.file_type().map_err(|e| JtmError::io(only.path(), e))?;
             if kind.is_dir() {
                 root = only.path();
             }
         }
     }
     if fs::read_dir(&root)
-        .map_err(|e| io_err(&root, e))?
+        .map_err(|e| JtmError::io(&root, e))?
         .next()
         .is_none()
     {
@@ -131,8 +128,7 @@ fn relative(path: &str) -> Option<PathBuf> {
 
 /// Whether `path` exists and, with links resolved, is inside `root`.
 fn inside(root: &Path, path: &Path) -> Result<bool> {
-    let real_root = fs::canonicalize(root)
-        .map_err(|e| JtmError::internal(format!("cannot read {}: {e}", root.display())))?;
+    let real_root = fs::canonicalize(root).map_err(|e| JtmError::io(root, e))?;
     Ok(fs::canonicalize(path).is_ok_and(|real| real.starts_with(&real_root)))
 }
 

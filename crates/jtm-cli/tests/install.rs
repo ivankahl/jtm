@@ -72,21 +72,33 @@ impl Fixture {
             }
             f.serve(&format!("/dl/demo-{version}.tar.gz"), served);
         }
-        let index = serde_json::to_vec(&json!({
-            "format": 1,
-            "plugin": "demo",
-            "platform": f.platform,
-            "sequence": 1,
-            "generated": "2026-01-01T00:00:00Z",
-            "expires": "2099-01-01T00:00:00Z",
-            "entries": entries,
-        }))
-        .unwrap();
-        let signature = f.key.sign(&index);
-        let index_path = format!("/index/demo-{}.json", f.platform);
-        f.serve(&format!("{index_path}.minisig"), signature);
-        f.serve(&index_path, index);
+        // The same entries for the host and for one other platform, for `--platform`.
+        for platform in [f.platform.clone(), f.other_platform()] {
+            let index = serde_json::to_vec(&json!({
+                "format": 1,
+                "plugin": "demo",
+                "platform": platform,
+                "sequence": 1,
+                "generated": "2026-01-01T00:00:00Z",
+                "expires": "2099-01-01T00:00:00Z",
+                "entries": entries,
+            }))
+            .unwrap();
+            let signature = f.key.sign(&index);
+            let index_path = format!("/index/demo-{platform}.json");
+            f.serve(&format!("{index_path}.minisig"), signature);
+            f.serve(&index_path, index);
+        }
         f
+    }
+
+    /// A platform other than the host's.
+    fn other_platform(&self) -> String {
+        jtm_core::Platform::ALL
+            .iter()
+            .map(|p| p.as_str().to_owned())
+            .find(|p| *p != self.platform)
+            .unwrap()
     }
 
     fn write_plugin(&self) {
@@ -473,4 +485,80 @@ fn uninstalling_the_default_clears_its_current_link() {
     assert_eq!(code, 0, "{value}");
     assert_eq!(value["warnings"][0]["code"], "W_DEFAULT_CLEARED");
     assert!(!exists(&current.join("demo")));
+}
+
+#[test]
+fn several_specs_install_in_parallel() {
+    let f = Fixture::new(false);
+    f.trust();
+    let (code, value) = f.json(&["install", "demo@1.0.0", "demo@1.1.0", "demo@rc"]);
+    assert_eq!(code, 0, "{value}");
+    let versions: Vec<&str> = value["data"]["installed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["version"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        versions,
+        ["1.0.0", "1.1.0", "2.0.0-rc-1"],
+        "results keep the order of the specs"
+    );
+    for version in VERSIONS {
+        assert!(
+            f.install_dir(version).join("VERSION").is_file(),
+            "{version}"
+        );
+    }
+}
+
+#[test]
+fn every_failure_is_listed_when_all_specs_fail() {
+    let f = Fixture::new(false);
+    f.trust();
+    let (code, value) = f.json(&["install", "demo@8", "demo@9"]);
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "E_VERSION_NOT_FOUND");
+    let failed = value["error"]["details"]["failed"].as_array().unwrap();
+    let specs: Vec<&str> = failed.iter().map(|f| f["spec"].as_str().unwrap()).collect();
+    assert_eq!(specs, ["demo@8", "demo@9"]);
+}
+
+#[test]
+fn another_platform_is_downloaded_and_verified_but_not_extracted() {
+    let f = Fixture::new(false);
+    f.trust();
+    let other = f.other_platform();
+    let (code, plan) = f.json(&["install", "demo@1.0.0", "--platform", &other, "--dry-run"]);
+    assert_eq!(code, 0, "{plan}");
+    assert_eq!(plan["data"]["installed"][0]["status"], "would_download");
+    assert_eq!(f.downloads(), 0);
+
+    let (code, value) = f.json(&["install", "demo@1.0.0", "--platform", &other]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["changed"], true);
+    let item = &value["data"]["installed"][0];
+    assert_eq!(item["status"], "downloaded");
+    assert_eq!(item["platform"], other.as_str());
+    let archive = PathBuf::from(item["path"].as_str().unwrap());
+    assert!(archive.starts_with(f.home.path().join("cache").join("downloads")));
+    assert!(archive.is_file());
+    assert!(!exists(&f.home.path().join("tools")));
+
+    let (_, again) = f.json(&["install", "demo@1.0.0", "--platform", &other]);
+    assert_eq!(again["changed"], false);
+    assert_eq!(
+        again["data"]["installed"][0]["status"],
+        "already_downloaded"
+    );
+    assert_eq!(f.downloads(), 1);
+}
+
+#[test]
+fn an_unknown_platform_is_a_usage_error() {
+    let f = Fixture::new(false);
+    let (code, value) = f.json(&["install", "demo", "--platform", "plan9-mips"]);
+    assert_eq!(code, 2, "{value}");
+    assert_eq!(value["error"]["code"], "E_USAGE");
 }

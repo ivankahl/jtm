@@ -269,8 +269,9 @@ fn content_range_starts_at(value: &str, offset: u64) -> bool {
 }
 
 fn request_error(url: &str, err: reqwest::Error) -> Error {
-    // A refused redirect is a decision, not a hiccup; everything else in transport may pass.
-    let transient = !err.is_redirect() && !err.is_builder();
+    // A refused redirect or a failed TLS handshake is a decision, not a hiccup; everything
+    // else in transport may pass.
+    let transient = !err.is_redirect() && !err.is_builder() && !is_tls_failure(&err);
     let mut message = err.to_string();
     let mut source = std::error::Error::source(&err);
     while let Some(cause) = source {
@@ -283,6 +284,24 @@ fn request_error(url: &str, err: reqwest::Error) -> Error {
         transient,
         source: Some(Box::new(err)),
     }
+}
+
+/// Whether a TLS error, such as an untrusted certificate, lies anywhere in `err`'s causes.
+fn is_tls_failure(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut next = Some(err);
+    while let Some(e) = next {
+        if e.is::<rustls::Error>() {
+            return true;
+        }
+        // `io::Error` hides the error it wraps from `source()`.
+        if let Some(io) = e.downcast_ref::<std::io::Error>()
+            && io.get_ref().is_some_and(|inner| is_tls_failure(inner))
+        {
+            return true;
+        }
+        next = e.source();
+    }
+    false
 }
 
 /// A failure while reading a response body, such as the connection dropping.
@@ -381,9 +400,11 @@ mod tests {
         let mut calls = 0;
         let result: Result<()> = policy.run(|_| {
             calls += 1;
-            Err(Error::Status {
+            Err(Error::Network {
                 url: "u".into(),
-                status: 503,
+                message: "connection reset".into(),
+                transient: true,
+                source: None,
             })
         });
         assert!(result.is_err());

@@ -10,17 +10,20 @@ authors.workspace = true
 
 [features]
 # Archive builders for tests in this and other crates. Never enabled in a release.
-testing = []
+testing = ["dep:lzma-rust2", "lzma-rust2/encoder"]
+# tar.xz archives (SPEC.md section 10). Off by default.
+xz = ["dep:lzma-rust2"]
 
 [dependencies]
 flate2.workspace = true
+lzma-rust2 = { workspace = true, optional = true }
 tar.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
-jtm-archive = { path = ".", features = ["testing"] }
+jtm-archive = { path = ".", features = ["testing", "xz"] }
 proptest.workspace = true
 tempfile.workspace = true
 

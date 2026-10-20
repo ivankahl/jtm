@@ -45,7 +45,7 @@ impl Receipt {
         let mut bytes = serde_json::to_vec_pretty(self)
             .map_err(|e| JtmError::internal(format!("cannot encode a receipt: {e}")))?;
         bytes.push(b'\n');
-        fs::write(&path, bytes).map_err(|e| super::io_error(&path, e))
+        fs::write(&path, bytes).map_err(|e| JtmError::io(&path, e))
     }
 }
 

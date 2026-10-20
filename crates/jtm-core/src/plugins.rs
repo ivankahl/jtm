@@ -62,7 +62,7 @@ impl Registry<'_> {
             }),
             [dir] => {
                 let path = dir.join("plugin.toml");
-                let bytes = fs::read(&path).map_err(|e| crate::install::io_error(&path, e))?;
+                let bytes = fs::read(&path).map_err(|e| JtmError::io(&path, e))?;
                 parse(
                     &bytes,
                     ManifestOrigin::External,
@@ -107,7 +107,7 @@ impl Registry<'_> {
         let entries = match fs::read_dir(&root) {
             Ok(entries) => entries,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(crate::install::io_error(&root, e)),
+            Err(e) => return Err(JtmError::io(&root, e)),
         };
         let mut found = Vec::new();
         for entry in entries.flatten() {

@@ -1,12 +1,15 @@
 //! `jtm install`, `uninstall`, `list` and `available`.
 
 use std::io::{self, Write};
+use std::sync::Mutex;
 
-use jtm_core::install::Progress;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use jtm_core::install::{Progress, Status};
 use jtm_core::session::{
-    Available, AvailableOptions, InstallItem, InstallOptions, InstalledItem, Session, VersionItem,
+    Available, AvailableOptions, InstallItem, InstallOptions, InstalledItem, Session,
+    UninstallOptions, VersionItem,
 };
-use jtm_core::{Context, ExitCode, JtmError, Result, ToolSpec};
+use jtm_core::{Context, ExitCode, JtmError, Result, ToolSpec, Verbosity};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
@@ -20,6 +23,47 @@ pub(crate) struct Failure {
     details: Map<String, Value>,
 }
 
+impl Failure {
+    fn new(spec: String, err: &JtmError) -> Failure {
+        Failure {
+            spec,
+            code: err.code(),
+            message: err.to_string(),
+            details: err.details(),
+        }
+    }
+}
+
+/// Every spec of an install failed: the first error, and all of them for `details.failed`.
+#[derive(Debug)]
+pub(crate) struct InstallFailure {
+    pub(crate) error: JtmError,
+    pub(crate) failed: Vec<Failure>,
+}
+
+impl From<JtmError> for InstallFailure {
+    fn from(error: JtmError) -> Self {
+        InstallFailure {
+            error,
+            failed: Vec::new(),
+        }
+    }
+}
+
+impl InstallFailure {
+    /// Extra error details: every failure, when there was more than one spec.
+    pub(crate) fn details(&self) -> Map<String, Value> {
+        let mut details = Map::new();
+        if self.failed.len() > 1 {
+            details.insert(
+                "failed".to_owned(),
+                serde_json::to_value(&self.failed).unwrap_or_default(),
+            );
+        }
+        details
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct InstallData {
     dry_run: bool,
@@ -30,17 +74,28 @@ pub(crate) struct InstallData {
 impl Human for InstallData {
     fn render_human(&self, out: &mut dyn Write) -> io::Result<()> {
         for item in &self.installed {
-            let v = &item.version;
-            let name = format!("{}@{}:{}", v.tool, v.variant, v.version);
+            let (id, path) = (&item.version.id, &item.version.path);
+            let cached = if item.cached { ", cached" } else { "" };
             match item.status {
-                "installed" => writeln!(out, "installed {name} in {}", v.path)?,
-                "already_installed" => writeln!(out, "{name} is already installed in {}", v.path)?,
-                _ => writeln!(
+                Status::Installed => writeln!(out, "installed {id} in {path}")?,
+                Status::AlreadyInstalled => writeln!(out, "{id} is already installed in {path}")?,
+                Status::WouldInstall => writeln!(
                     out,
-                    "would install {name} from {} ({} bytes{})",
-                    item.url,
-                    item.size,
-                    if item.cached { ", cached" } else { "" }
+                    "would install {id} from {} ({} bytes{cached})",
+                    item.url, item.size
+                )?,
+                Status::Downloaded => {
+                    writeln!(out, "downloaded {id} for {} to {path}", item.platform)?;
+                }
+                Status::AlreadyDownloaded => writeln!(
+                    out,
+                    "{id} for {} is already downloaded to {path}",
+                    item.platform
+                )?,
+                Status::WouldDownload => writeln!(
+                    out,
+                    "would download {id} for {} from {} ({} bytes)",
+                    item.platform, item.url, item.size
                 )?,
             }
         }
@@ -69,11 +124,7 @@ impl Human for UninstallData {
             "removed"
         };
         for v in &self.removed {
-            writeln!(
-                out,
-                "{verb} {}@{}:{} from {}",
-                v.tool, v.variant, v.version, v.path
-            )?;
+            writeln!(out, "{verb} {} from {}", v.id, v.path)?;
         }
         Ok(())
     }
@@ -93,8 +144,7 @@ impl Human for ListData {
             );
         }
         for item in &self.installed {
-            let v = &item.version;
-            writeln!(out, "{}@{}:{}  {}", v.tool, v.variant, v.version, v.path)?;
+            writeln!(out, "{}  {}", item.version.id, item.version.path)?;
         }
         Ok(())
     }
@@ -139,15 +189,36 @@ impl Human for AvailableData {
     }
 }
 
-/// Writes `--json --progress` events, one JSON object per line, to stderr.
-struct Events {
-    enabled: bool,
-    last_percent: Option<u64>,
+/// Reports install progress: newline-delimited JSON events on stderr with `--json
+/// --progress`, progress bars on a terminal, or nothing.
+struct Reporter {
+    tools: Vec<String>,
+    mode: Mode,
 }
 
-impl Events {
-    fn emit(&mut self, event: &str, mut fields: Value) {
-        if !self.enabled {
+enum Mode {
+    Quiet,
+    Events(Mutex<Vec<Option<u64>>>),
+    Bars(MultiProgress, Mutex<Vec<Option<ProgressBar>>>),
+}
+
+impl Reporter {
+    fn new(ctx: &Context, specs: &[ToolSpec]) -> Reporter {
+        let mode = if ctx.progress {
+            Mode::Events(Mutex::new(vec![None; specs.len()]))
+        } else if !ctx.json && ctx.interactive && ctx.verbosity != Verbosity::Quiet {
+            Mode::Bars(MultiProgress::new(), Mutex::new(vec![None; specs.len()]))
+        } else {
+            Mode::Quiet
+        };
+        Reporter {
+            tools: specs.iter().map(|s| s.tool.clone()).collect(),
+            mode,
+        }
+    }
+
+    fn emit(&self, event: &str, mut fields: Value) {
+        if !matches!(self.mode, Mode::Events(_)) {
             return;
         }
         if let Value::Object(map) = &mut fields {
@@ -158,22 +229,56 @@ impl Events {
         let _ = writeln!(stderr);
     }
 
-    fn progress(&mut self, tool: &str, progress: Progress) {
-        match progress {
-            Progress::Download { done, total } => {
-                // At most one event per percent, plus the first and last.
-                let percent = done.saturating_mul(100).checked_div(total).unwrap_or(100);
-                if self.last_percent == Some(percent) {
-                    return;
+    fn progress(&self, i: usize, progress: Progress) {
+        let tool = &self.tools[i];
+        match &self.mode {
+            Mode::Quiet => {}
+            Mode::Events(last) => match progress {
+                Progress::Download { done, total } => {
+                    // At most one event per percent, plus the first and last.
+                    let percent = done.saturating_mul(100).checked_div(total).unwrap_or(100);
+                    let Ok(mut last) = last.lock() else { return };
+                    if last[i] == Some(percent) {
+                        return;
+                    }
+                    last[i] = Some(percent);
+                    drop(last);
+                    self.emit(
+                        "download_progress",
+                        json!({ "tool": tool, "done": done, "total": total }),
+                    );
                 }
-                self.last_percent = Some(percent);
-                self.emit(
-                    "download_progress",
-                    json!({ "tool": tool, "done": done, "total": total }),
-                );
+                Progress::Verified => self.emit("verified", json!({ "tool": tool })),
+                Progress::Extracted => self.emit("extracted", json!({ "tool": tool })),
+            },
+            Mode::Bars(multi, bars) => {
+                let Ok(mut bars) = bars.lock() else { return };
+                let bar = bars[i].get_or_insert_with(|| {
+                    let bar = multi.add(ProgressBar::new(0));
+                    bar.set_style(
+                        ProgressStyle::with_template(
+                            "{prefix:>12} {bar:30} {bytes}/{total_bytes} {msg}",
+                        )
+                        .unwrap_or_else(|_| ProgressStyle::default_bar()),
+                    );
+                    bar.set_prefix(tool.clone());
+                    bar
+                });
+                match progress {
+                    Progress::Download { done, total } => {
+                        bar.set_length(total);
+                        bar.set_position(done);
+                    }
+                    Progress::Verified => bar.set_message("verified, extracting"),
+                    Progress::Extracted => bar.finish_with_message("extracted"),
+                }
             }
-            Progress::Verified => self.emit("verified", json!({ "tool": tool })),
-            Progress::Extracted => self.emit("extracted", json!({ "tool": tool })),
+        }
+    }
+
+    fn finish(&self) {
+        if let Mode::Bars(multi, _) = &self.mode {
+            let _ = multi.clear();
         }
     }
 }
@@ -199,31 +304,31 @@ pub(crate) fn install(
     ctx: &Context,
     specs: &[String],
     options: InstallOptions,
-) -> Result<(Outcome<InstallData>, ExitCode)> {
+) -> std::result::Result<(Outcome<InstallData>, ExitCode), InstallFailure> {
     let parsed = specs
         .iter()
         .map(|s| ToolSpec::parse(s))
         .collect::<Result<Vec<_>>>()?;
     let session = Session::open(ctx)?;
-    let mut events = Events {
-        enabled: ctx.progress,
-        last_percent: None,
-    };
+    let reporter = Reporter::new(ctx, &parsed);
+    for (text, spec) in specs.iter().zip(&parsed) {
+        reporter.emit("resolve", json!({ "tool": spec.tool, "spec": text }));
+    }
+    let results = session.install_all(&parsed, options, &|i, p| reporter.progress(i, p));
+    reporter.finish();
+
     let mut installed = Vec::new();
     let mut failed: Vec<(String, JtmError)> = Vec::new();
     let mut found_warnings = Vec::new();
-    for (text, spec) in specs.iter().zip(&parsed) {
-        events.emit("resolve", json!({ "tool": spec.tool, "spec": text }));
-        events.last_percent = None;
-        let result = session.install(spec, options, &mut |p| events.progress(&spec.tool, p));
+    for (text, result) in specs.iter().zip(results) {
         match result {
             Ok((item, mut w)) => {
-                events.emit(
+                reporter.emit(
                     "installed",
                     json!({
-                        "tool": item.version.tool,
-                        "variant": item.version.variant,
-                        "version": item.version.version,
+                        "tool": item.version.id.tool,
+                        "variant": item.version.id.variant,
+                        "version": item.version.id.version,
                         "status": item.status,
                     }),
                 );
@@ -233,15 +338,22 @@ pub(crate) fn install(
             Err(err) => failed.push((text.clone(), err)),
         }
     }
+    let failures: Vec<Failure> = failed
+        .iter()
+        .map(|(spec, err)| Failure::new(spec.clone(), err))
+        .collect();
     if installed.is_empty() && !failed.is_empty() {
-        return Err(failed.swap_remove(0).1);
+        return Err(InstallFailure {
+            error: failed.swap_remove(0).1,
+            failed: failures,
+        });
     }
-    let code = if failed.is_empty() {
+    let code = if failures.is_empty() {
         ExitCode::Success
     } else {
         ExitCode::Partial
     };
-    let changed = installed.iter().any(|i| i.status == "installed");
+    let changed = installed.iter().any(|i| i.status.changed());
     Ok((
         Outcome {
             command: "install",
@@ -249,15 +361,7 @@ pub(crate) fn install(
             data: InstallData {
                 dry_run: options.dry_run,
                 installed,
-                failed: failed
-                    .into_iter()
-                    .map(|(spec, err)| Failure {
-                        spec,
-                        code: err.code(),
-                        message: err.to_string(),
-                        details: err.details(),
-                    })
-                    .collect(),
+                failed: failures,
             },
             warnings: warnings(found_warnings),
         },
@@ -268,16 +372,18 @@ pub(crate) fn install(
 pub(crate) fn uninstall(
     ctx: &Context,
     spec: &str,
-    all_variants: bool,
-    dry_run: bool,
+    options: UninstallOptions,
 ) -> Result<Outcome<UninstallData>> {
     let spec = ToolSpec::parse(spec)?;
     let session = Session::open(ctx)?;
-    let (removed, found_warnings) = session.uninstall(&spec, all_variants, dry_run)?;
+    let (removed, found_warnings) = session.uninstall(&spec, options)?;
     Ok(Outcome {
         command: "uninstall",
-        changed: !dry_run && !removed.is_empty(),
-        data: UninstallData { dry_run, removed },
+        changed: !options.dry_run && !removed.is_empty(),
+        data: UninstallData {
+            dry_run: options.dry_run,
+            removed,
+        },
         warnings: warnings(found_warnings),
     })
 }

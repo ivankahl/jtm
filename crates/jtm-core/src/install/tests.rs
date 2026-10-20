@@ -6,6 +6,8 @@ use jtm_fetch::DownloadCache;
 use jtm_security::ArchiveKind;
 use jtm_security::testing::TestKey;
 
+use std::io;
+
 use super::*;
 use crate::platform::Os;
 
@@ -306,7 +308,22 @@ fn a_tampered_cached_archive_is_never_extracted() {
 #[test]
 fn install_paths_must_be_one_directory() {
     let f = Fixture::new();
-    assert!(install_path(&f.dirs, "demo", "default", "1.0.0").is_ok());
-    assert!(install_path(&f.dirs, "demo", "default", "1/../../x").is_err());
-    assert!(install_path(&f.dirs, "demo", ".", "x").is_err());
+    let id = |variant: &str, version: &str| VersionId {
+        tool: "demo".into(),
+        variant: variant.into(),
+        version: version.into(),
+    };
+    assert!(id("default", "1.0.0").install_dir(&f.dirs).is_ok());
+    assert!(id("default", "1/../../x").install_dir(&f.dirs).is_err());
+    assert!(id(".", "x").install_dir(&f.dirs).is_err());
+    assert_eq!(id("default", "1.0.0").to_string(), "demo@default:1.0.0");
+}
+
+#[test]
+fn only_windows_sharing_failures_mean_in_use() {
+    let sharing = io::Error::from_raw_os_error(32);
+    assert!(held_open(&sharing, true));
+    assert!(held_open(&io::Error::from_raw_os_error(5), true));
+    assert!(!held_open(&sharing, false));
+    assert!(!held_open(&io::Error::other("disk full"), true));
 }

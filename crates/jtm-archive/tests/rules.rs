@@ -392,3 +392,58 @@ fn links_cannot_leave_a_single_top_level_directory() {
         s.extract(&bytes, format, &Options::default()).unwrap();
     }
 }
+
+#[test]
+fn a_zip_cannot_hide_a_bomb_by_overstating_its_compressed_size() {
+    let zeros = vec![0u8; 16 * 1024 * 1024];
+    let mut seed = 0x2545_f491_u32;
+    let noise: Vec<u8> = (0..3_000_000)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        })
+        .collect();
+    let mut bytes = zip(&[file("bomb", &zeros), file("noise", &noise)]);
+
+    // Claim that `bomb` takes up most of the archive, so its stated ratio looks harmless.
+    let read_u32 = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let real = read_u32(&bytes, 18) as usize;
+    let claimed = (real + 2_900_000) as u32;
+    assert!(
+        16 * 1024 * 1024 / claimed < 200,
+        "the claim must hide the ratio"
+    );
+    bytes[18..22].copy_from_slice(&claimed.to_le_bytes());
+    let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+    assert_eq!(read_u32(&bytes, central + 20) as usize, real);
+    bytes[central + 20..central + 24].copy_from_slice(&claimed.to_le_bytes());
+
+    let s = Scratch::new();
+    assert_unsafe(
+        s.extract(&bytes, Format::Zip, &Options::default()),
+        "expands more than",
+    );
+}
+
+#[test]
+fn tar_xz_follows_the_same_rules() {
+    let s = Scratch::new();
+    let bytes =
+        jtm_archive::testing::tar_xz(&[exe("jdk/bin/java", b"java"), symlink("jdk/j", "bin/java")]);
+    s.extract(&bytes, Format::TarXz, &Options::default())
+        .unwrap();
+    assert_eq!(fs::read(s.dest().join("jdk/j")).unwrap(), b"java");
+
+    let s = Scratch::new();
+    let bytes = jtm_archive::testing::tar_xz(&[file("../evil", b"x")]);
+    assert_unsafe(s.extract(&bytes, Format::TarXz, &Options::default()), "..");
+
+    let s = Scratch::new();
+    let bytes = jtm_archive::testing::tar_xz(&[file("bomb", &vec![0u8; 16 * 1024 * 1024])]);
+    assert_unsafe(
+        s.extract(&bytes, Format::TarXz, &Options::default()),
+        "expands more than",
+    );
+}

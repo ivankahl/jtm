@@ -474,7 +474,7 @@ fn read_local(
     let data = match read_capped(path, limit, what) {
         Ok(data) => data,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(io_error(path, e)),
+        Err(e) => return Err(JtmError::io(path, e)),
     };
     let sig_path = signature_path(path);
     let signature = match read_capped(
@@ -484,7 +484,7 @@ fn read_local(
     ) {
         Ok(sig) => sig,
         Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(io_error(&sig_path, e)),
+        Err(e) => return Err(JtmError::io(&sig_path, e)),
     };
     Ok(Some(IndexCopy {
         source,
@@ -527,18 +527,10 @@ fn write_cache(path: &Path, data: &[u8], signature: &[u8]) -> Result<()> {
         return Ok(());
     }
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(dir).map_err(|e| io_error(dir, e))?;
+    fs::create_dir_all(dir).map_err(|e| JtmError::io(dir, e))?;
     jtm_security::trust::write_atomically(&signature_path(path), signature)?;
     jtm_security::trust::write_atomically(path, data)?;
     Ok(())
-}
-
-fn io_error(path: &Path, source: io::Error) -> JtmError {
-    jtm_security::Error::Io {
-        path: path.to_path_buf(),
-        source,
-    }
-    .into()
 }
 
 #[cfg(test)]

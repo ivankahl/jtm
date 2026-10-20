@@ -44,7 +44,14 @@ pub fn hard(name: &str, target: &str) -> E {
 
 /// A tar.gz holding `entries` exactly as given: names are written raw, unchecked.
 pub fn tar_gz(entries: &[E]) -> Vec<u8> {
-    let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    gz.write_all(&tar_bytes(entries)).unwrap();
+    gz.finish().unwrap()
+}
+
+/// An uncompressed tar holding `entries` exactly as given: names are written raw, unchecked.
+pub fn tar_bytes(entries: &[E]) -> Vec<u8> {
+    let mut builder = tar::Builder::new(Vec::new());
     for entry in entries {
         let (name, kind, data, mode, link): (&str, EntryType, &[u8], u32, Option<&str>) =
             match entry {
@@ -70,7 +77,16 @@ pub fn tar_gz(entries: &[E]) -> Vec<u8> {
             builder.append_data(&mut header, name, data).unwrap();
         }
     }
-    builder.into_inner().unwrap().finish().unwrap()
+    builder.into_inner().unwrap()
+}
+
+/// A tar.xz holding `entries` exactly as given.
+pub fn tar_xz(entries: &[E]) -> Vec<u8> {
+    let tar = tar_bytes(entries);
+    let mut writer =
+        lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::with_preset(1)).unwrap();
+    writer.write_all(&tar).unwrap();
+    writer.finish().unwrap()
 }
 
 /// A zip holding `entries`. Hard links and special entries cannot be expressed and panic.

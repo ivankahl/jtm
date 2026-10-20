@@ -10,6 +10,7 @@
 pub mod layout;
 pub mod receipt;
 
+use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,7 @@ use std::time::Duration;
 use jtm_fetch::{Artifact, Client, DownloadCache, Downloaded};
 use jtm_plugin::Manifest;
 use jtm_security::{IndexEntry, Timestamp};
+use serde::Serialize;
 
 use crate::dirs::{Dirs, dir_name};
 use crate::error::{JtmError, Result};
@@ -91,11 +93,93 @@ pub struct InstallRequest<'a> {
     pub force: bool,
 }
 
-/// How the install ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What happened, or with a dry run would happen, to one version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Status {
     Installed,
     AlreadyInstalled,
+    WouldInstall,
+    /// Downloaded and verified into the cache for another platform, never extracted.
+    Downloaded,
+    AlreadyDownloaded,
+    WouldDownload,
+}
+
+impl Status {
+    /// Whether this outcome changed anything on disk.
+    pub const fn changed(self) -> bool {
+        matches!(self, Status::Installed | Status::Downloaded)
+    }
+}
+
+/// One version of one tool, written `<tool>@<variant>:<version>`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+pub struct VersionId {
+    pub tool: String,
+    pub variant: String,
+    pub version: String,
+}
+
+impl fmt::Display for VersionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}@{}:{}", self.tool, self.variant, self.version)
+    }
+}
+
+impl VersionId {
+    /// The version `entry` names for `tool`.
+    pub fn of(tool: &str, entry: &IndexEntry) -> VersionId {
+        VersionId {
+            tool: tool.to_owned(),
+            variant: entry.variant.clone(),
+            version: entry.version.clone(),
+        }
+    }
+
+    /// The install dir, refusing names that would not be a single directory.
+    pub fn install_dir(&self, dirs: &Dirs) -> Result<PathBuf> {
+        let name = format!("{}-{}", self.variant, self.version);
+        // Variants and versions are checked when the index loads; this guards the path itself.
+        if name.contains(['/', '\\', ':']) || name.starts_with('.') {
+            return Err(JtmError::internal(format!(
+                "`{name}` cannot name an install directory"
+            )));
+        }
+        Ok(dirs.install_dir(&self.tool, &self.variant, &self.version))
+    }
+
+    /// Takes the exclusive lock for this version, waiting for any other holder.
+    pub fn lock(&self, dirs: &Dirs) -> Result<fs::File> {
+        let locks = dirs.locks();
+        fs::create_dir_all(&locks).map_err(|e| JtmError::io(&locks, e))?;
+        let path = locks.join(format!(
+            "{}-{}-{}.lock",
+            dir_name(&self.tool),
+            self.variant,
+            self.version
+        ));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| JtmError::io(&path, e))?;
+        file.lock().map_err(|e| JtmError::io(&path, e))?;
+        Ok(file)
+    }
+
+    /// The name prefix of this version's temporary directories.
+    fn tmp_prefix(&self) -> String {
+        // `@` appears in no plugin dir name, variant or version, so no other version's prefix
+        // starts with this one.
+        format!(
+            "{}@{}@{}@",
+            dir_name(&self.tool),
+            self.variant,
+            self.version
+        )
+    }
 }
 
 /// The result of [`install`].
@@ -118,7 +202,8 @@ pub fn install(
     let manifest = request.manifest;
     let entry = request.entry;
     let plugin = manifest.name.as_str();
-    let dest = install_path(dirs, plugin, &entry.variant, &entry.version)?;
+    let id = VersionId::of(plugin, entry);
+    let dest = id.install_dir(dirs)?;
 
     if !request.force
         && let Some(installed) = already_installed(&dest, entry)
@@ -131,32 +216,34 @@ pub fn install(
         )));
     }
 
-    let _lock = lock_version(dirs, plugin, &entry.variant, &entry.version)?;
+    // Checked before downloading, so an unsupported format costs no transfer.
+    let format = archive_format(entry)?;
+    let _lock = id.lock(dirs)?;
     // Whoever held the lock may have just installed this version.
     if !request.force
         && let Some(installed) = already_installed(&dest, entry)
     {
         return Ok(installed);
     }
-    let prefix = tmp_prefix(plugin, &entry.variant, &entry.version);
+    let prefix = id.tmp_prefix();
     sweep_stale(&dirs.tools_tmp(), &prefix);
 
     let archive = archives.get(entry, progress)?;
     progress(Progress::Verified);
 
     let tmp_root = dirs.tools_tmp();
-    fs::create_dir_all(&tmp_root).map_err(|e| io_error(&tmp_root, e))?;
+    fs::create_dir_all(&tmp_root).map_err(|e| JtmError::io(&tmp_root, e))?;
     // Removed on every return path; an install killed before that is swept as stale above.
     let tmp = tempfile::Builder::new()
         .prefix(&prefix)
         .tempdir_in(&tmp_root)
-        .map_err(|e| io_error(&tmp_root, e))?;
+        .map_err(|e| JtmError::io(&tmp_root, e))?;
     let options = jtm_archive::Options {
         limits: *limits,
         strip_components: layout::extract_strip(&manifest.layout),
         links: jtm_archive::LinkMode::host(),
     };
-    jtm_archive::extract(&archive.path, archive_format(entry)?, tmp.path(), &options)?;
+    jtm_archive::extract(&archive.path, format, tmp.path(), &options)?;
     progress(Progress::Extracted);
 
     let os = request.platform.os();
@@ -188,18 +275,6 @@ pub fn install(
     })
 }
 
-/// The install dir for one version, refusing names that would not be a single directory.
-pub fn install_path(dirs: &Dirs, plugin: &str, variant: &str, version: &str) -> Result<PathBuf> {
-    let name = format!("{variant}-{version}");
-    // Variants and versions are checked when the index loads; this guards the path itself.
-    if name.contains(['/', '\\', ':']) || name.starts_with('.') {
-        return Err(JtmError::internal(format!(
-            "`{name}` cannot name an install directory"
-        )));
-    }
-    Ok(dirs.install_dir(plugin, variant, version))
-}
-
 /// The installed version at `dest`, if its receipt matches `entry`.
 fn already_installed(dest: &Path, entry: &IndexEntry) -> Option<Installed> {
     let receipt = Receipt::read(dest)?;
@@ -208,28 +283,6 @@ fn already_installed(dest: &Path, entry: &IndexEntry) -> Option<Installed> {
         path: dest.to_path_buf(),
         receipt,
     })
-}
-
-/// The name prefix of temporary directories for one version.
-fn tmp_prefix(plugin: &str, variant: &str, version: &str) -> String {
-    // `@` appears in no plugin dir name, variant or version, so no other version's prefix
-    // starts with this one.
-    format!("{}@{variant}@{version}@", dir_name(plugin))
-}
-
-/// Takes the exclusive lock for one version, waiting for any other holder.
-pub fn lock_version(dirs: &Dirs, plugin: &str, variant: &str, version: &str) -> Result<fs::File> {
-    let locks = dirs.locks();
-    fs::create_dir_all(&locks).map_err(|e| io_error(&locks, e))?;
-    let path = locks.join(format!("{}-{variant}-{version}.lock", dir_name(plugin)));
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|e| io_error(&path, e))?;
-    file.lock().map_err(|e| io_error(&path, e))?;
-    Ok(file)
 }
 
 /// Removes temporary directories left by killed installs of the version whose lock is held.
@@ -248,54 +301,71 @@ fn sweep_stale(tmp_root: &Path, prefix: &str) {
     }
 }
 
+/// The extractor format for `entry`, refusing one this build cannot extract.
 fn archive_format(entry: &IndexEntry) -> Result<jtm_archive::Format> {
-    match entry.archive {
-        jtm_security::ArchiveKind::Zip => Ok(jtm_archive::Format::Zip),
-        jtm_security::ArchiveKind::TarGz => Ok(jtm_archive::Format::TarGz),
-        jtm_security::ArchiveKind::TarXz => Err(JtmError::ArchiveUnsafe {
-            entry: String::new(),
-            reason: "tar.xz archives are not supported by this jtm".to_owned(),
-        }),
+    let format = match entry.archive {
+        jtm_security::ArchiveKind::Zip => jtm_archive::Format::Zip,
+        jtm_security::ArchiveKind::TarGz => jtm_archive::Format::TarGz,
+        jtm_security::ArchiveKind::TarXz => jtm_archive::Format::TarXz,
+    };
+    if format.supported() {
+        Ok(format)
+    } else {
+        Err(jtm_archive::Error::Unsupported {
+            format: entry.archive.as_str(),
+        }
+        .into())
     }
 }
 
 /// Moves the prepared `source` to `dest`, replacing any previous install there.
 fn commit(dirs: &Dirs, source: &Path, dest: &Path) -> Result<()> {
     let parent = dest.parent().unwrap_or(dest);
-    fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
+    fs::create_dir_all(parent).map_err(|e| JtmError::io(parent, e))?;
     if fs::symlink_metadata(dest).is_ok() {
         let trashed = move_to_trash(dirs, dest)?;
         remove_trash(&trashed);
     }
-    rename_with_retry(source, dest).map_err(|e| io_error(dest, e))
+    rename_with_retry(source, dest).map_err(|e| JtmError::io(dest, e))
 }
 
 /// Renames `path` into `tools/.trash`, failing with `E_IN_USE` when a running process holds
 /// files in it open.
 pub(crate) fn move_to_trash(dirs: &Dirs, path: &Path) -> Result<PathBuf> {
     let trash = dirs.tools_trash();
-    fs::create_dir_all(&trash).map_err(|e| io_error(&trash, e))?;
+    fs::create_dir_all(&trash).map_err(|e| JtmError::io(&trash, e))?;
     let slot = tempfile::Builder::new()
         .prefix("removed.")
         .tempdir_in(&trash)
-        .map_err(|e| io_error(&trash, e))?
+        .map_err(|e| JtmError::io(&trash, e))?
         .keep();
     let target = slot.join("dir");
     match rename_with_retry(path, &target) {
         Ok(()) => Ok(target),
         Err(e) => {
             let _ = fs::remove_dir(&slot);
-            Err(
-                if e.kind() == io::ErrorKind::PermissionDenied || cfg!(windows) {
-                    JtmError::InUse {
-                        path: path.to_path_buf(),
-                    }
-                } else {
-                    io_error(path, e)
-                },
-            )
+            Err(if held_open(&e, cfg!(windows)) {
+                JtmError::InUse {
+                    path: path.to_path_buf(),
+                }
+            } else {
+                JtmError::io(path, e)
+            })
         }
     }
+}
+
+/// Whether a failed rename means a running process holds files open. Only Windows refuses to
+/// rename a directory for that reason, with an access, sharing or lock violation.
+fn held_open(err: &io::Error, windows: bool) -> bool {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    windows
+        && matches!(
+            err.raw_os_error(),
+            Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+        )
 }
 
 /// Deletes a directory moved to the trash. A failure only leaves it for a later attempt.
@@ -319,17 +389,6 @@ fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
             }
             Err(e) => return Err(e),
         }
-    }
-}
-
-pub(crate) fn io_error(path: &Path, source: io::Error) -> JtmError {
-    if source.kind() == io::ErrorKind::PermissionDenied {
-        JtmError::Permission {
-            path: path.to_path_buf(),
-            source: Some(source),
-        }
-    } else {
-        JtmError::internal(format!("cannot access {}: {source}", path.display()))
     }
 }
 

@@ -1,8 +1,10 @@
 //! Reading `zip` archives.
 
+use std::cell::Cell;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::rc::Rc;
 
 use crate::entry::Sink;
 use crate::error::{Error, Result};
@@ -36,9 +38,35 @@ pub(crate) fn mode_kind(mode: u32) -> ModeKind {
     }
 }
 
+/// Counts the bytes read through it, so an entry's ratio uses the compressed bytes actually
+/// consumed rather than the size the archive claims.
+struct Counting<R> {
+    inner: R,
+    count: Rc<Cell<u64>>,
+}
+
+impl<R: Read> Read for Counting<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.count.set(self.count.get() + n as u64);
+        Ok(n)
+    }
+}
+
+impl<R: Seek> Seek for Counting<R> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
 pub(crate) fn read(archive: &Path, sink: &mut Sink<'_>) -> Result<()> {
     let file = File::open(archive).map_err(|e| Error::io(archive, e))?;
-    let mut zip = zip::ZipArchive::new(BufReader::new(file)).map_err(malformed)?;
+    let consumed = Rc::new(Cell::new(0u64));
+    let mut zip = zip::ZipArchive::new(Counting {
+        inner: BufReader::new(file),
+        count: Rc::clone(&consumed),
+    })
+    .map_err(malformed)?;
     let limits = sink.limits();
     if zip.len() as u64 > limits.max_entries {
         return Err(Error::unsafe_entry(
@@ -48,6 +76,7 @@ pub(crate) fn read(archive: &Path, sink: &mut Sink<'_>) -> Result<()> {
     }
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(malformed)?;
+        let start = consumed.get();
         let raw = entry.name_raw().to_vec();
         let display = String::from_utf8_lossy(&raw).into_owned();
         sink.count_entry(&display)?;
@@ -61,8 +90,8 @@ pub(crate) fn read(archive: &Path, sink: &mut Sink<'_>) -> Result<()> {
             ModeKind::Dir => sink.dir(&raw)?,
             ModeKind::File if entry.is_dir() => sink.dir(&raw)?,
             ModeKind::File => {
-                let compressed = entry.compressed_size().max(1);
                 let ratio = |written: u64| {
+                    let compressed = (consumed.get() - start).max(1);
                     (written > limits.ratio_floor && written / compressed > limits.max_ratio)
                         .then(|| format!("expands more than {}:1", limits.max_ratio))
                 };

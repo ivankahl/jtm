@@ -61,12 +61,33 @@ fn client_errors_are_not_retried() {
 }
 
 #[test]
-fn server_errors_are_retried_three_times() {
+fn server_errors_are_not_retried() {
+    // Only network errors are retried; an HTTP status is an answer, not a network error.
     let mock = Mock::start();
     mock.mount(Route::given(method("GET")).respond_with(ResponseTemplate::new(503)));
     let err = client().get_bytes(&mock.url("/busy"), 1024).unwrap_err();
     assert!(matches!(err, Error::Status { status: 503, .. }), "{err:?}");
-    assert_eq!(mock.requests().len(), 4);
+    assert!(!err.is_transient());
+    assert_eq!(mock.requests().len(), 1);
+}
+
+#[test]
+fn tls_failures_are_not_retried() {
+    // A server that does not speak TLS fails the handshake; retrying cannot fix that.
+    let (url, count) = flaky_server(0, b"hello");
+    let url = url.replace("http://", "https://");
+    let err = client().get_bytes(&url, 1024).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Network {
+                transient: false,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
 #[test]

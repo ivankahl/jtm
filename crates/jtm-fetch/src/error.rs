@@ -13,7 +13,8 @@ pub enum Error {
     Scheme { url: String, reason: String },
 
     /// The request failed in transport: connecting, TLS, a refused redirect, a timeout, or the
-    /// connection dropping mid-body. `transient` failures are retried. Maps to `E_NETWORK`.
+    /// connection dropping mid-body. `transient` failures are retried; TLS failures and refused
+    /// redirects are not. Maps to `E_NETWORK`.
     #[error("network error fetching {url}: {message}")]
     Network {
         url: String,
@@ -23,8 +24,8 @@ pub enum Error {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    /// The server answered with an error status. 5xx and 429 are retried. Maps to
-    /// `E_NETWORK`.
+    /// The server answered with an error status. Never retried: it is an answer, not a network
+    /// error. Maps to `E_NETWORK`.
     #[error("{url} returned HTTP {status}")]
     Status { url: String, status: u16 },
 
@@ -55,14 +56,17 @@ pub enum Error {
 }
 
 impl Error {
-    /// Whether retrying the same request may succeed: transport failures and server-side
-    /// statuses (5xx and 429). Client errors, refused URLs, size and hash failures never are.
+    /// Whether retrying the same request may succeed. Only network errors are: connecting,
+    /// timeouts and dropped transfers. HTTP statuses, TLS failures, refused URLs and
+    /// redirects, size and hash failures never are.
     pub fn is_transient(&self) -> bool {
-        match self {
-            Error::Network { transient, .. } => *transient,
-            Error::Status { status, .. } => *status >= 500 || *status == 429,
-            _ => false,
-        }
+        matches!(
+            self,
+            Error::Network {
+                transient: true,
+                ..
+            }
+        )
     }
 
     pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Error {
