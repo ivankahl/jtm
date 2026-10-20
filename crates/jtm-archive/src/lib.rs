@@ -73,18 +73,7 @@ impl LinkMode {
 pub enum Format {
     Zip,
     TarGz,
-    /// Extracted only when built with the `xz` feature.
     TarXz,
-}
-
-impl Format {
-    /// Whether this build can extract the format.
-    pub const fn supported(self) -> bool {
-        match self {
-            Format::Zip | Format::TarGz => true,
-            Format::TarXz => cfg!(feature = "xz"),
-        }
-    }
 }
 
 /// How to extract.
@@ -126,10 +115,7 @@ pub fn extract(archive: &Path, format: Format, dest: &Path, options: &Options) -
     match format {
         Format::Zip => zip_file::read(archive, &mut sink)?,
         Format::TarGz => tarball::read(archive, tarball::Codec::Gzip, &mut sink)?,
-        #[cfg(feature = "xz")]
         Format::TarXz => tarball::read(archive, tarball::Codec::Xz, &mut sink)?,
-        #[cfg(not(feature = "xz"))]
-        Format::TarXz => return Err(Error::Unsupported { format: "tar.xz" }),
     }
     sink.finish()
 }

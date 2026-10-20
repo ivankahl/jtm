@@ -12,10 +12,6 @@ authors.workspace = true
 name = "jtm"
 path = "src/main.rs"
 
-[features]
-# tar.xz archives (SPEC.md section 10). Off by default.
-xz = ["jtm-core/xz"]
-
 [dependencies]
 clap.workspace = true
 indicatif.workspace = true

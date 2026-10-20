@@ -13,8 +13,6 @@ pub(crate) enum Step {
 /// Refused on every platform, so an archive extracts the same everywhere: absolute paths,
 /// `..`, NUL and other control characters, backslashes (a UNC path or a Windows separator) and
 /// `:` (a drive letter or an NTFS alternate data stream).
-// SPEC-QUESTION: section 10 lists drive letters and UNC paths; this refuses every backslash
-// and colon rather than only those forms, which no supported archive uses in names.
 pub(crate) fn entry_components(raw: &[u8]) -> Result<Vec<String>, String> {
     let text = checked_text(raw)?;
     if text.starts_with('/') {

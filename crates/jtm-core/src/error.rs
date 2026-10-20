@@ -695,10 +695,6 @@ impl From<jtm_archive::Error> for JtmError {
                 entry: String::new(),
                 reason: message,
             },
-            // A build-configuration gap, not a verification failure.
-            A::Unsupported { format } => JtmError::internal(format!(
-                "this jtm was built without {format} support; rebuild it with the `xz` feature"
-            )),
             A::Io { path, source } => JtmError::io(path, source),
             other => JtmError::internal(other.to_string()),
         }
@@ -1076,8 +1072,6 @@ mod tests {
             message: "bad header".into(),
         });
         assert_eq!(malformed.code(), "E_ARCHIVE_UNSAFE");
-        let unsupported = JtmError::from(jtm_archive::Error::Unsupported { format: "tar.xz" });
-        assert_eq!(unsupported.code(), "E_INTERNAL");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Reading `tar.gz` and, with the `xz` feature, `tar.xz` archives.
+//! Reading `tar.gz` and `tar.xz` archives.
 
 use std::cell::Cell;
 use std::fs::File;
@@ -30,13 +30,11 @@ impl<R: Read> Read for Counting<R> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Codec {
     Gzip,
-    #[cfg(feature = "xz")]
     Xz,
 }
 
 /// The most memory the xz decoder may use, so a stream claiming a huge dictionary fails
 /// instead of exhausting memory. Real archives use at most 64 MiB.
-#[cfg(feature = "xz")]
 const XZ_MEMORY_LIMIT_KIB: u32 = 256 * 1024;
 
 pub(crate) fn read(archive: &Path, codec: Codec, sink: &mut Sink<'_>) -> Result<()> {
@@ -49,7 +47,6 @@ pub(crate) fn read(archive: &Path, codec: Codec, sink: &mut Sink<'_>) -> Result<
     };
     let decoder: Box<dyn Read> = match codec {
         Codec::Gzip => Box::new(GzDecoder::new(input)),
-        #[cfg(feature = "xz")]
         Codec::Xz => Box::new(lzma_rust2::XzReader::new_mem_limit(
             input,
             true,
@@ -61,9 +58,9 @@ pub(crate) fn read(archive: &Path, codec: Codec, sink: &mut Sink<'_>) -> Result<
         count: Rc::clone(&expanded),
     });
     let limits = sink.limits();
-    // SPEC-QUESTION: a gzip or xz stream does not say how many compressed bytes belong to each
-    // entry, so the 200:1 ratio is applied to the stream as a whole once it has produced
-    // `ratio_floor` bytes. A bomb hidden in one entry still trips it as that entry expands.
+    // A gzip or xz stream does not say how many compressed bytes belong to each entry, so the
+    // ratio applies to the stream as a whole once it has produced `ratio_floor` bytes. A bomb
+    // hidden in one entry still trips it as that entry expands.
     let ratio = |_: u64| -> Option<String> {
         let (out, input) = (expanded.get(), compressed.get().max(1));
         (out > limits.ratio_floor && out / input > limits.max_ratio)

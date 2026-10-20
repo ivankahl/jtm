@@ -492,12 +492,12 @@ An install is idempotent and atomic: it either produces a complete, verified ins
 
 | Rule | Detail |
 | --- | --- |
-| Formats | `zip`, `tar.gz` in v1; `tar.xz` behind the `xz` cargo feature. Installers such as `.msi`, `.pkg` and `.dmg` are not supported |
-| Path safety | Reject absolute paths, `..` components, drive letters, UNC paths and NUL bytes. Every final path must stay inside the temp dir after normalisation |
+| Formats | `zip`, `tar.gz` and `tar.xz`. Installers such as `.msi`, `.pkg` and `.dmg` are not supported |
+| Path safety | Reject absolute paths, `..` components, NUL and other control characters, and every backslash and colon (which covers drive letters, UNC paths and NTFS alternate data streams), on every OS so an archive extracts the same everywhere. Every final path must stay inside the temp dir after normalisation |
 | Links | Symlinks and hard links allowed only if the target resolves inside the temp dir. On Windows, archive symlinks are materialised as file copies so no privilege is needed |
 | Special files | Device files, FIFOs and sockets are rejected |
 | Permissions | Executable bits preserved; setuid, setgid and sticky bits stripped |
-| Bomb limits | 4 GiB total uncompressed, 200,000 entries, and any single entry above a 200:1 compression ratio fails the install. All configurable |
+| Bomb limits | 4 GiB total uncompressed, 200,000 entries, and any single entry above a 200:1 compression ratio fails the install. The ratio is checked once an entry has produced 1 MiB, so small, highly compressible files such as license texts pass; a `tar.gz` or `tar.xz` stream does not record each entry's compressed size, so there the ratio applies to the stream as a whole. All configurable |
 | Windows paths | Extended-length `\\?\` paths so deep JDK trees exceed 260 characters safely |
 
 ### Concurrency and progress
@@ -626,7 +626,7 @@ Every exit-7 error puts the flag or command that would resolve it in `details.re
 
 - **Never prompts automation.** Scripts, CI, `--json` and MCP calls are non-interactive automatically (section 4). A step that would need confirmation fails with exit 7 and tells the human which command or flag to use.
 - **Idempotent.** Re-running `install`, `sync`, `pin` or `default` with the same arguments is a no-op.
-- **`--dry-run`** on `install`, `uninstall`, `sync`, `pin` and `lock` returns the plan (what would be downloaded, written or removed) with no side effects.
+- **`--dry-run`** on `install`, `uninstall`, `sync`, `pin` and `lock` returns the plan (what would be downloaded, written or removed) with no side effects. Verifying an index is not one: a dry run may cache a verified copy and record its sequence for rollback protection, exactly as any other command would.
 - **Deterministic.** No implicit index refresh in JSON, CI or MCP modes (section 8).
 - **`jtm describe --format markdown`** prints a short usage guide suitable for pasting into `AGENTS.md` or `CLAUDE.md`.
 

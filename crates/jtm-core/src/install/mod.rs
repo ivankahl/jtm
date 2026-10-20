@@ -216,8 +216,6 @@ pub fn install(
         )));
     }
 
-    // Checked before downloading, so an unsupported format costs no transfer.
-    let format = archive_format(entry)?;
     let _lock = id.lock(dirs)?;
     // Whoever held the lock may have just installed this version.
     if !request.force
@@ -243,7 +241,7 @@ pub fn install(
         strip_components: layout::extract_strip(&manifest.layout),
         links: jtm_archive::LinkMode::host(),
     };
-    jtm_archive::extract(&archive.path, format, tmp.path(), &options)?;
+    jtm_archive::extract(&archive.path, archive_format(entry), tmp.path(), &options)?;
     progress(Progress::Extracted);
 
     let os = request.platform.os();
@@ -301,20 +299,11 @@ fn sweep_stale(tmp_root: &Path, prefix: &str) {
     }
 }
 
-/// The extractor format for `entry`, refusing one this build cannot extract.
-fn archive_format(entry: &IndexEntry) -> Result<jtm_archive::Format> {
-    let format = match entry.archive {
+fn archive_format(entry: &IndexEntry) -> jtm_archive::Format {
+    match entry.archive {
         jtm_security::ArchiveKind::Zip => jtm_archive::Format::Zip,
         jtm_security::ArchiveKind::TarGz => jtm_archive::Format::TarGz,
         jtm_security::ArchiveKind::TarXz => jtm_archive::Format::TarXz,
-    };
-    if format.supported() {
-        Ok(format)
-    } else {
-        Err(jtm_archive::Error::Unsupported {
-            format: entry.archive.as_str(),
-        }
-        .into())
     }
 }
 

@@ -70,8 +70,8 @@ impl Registry<'_> {
                     name,
                 )
             }
-            // SPEC-QUESTION: which revision is active is recorded by `jtm plugin add` (T9.3);
-            // until then several revisions of one plugin are refused rather than guessed.
+            // Which revision is active is recorded by `jtm plugin add` (T9.3); until then several
+            // revisions of one plugin are refused rather than guessed.
             _ => Err(JtmError::usage(format!(
                 "several revisions of plugin `{name}` are installed under {}; remove all but one",
                 self.dirs.plugins().display()

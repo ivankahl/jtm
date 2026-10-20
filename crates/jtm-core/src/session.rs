@@ -224,8 +224,8 @@ impl<'a> Session<'a> {
             .plugins
             .get(name)
             .and_then(|p| p.index_url.as_deref());
-        // SPEC-QUESTION: nothing yet says what fills `{index_version}`; such a URL is only
-        // usable through `plugins.<name>.index_url` or a copy already embedded or cached.
+        // What fills `{index_version}` is decided with index publishing (T6.4); until then such
+        // a URL is usable only through `plugins.<name>.index_url` or an embedded or cached copy.
         let remote_url = jtm_fetch::mirrors::rewrite(&manifest.index.url, &self.settings.mirrors);
         let mut index = loader.load(
             &IndexSources {
@@ -304,9 +304,6 @@ impl<'a> Session<'a> {
     }
 
     /// Installs a planned version, or with `dry_run` reports what would happen.
-    // SPEC-QUESTION: a dry run still verifies the index, which caches a fetched copy and
-    // records its sequence; neither changes what is installed, and skipping the record would
-    // weaken rollback protection.
     pub fn execute(
         &self,
         planned: Planned,
@@ -340,9 +337,8 @@ impl<'a> Session<'a> {
             mirrors: &self.settings.mirrors,
         };
 
-        // SPEC-QUESTION: `install --platform` for another platform cannot produce a usable
-        // install dir, so it downloads and verifies the archive into the cache only, which is
-        // what seeding a shared cache or mirror needs.
+        // Another platform's archive cannot become a usable install dir here, so it is only
+        // downloaded and verified into the cache.
         if platform != self.platform {
             let path = self.cache.path(&entry.sha256)?;
             if options.dry_run {
