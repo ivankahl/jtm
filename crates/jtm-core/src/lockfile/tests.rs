@@ -90,6 +90,9 @@ fn rejects_lockfiles_it_does_not_understand() {
         format!("{good}\nsurprise = true\n"),
         good.replacen(&"ab".repeat(32), "not-a-hash", 1),
         good.replacen("windows-x64", "amiga-68k", 1),
+        good.replace("version = \"1.2.3\"", "version = \"1.2.3 \\n\""),
+        good.replace("variant = \"temurin\"", "variant = \"../x\""),
+        good.replace("name = \"zeta\"", "name = \"Zeta Tool\""),
     ];
     for text in cases {
         let err = Lockfile::parse(Path::new("/p/jtm.lock"), &text).unwrap_err();

@@ -175,3 +175,38 @@ fn a_directory_without_pins_has_none() {
     assert!(pins.pins.is_empty());
     assert!(pins.files.is_empty());
 }
+
+#[test]
+fn ancestor_pin_files_are_not_read_for_tools_a_nearer_directory_decides() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("src").join("app");
+    put(&app, ".jtm.toml", "[tools]\njava = \"temurin:21\"\n");
+    // Unmappable, but java is already decided below it.
+    put(root.path(), ".sdkmanrc", "java=21.0.5-zzz\n");
+    let pins = discover(&app, &plugins()).unwrap();
+    assert_eq!(found(&pins), ["java=temurin:21 from .jtm.toml"]);
+}
+
+#[test]
+fn an_unknown_tool_in_an_ancestor_jtm_toml_is_a_warning() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("app");
+    put(&app, ".jtm.toml", "[tools]\njava = \"temurin:21\"\n");
+    put(root.path(), ".jtm.toml", "[tools]\nflyway = \"10\"\n");
+    let pins = discover(&app, &plugins()).unwrap();
+    assert_eq!(found(&pins), ["java=temurin:21 from .jtm.toml"]);
+    assert_eq!(pins.ignored.len(), 1);
+    assert!(pins.ignored[0].contains("flyway"), "{:?}", pins.ignored);
+}
+
+#[test]
+fn discovery_stops_at_the_top_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("app");
+    put(&app, ".java-version", "corretto-17\n");
+    put(root.path(), ".sdkmanrc", "wrapped=3.9.9\n");
+    let pins = discover_within(&app, Some(&app), &plugins()).unwrap();
+    assert_eq!(found(&pins), ["java=corretto:17 from .java-version"]);
+    let pins = discover(&app, &plugins()).unwrap();
+    assert_eq!(pins.pins.len(), 2);
+}

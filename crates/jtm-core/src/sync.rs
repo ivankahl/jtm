@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::error::{JtmError, Result};
 use crate::lockfile::{LOCK_FILE, LockedArtifact, LockedPlugin, LockedTool, Lockfile};
-use crate::pins::{ProjectPins, discover};
+use crate::pins::{ProjectPins, discover, discover_within};
 use crate::platform::Platform;
 use crate::plugins::Plugin;
 use crate::project::{PROJECT_FILE, ProjectFile};
@@ -77,26 +77,45 @@ pub struct LockReport {
     pub warnings: Vec<Warning>,
 }
 
-/// The project directory for `start`: the nearest directory with a `jtm.lock` or `.jtm.toml`,
-/// or else the nearest with any pin file. The lock lives there, and pins are read from there,
-/// so running from any subdirectory gives the same lock.
+/// The project directory for `start`: the nearest directory with a `jtm.lock`, a
+/// `.jtm.toml` or any pin file. The lock lives there, so a subdirectory pinned by its own
+/// `.java-version`-style file gets its own lock rather than sharing an ancestor's.
 pub fn project_root(start: &Path, plugins: &[Plugin]) -> Result<PathBuf> {
-    for dir in start.ancestors() {
-        if dir.join(LOCK_FILE).is_file() || dir.join(PROJECT_FILE).is_file() {
-            return Ok(dir.to_path_buf());
-        }
-    }
     let pins = discover(start, plugins)?;
-    pins.files
-        .first()
-        .and_then(|f| f.parent())
-        .map(Path::to_path_buf)
-        .ok_or_else(|| {
-            JtmError::usage(format!(
-                "no project pins at or above {}; pin a tool first with `jtm pin <tool>@<version>`",
-                start.display()
-            ))
+    root_of(start, &pins).ok_or_else(|| {
+        JtmError::usage(format!(
+            "no project pins at or above {}; pin a tool first with `jtm pin <tool>@<version>`",
+            start.display()
+        ))
+    })
+}
+
+/// The nearest directory from `start` with a `jtm.lock`, a `.jtm.toml` or one of `pins.files`.
+fn root_of(start: &Path, pins: &ProjectPins) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| {
+            dir.join(LOCK_FILE).is_file()
+                || dir.join(PROJECT_FILE).is_file()
+                || pins.files.iter().any(|f| f.parent() == Some(*dir))
         })
+        .map(Path::to_path_buf)
+}
+
+/// The pins `jtm lock` and `jtm sync` take for the project at `root`: those set in `root` and
+/// its ancestors up to the repository root, the nearest directory holding `.git`, or only
+/// those in `root` outside a repository. Pin files further up, such as a `~/.tool-versions`,
+/// belong to one machine and must not reach the committed lock (SPEC.md section 5, "Nothing
+/// machine-specific in tracked files").
+// SPEC-QUESTION: section 11 does not say how far up `jtm lock` reads pins. The repository
+// root is the nearest boundary that keeps a monorepo's shared `.jtm.toml` in each lock while
+// leaving per-user files out.
+pub fn project_pins(root: &Path, plugins: &[Plugin]) -> Result<ProjectPins> {
+    let top = root
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .unwrap_or(root);
+    discover_within(root, Some(top), plugins)
 }
 
 impl Session<'_> {
@@ -106,7 +125,7 @@ impl Session<'_> {
     pub fn lock(&self, start: &Path, options: &LockOptions) -> Result<LockReport> {
         let plugins = self.plugins()?;
         let root = project_root(start, &plugins)?;
-        let pins = discover(&root, &plugins)?;
+        let pins = project_pins(&root, &plugins)?;
         if let Upgrade::Tool(tool) = &options.upgrade
             && !pins.pins.contains_key(tool)
         {
@@ -351,7 +370,7 @@ impl Session<'_> {
         if !self.uses_lockfile() {
             let plugins = self.plugins()?;
             let root = project_root(start, &plugins)?;
-            let pins = discover(&root, &plugins)?;
+            let pins = project_pins(&root, &plugins)?;
             let mut results = Vec::new();
             for (tool, pin) in &pins.pins {
                 // Prefer an installed match over a newer one (SPEC.md section 5, step 5).
@@ -522,6 +541,17 @@ impl Session<'_> {
                 Ok((entry, sequence))
             }
             None => {
+                // The index checked these for an indexed entry; without one, the lock's own
+                // strings name the install dir, so the variant must be one the plugin has.
+                if !plugin.manifest.has_variant(&locked.variant) {
+                    return Err(JtmError::LockOutdated {
+                        message: format!(
+                            "`{}` is locked to variant `{}`, which the plugin does not have; \
+                             run `jtm lock` to write it again",
+                            locked.name, locked.variant
+                        ),
+                    });
+                }
                 warnings.push(Warning {
                     code: W_LOCK_NOT_IN_INDEX,
                     message: format!(
@@ -585,16 +615,11 @@ pub fn locked_satisfies(plugin: &Plugin, locked: &LockedTool, selector: &Selecto
 /// section 5, step 4). The lock is the nearest `jtm.lock` at or above `start`, looking no
 /// further than the nearest `.jtm.toml`; an entry whose pin it no longer satisfies is ignored.
 pub fn apply_lock(start: &Path, pins: &ProjectPins, plugins: &[Plugin]) -> Result<ProjectPins> {
-    let mut lock = None;
-    for dir in start.ancestors() {
-        if let Some(found) = Lockfile::read(dir)? {
-            lock = Some(found);
-            break;
-        }
-        if dir.join(PROJECT_FILE).is_file() {
-            break;
-        }
-    }
+    // The lock `jtm lock` would write for this directory, and no other.
+    let lock = match root_of(start, pins) {
+        Some(root) => Lockfile::read(&root)?,
+        None => None,
+    };
     let mut resolved = pins.clone();
     let Some(lock) = lock else {
         return Ok(resolved);

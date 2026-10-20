@@ -729,9 +729,7 @@ impl<'a> Session<'a> {
             .into_iter()
             .map(|item| {
                 let dir = PathBuf::from(&item.version.path);
-                let home = Receipt::read(&dir)
-                    .map(|r| home_dir(&dir, &r.home))
-                    .unwrap_or_else(|| dir.clone());
+                let home = install_home(&dir);
                 Installed {
                     variant: item.version.id.variant,
                     version: item.version.id.version,
@@ -778,9 +776,7 @@ impl<'a> Session<'a> {
         };
         let (item, warnings) = self.install(spec, install_options, progress)?;
         let dir = PathBuf::from(&item.version.path);
-        let home = Receipt::read(&dir)
-            .map(|r| home_dir(&dir, &r.home))
-            .unwrap_or_else(|| dir.clone());
+        let home = install_home(&dir);
         let installed = Installed {
             variant: item.version.id.variant,
             version: item.version.id.version,
@@ -899,7 +895,16 @@ pub fn pin_warnings(pins: &ProjectPins) -> Vec<Warning> {
             code: W_PIN_CONFLICT,
             message: c.message(),
         })
+        .chain(pins.ignored.iter().map(|message| Warning {
+            code: crate::pins::W_PIN_IGNORED,
+            message: message.clone(),
+        }))
         .collect()
+}
+
+/// The tool home of the install at `dir`, from its receipt, or `dir` itself without one.
+pub fn install_home(dir: &Path) -> PathBuf {
+    Receipt::read(dir).map_or_else(|| dir.to_path_buf(), |r| home_dir(dir, &r.home))
 }
 
 /// The tool home of an install: `dir` plus the receipt's `/`-separated `home`.

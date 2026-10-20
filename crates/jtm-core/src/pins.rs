@@ -7,6 +7,11 @@
 //! name. The first file setting a tool wins, and any other file in that directory setting a
 //! different value is reported as a conflict. Wrapper files count only when no pin file in any
 //! directory sets the tool.
+//!
+//! A pin file further up is read only for tools no nearer directory decides, so a broken or
+//! unmappable value in, say, `~/.sdkmanrc` does not break a project that pins the tool itself.
+//! A `.jtm.toml` above the nearest one that names a tool with no plugin is skipped with a
+//! warning instead of failing.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -24,6 +29,9 @@ use crate::spec::Selector;
 
 /// Warning code for two pin files in one directory setting different values for a tool.
 pub const W_PIN_CONFLICT: &str = "W_PIN_CONFLICT";
+
+/// Warning code for a pin in an ancestor `.jtm.toml` naming a tool with no plugin.
+pub const W_PIN_IGNORED: &str = "W_PIN_IGNORED";
 
 /// What kind of file a pin came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -89,6 +97,8 @@ pub struct ProjectPins {
     /// The winning pin per tool.
     pub pins: BTreeMap<String, Pin>,
     pub conflicts: Vec<Conflict>,
+    /// Pins skipped because no plugin provides the tool, as warning messages.
+    pub ignored: Vec<String>,
     /// Every pin file read, nearest first.
     pub files: Vec<PathBuf>,
 }
@@ -101,6 +111,15 @@ struct Source<'p> {
 
 /// Finds the pins that apply in `start`, reading the interop files `plugins` declare.
 pub fn discover(start: &Path, plugins: &[Plugin]) -> Result<ProjectPins> {
+    discover_within(start, None, plugins)
+}
+
+/// [`discover`], reading no directory above `top` when it is given.
+pub fn discover_within(
+    start: &Path,
+    top: Option<&Path>,
+    plugins: &[Plugin],
+) -> Result<ProjectPins> {
     let mut sources: Vec<Source<'_>> = plugins
         .iter()
         .flat_map(|plugin| {
@@ -124,14 +143,39 @@ pub fn discover(start: &Path, plugins: &[Plugin]) -> Result<ProjectPins> {
             .unwrap_or_default()
     };
 
+    let dirs: Vec<&Path> = match top {
+        Some(top) => {
+            let mut dirs = Vec::new();
+            for dir in start.ancestors() {
+                dirs.push(dir);
+                if dir == top {
+                    break;
+                }
+            }
+            dirs
+        }
+        None => start.ancestors().collect(),
+    };
+
     let mut found = ProjectPins::default();
-    for dir in start.ancestors() {
+    let mut seen_project_file = false;
+    for &dir in &dirs {
         // Every pin this directory sets, per tool, in read order.
         let mut here: BTreeMap<String, Vec<(PathBuf, Selector, PinKind)>> = BTreeMap::new();
         if let Some(file) = ProjectFile::read(dir)? {
             found.files.push(file.path().to_path_buf());
             for (tool, selector) in file.tools() {
+                if found.pins.contains_key(&tool) {
+                    continue;
+                }
                 if !plugins.iter().any(|p| p.manifest.name == tool) {
+                    if seen_project_file {
+                        found.ignored.push(format!(
+                            "{} pins `{tool}`, which no plugin provides, so it is ignored",
+                            file.path().display()
+                        ));
+                        continue;
+                    }
                     return Err(JtmError::PinToolUnknown {
                         tool,
                         file: file.path().to_path_buf(),
@@ -143,12 +187,18 @@ pub fn discover(start: &Path, plugins: &[Plugin]) -> Result<ProjectPins> {
                     PinKind::Native,
                 ));
             }
+            seen_project_file = true;
         }
         let mut texts: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
         for source in sources
             .iter()
             .filter(|s| s.interop.parser != InteropParser::Wrapper)
         {
+            let tool = &source.plugin.manifest.name;
+            // A nearer directory already decided this tool.
+            if found.pins.contains_key(tool) {
+                continue;
+            }
             let path = dir.join(&source.interop.file);
             let text = match texts.get(&path) {
                 Some(text) => text.clone(),
@@ -162,7 +212,6 @@ pub fn discover(start: &Path, plugins: &[Plugin]) -> Result<ProjectPins> {
                 }
             };
             let Some(text) = text else { continue };
-            let tool = &source.plugin.manifest.name;
             let value = interop::read(&source.plugin.manifest, source.interop, &text)
                 .map_err(|e| interop_error(tool, &path, &e))?;
             if let Some(value) = value {
@@ -225,7 +274,7 @@ pub fn discover(start: &Path, plugins: &[Plugin]) -> Result<ProjectPins> {
         if found.pins.contains_key(tool) {
             continue;
         }
-        for dir in start.ancestors() {
+        for &dir in &dirs {
             let path = dir.join(&source.interop.file);
             let Some(text) = read_optional(&path)? else {
                 continue;

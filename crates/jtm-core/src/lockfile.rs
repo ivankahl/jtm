@@ -9,6 +9,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use jtm_plugin::names::{check_name_segment, check_plugin_name, check_version_or_alias};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{JtmError, Result};
@@ -112,7 +113,19 @@ impl Lockfile {
                 file.lock_version
             )));
         }
+        for plugin in &file.plugins {
+            check_plugin_name(&plugin.name)
+                .map_err(|(_, e)| outdated(format!("plugin `{}`: {e}", plugin.name)))?;
+        }
         for tool in &file.tools {
+            // These strings name install dirs when the index no longer lists the version, so
+            // they get the same checks the index loader applies.
+            check_plugin_name(&tool.name)
+                .map_err(|(_, e)| outdated(format!("tool `{}`: {e}", tool.name)))?;
+            check_name_segment(&tool.variant, "variant")
+                .map_err(|(_, e)| outdated(format!("`{}` variant: {e}", tool.name)))?;
+            check_version_or_alias(&tool.version)
+                .map_err(|(_, e)| outdated(format!("`{}` version: {e}", tool.name)))?;
             for artifact in &tool.artifacts {
                 if artifact.platform.parse::<Platform>().is_err() {
                     return Err(outdated(format!(
