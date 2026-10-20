@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::output::{Human, Outcome};
 use crate::prompt::confirm;
 use crate::shell::{self, Shell};
-use crate::tools::warnings;
+use crate::tools::{warnings, warnings_with};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct DefaultData {
@@ -162,7 +162,7 @@ pub(crate) fn env(ctx: &Context, shell: Option<&str>) -> Result<Outcome<EnvData>
         command: "env",
         changed: false,
         data,
-        warnings: warnings(found),
+        warnings: warnings_with(found, &here.pins.conflicts),
     })
 }
 
@@ -235,7 +235,7 @@ pub(crate) fn use_version(
             unset: options.unset,
             env,
         },
-        warnings: warnings(found),
+        warnings: warnings_with(found, &here.pins.conflicts),
     })
 }
 
@@ -264,7 +264,7 @@ const HOOK_DIR_VAR: &str = "JTM_HOOK_DIR";
 /// working directory and undo those of the last one. On a directory change, a session version
 /// of a tool the new directory pins is dropped, so the pin takes over. Prints nothing when
 /// nothing changes; warnings are shown only on a directory change.
-pub(crate) fn hook_env(ctx: &Context, shell: &str) -> Result<String> {
+pub(crate) fn hook_env(ctx: &Context, shell: &str) -> Result<Outcome<EnvData>> {
     let shell = Shell::parse(shell)?;
     let session = Session::open(ctx)?;
     let mut here = here(&session)?;
@@ -286,9 +286,21 @@ pub(crate) fn hook_env(ctx: &Context, shell: &str) -> Result<String> {
             name: HOOK_DIR_VAR.to_owned(),
             value: cwd,
         });
-        for warning in found {
-            tracing::warn!("warning[{}]: {}", warning.code, warning.message);
-        }
     }
-    shell::render(shell, &changes, PATH_SEPARATOR)
+    let script = shell::render(shell, &changes, PATH_SEPARATOR)?;
+    Ok(Outcome {
+        command: "hook-env",
+        changed: !changes.is_empty(),
+        data: EnvData {
+            shell: Some(shell.name()),
+            changes,
+            script,
+        },
+        // Shown once per directory, not at every prompt.
+        warnings: if moved {
+            warnings_with(found, &here.pins.conflicts)
+        } else {
+            Vec::new()
+        },
+    })
 }

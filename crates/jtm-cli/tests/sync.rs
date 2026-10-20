@@ -191,3 +191,16 @@ fn no_lock_resolves_fresh_and_leaves_the_lock_alone() {
     assert_eq!(value["data"]["installed"][0]["version"], "1.1.0");
     assert!(!p.path().join("jtm.lock").exists());
 }
+
+#[test]
+fn no_lock_prefers_an_installed_match() {
+    let f = ready();
+    let (code, value) = f.json(&["install", "demo@1.0.0"]);
+    assert_eq!(code, 0, "{value}");
+    let p = project("1");
+    let (code, value) = json_in(&f, p.path(), &["--no-lock", "sync"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["data"]["installed"][0]["version"], "1.0.0");
+    assert_eq!(value["data"]["installed"][0]["status"], "already_installed");
+    assert!(!exists(&f.install_dir("1.1.0")));
+}

@@ -132,8 +132,26 @@ impl Session<'_> {
                 .ok_or_else(|| JtmError::ToolUnknown { tool: tool.clone() })?;
             let requested = pin.selector.to_string();
             let previous = existing.as_ref().and_then(|l| l.tool(tool));
-            let keep =
-                previous.filter(|p| p.requested == requested && !options.upgrade.covers(tool));
+            // A third-party plugin is pinned by its manifest hash; only an explicit upgrade
+            // accepts a changed one.
+            if plugin.origin == crate::indices::ManifestOrigin::External
+                && !options.upgrade.covers(tool)
+                && let Some(locked) = existing
+                    .as_ref()
+                    .and_then(|l| l.plugins.iter().find(|p| &p.name == tool))
+                && locked.manifest_sha256 != plugin.sha256
+            {
+                return Err(JtmError::LockPluginMismatch {
+                    tool: tool.clone(),
+                    locked: locked.manifest_sha256.clone(),
+                    actual: plugin.sha256.clone(),
+                });
+            }
+            // Locked wins over newer while the entry still satisfies the pin.
+            let keep = previous.filter(|p| {
+                !options.upgrade.covers(tool)
+                    && (p.requested == requested || locked_satisfies(plugin, p, &pin.selector))
+            });
             let (variant, version) = match keep {
                 Some(kept) => (kept.variant.clone(), kept.version.clone()),
                 None => {
@@ -315,6 +333,8 @@ pub struct SyncReport {
     pub lock_differs: bool,
     pub results: Vec<(String, InstallResult)>,
     pub warnings: Vec<Warning>,
+    /// Pin file conflicts, also reported as `W_PIN_CONFLICT` warnings.
+    pub conflicts: Vec<crate::pins::Conflict>,
 }
 
 impl Session<'_> {
@@ -334,9 +354,20 @@ impl Session<'_> {
             let pins = discover(&root, &plugins)?;
             let mut results = Vec::new();
             for (tool, pin) in &pins.pins {
+                // Prefer an installed match over a newer one (SPEC.md section 5, step 5).
+                let installed = self
+                    .plugin(tool)
+                    .and_then(|plugin| self.installed_match(&plugin, Some(&pin.selector)));
+                let selector = match installed {
+                    Ok(Some(found)) => Selector {
+                        variant: Some(found.variant),
+                        value: found.version,
+                    },
+                    _ => pin.selector.clone(),
+                };
                 let spec = ToolSpec {
                     tool: tool.clone(),
-                    selector: Some(pin.selector.clone()),
+                    selector: Some(selector),
                 };
                 let result = self
                     .plan(&spec, install)
@@ -349,6 +380,7 @@ impl Session<'_> {
                 lock_differs: false,
                 results,
                 warnings: pin_warnings(&pins),
+                conflicts: pins.conflicts,
             });
         }
 
@@ -440,6 +472,7 @@ impl Session<'_> {
             lock_differs: report.differs,
             results,
             warnings,
+            conflicts: report.pins.conflicts,
         })
     }
 
@@ -534,6 +567,55 @@ fn archive_kind(url: &str) -> Option<ArchiveKind> {
     } else {
         None
     }
+}
+
+/// Whether the locked version of `locked` is one `selector` can pick, by the plugin's own
+/// prefix and alias rules.
+pub fn locked_satisfies(plugin: &Plugin, locked: &LockedTool, selector: &Selector) -> bool {
+    let candidate = [crate::activate::Installed {
+        variant: locked.variant.clone(),
+        version: locked.version.clone(),
+        dir: PathBuf::new(),
+        home: PathBuf::new(),
+    }];
+    crate::activate::pick_installed(&plugin.manifest, Some(selector), &candidate).is_some()
+}
+
+/// The pins with each one `jtm.lock` locks replaced by its exact locked version (SPEC.md
+/// section 5, step 4). The lock is the nearest `jtm.lock` at or above `start`, looking no
+/// further than the nearest `.jtm.toml`; an entry whose pin it no longer satisfies is ignored.
+pub fn apply_lock(start: &Path, pins: &ProjectPins, plugins: &[Plugin]) -> Result<ProjectPins> {
+    let mut lock = None;
+    for dir in start.ancestors() {
+        if let Some(found) = Lockfile::read(dir)? {
+            lock = Some(found);
+            break;
+        }
+        if dir.join(PROJECT_FILE).is_file() {
+            break;
+        }
+    }
+    let mut resolved = pins.clone();
+    let Some(lock) = lock else {
+        return Ok(resolved);
+    };
+    for (tool, pin) in &mut resolved.pins {
+        let (Some(locked), Some(plugin)) = (
+            lock.tool(tool),
+            plugins.iter().find(|p| &p.manifest.name == tool),
+        ) else {
+            continue;
+        };
+        if locked.requested == pin.selector.to_string()
+            || locked_satisfies(plugin, locked, &pin.selector)
+        {
+            pin.selector = Selector {
+                variant: Some(locked.variant.clone()),
+                value: locked.version.clone(),
+            };
+        }
+    }
+    Ok(resolved)
 }
 
 /// Warning code for a locked tool with no artifact on any locked platform.

@@ -6,14 +6,16 @@ use std::process::{Command, Stdio};
 
 use jtm_core::activate::Change;
 use jtm_core::here::{CurrentItem, Here, WhichItem, find_on_path};
+use jtm_core::lockfile::LOCK_FILE;
 use jtm_core::pins::{PinWrite, remove_pins, write_pin};
+use jtm_core::project::PROJECT_FILE;
 use jtm_core::session::{EnsureOptions, Session};
 use jtm_core::{Context, JtmError, Result, Selector, ToolSpec};
 use serde::Serialize;
 
 use crate::activate::{here, with_install_prompt};
 use crate::output::{Human, Outcome};
-use crate::tools::warnings;
+use crate::tools::{warnings, warnings_with};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct PinData {
@@ -161,7 +163,14 @@ pub(crate) fn pin(
         || session.settings().pin.default_format.clone(),
         str::to_owned,
     );
-    let pin = write_pin(&cwd()?, &plugin, &format, &selector, dry_run)?;
+    // The project's directory: the nearest with `.jtm.toml` or `jtm.lock`, so pinning from a
+    // subdirectory does not start a nested project; otherwise the working directory.
+    let cwd = cwd()?;
+    let dir = cwd
+        .ancestors()
+        .find(|d| d.join(PROJECT_FILE).is_file() || d.join(LOCK_FILE).is_file())
+        .unwrap_or(&cwd);
+    let pin = write_pin(dir, &plugin, &format, &selector, dry_run)?;
     Ok(Outcome {
         command: "pin",
         changed: pin.changed && !dry_run,
@@ -194,7 +203,7 @@ pub(crate) fn current(ctx: &Context, tool: Option<&str>) -> Result<Outcome<Curre
         command: "current",
         changed: false,
         data: CurrentData { tools },
-        warnings: warnings(here.warnings()),
+        warnings: warnings_with(here.warnings(), &here.pins.conflicts),
     })
 }
 
@@ -207,7 +216,7 @@ pub(crate) fn which(ctx: &Context, command: &str) -> Result<Outcome<WhichData>> 
         command: "which",
         changed: false,
         data: WhichData { item },
-        warnings: warnings(here.warnings()),
+        warnings: warnings_with(here.warnings(), &here.pins.conflicts),
     })
 }
 

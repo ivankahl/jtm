@@ -17,13 +17,17 @@ use crate::platform::Os;
 use crate::plugins::Plugin;
 use crate::session::{PATH_SEPARATOR, Session, pin_warnings};
 use crate::spec::Selector;
+use crate::sync::apply_lock;
 
 /// The plugins, pins, session versions and defaults that apply in one directory.
 #[derive(Debug)]
 pub struct Here<'s, 'c> {
     pub session: &'s Session<'c>,
     pub plugins: Vec<Plugin>,
+    /// The pins as the files set them.
     pub pins: ProjectPins,
+    /// The pins with locked versions applied, as activation uses them.
+    pub resolved: ProjectPins,
     /// Session versions from `JTM_SESSION_*`.
     pub selected: BTreeMap<String, Selector>,
     pub defaults: Defaults,
@@ -67,12 +71,18 @@ impl<'s, 'c> Here<'s, 'c> {
         let plugins = session.plugins()?;
         let tools: Vec<String> = plugins.iter().map(|p| p.manifest.name.clone()).collect();
         let pins = discover(cwd, &plugins)?;
+        let resolved = if session.uses_lockfile() {
+            apply_lock(cwd, &pins, &plugins)?
+        } else {
+            pins.clone()
+        };
         let selected = session_from_env(&tools, env)?;
         let defaults = Defaults::load(&session.dirs().defaults_file())?;
         Ok(Here {
             session,
             plugins,
             pins,
+            resolved,
             selected,
             defaults,
         })
@@ -103,7 +113,7 @@ impl<'s, 'c> Here<'s, 'c> {
         Layers {
             exec: &[],
             session: &self.selected,
-            project: &self.pins,
+            project: &self.resolved,
             defaults: &self.defaults,
         }
     }
@@ -139,7 +149,11 @@ impl<'s, 'c> Here<'s, 'c> {
                 tool: tool.to_owned(),
                 layer: Some(choice.layer),
                 origin: Some(choice.origin),
-                requested: choice.selector.as_ref().map(ToString::to_string),
+                // A project pin is shown as written, not as the version the lock resolved.
+                requested: match choice.layer {
+                    Layer::Project => self.pins.pins.get(tool).map(|p| p.selector.to_string()),
+                    _ => choice.selector.as_ref().map(ToString::to_string),
+                },
                 variant: found.as_ref().map(|f| f.variant.clone()),
                 version: found.as_ref().map(|f| f.version.clone()),
                 path: found.as_ref().map(|f| f.dir.display().to_string()),
@@ -156,7 +170,7 @@ impl<'s, 'c> Here<'s, 'c> {
         for (tool, _) in exec {
             selected.remove(tool);
         }
-        let mut pins = self.pins.clone();
+        let mut pins = self.resolved.clone();
         for (tool, _) in exec {
             pins.pins.remove(tool);
         }

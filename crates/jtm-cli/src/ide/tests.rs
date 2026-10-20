@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use super::*;
 
-fn jdk(variant: &str, version: &str, home: &str) -> Jdk {
-    Jdk {
+fn toolchain(variant: &str, version: &str, home: &str) -> Toolchain {
+    Toolchain {
         id: format!("java@{variant}:{version}"),
         kind: "jdk".to_owned(),
         vendor: variant.to_owned(),
@@ -12,10 +12,10 @@ fn jdk(variant: &str, version: &str, home: &str) -> Jdk {
     }
 }
 
-fn jdks() -> Vec<Jdk> {
+fn toolchains() -> Vec<Toolchain> {
     vec![
-        jdk("temurin", "21.0.5+11", "/data/tools/java/temurin-21.0.5+11"),
-        jdk(
+        toolchain("temurin", "21.0.5+11", "/data/tools/java/temurin-21.0.5+11"),
+        toolchain(
             "corretto",
             "17.0.13.11.1",
             "/data/tools/java/corretto-17 & <x>",
@@ -36,22 +36,22 @@ const USER_TOOLCHAINS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 #[test]
 fn a_new_toolchains_file_lists_every_jdk() {
-    let text = update_toolchains(None, &jdks()).unwrap().unwrap();
+    let text = update_toolchains(None, &toolchains()).unwrap().unwrap();
     insta::assert_snapshot!(text);
-    assert_eq!(update_toolchains(Some(&text), &jdks()).unwrap(), None);
+    assert_eq!(update_toolchains(Some(&text), &toolchains()).unwrap(), None);
 }
 
 #[test]
 fn entries_jtm_did_not_write_are_untouched() {
-    let text = update_toolchains(Some(USER_TOOLCHAINS), &jdks())
+    let text = update_toolchains(Some(USER_TOOLCHAINS), &toolchains())
         .unwrap()
         .unwrap();
     assert!(text.contains("<jdkHome>/opt/jdk11</jdkHome>"), "{text}");
     assert!(text.contains("<!-- mine -->"), "{text}");
     assert!(text.ends_with("</toolchains>\n"), "{text}");
     // Re-running is a no-op; a shorter list replaces jtm's block only.
-    assert_eq!(update_toolchains(Some(&text), &jdks()).unwrap(), None);
-    let fewer = update_toolchains(Some(&text), &jdks()[..1])
+    assert_eq!(update_toolchains(Some(&text), &toolchains()).unwrap(), None);
+    let fewer = update_toolchains(Some(&text), &toolchains()[..1])
         .unwrap()
         .unwrap();
     assert!(!fewer.contains("corretto"), "{fewer}");
@@ -62,14 +62,14 @@ fn entries_jtm_did_not_write_are_untouched() {
 
 #[test]
 fn a_toolchains_file_jtm_cannot_place_entries_in_is_refused() {
-    let err = update_toolchains(Some("<settings/>"), &jdks()).unwrap_err();
+    let err = update_toolchains(Some("<settings/>"), &toolchains()).unwrap_err();
     assert_eq!(err.code(), "E_USAGE");
 }
 
 #[test]
 fn gradle_paths_keep_user_entries_and_replace_jtm_ones() {
     let tools = Path::new("/data/tools");
-    let homes: Vec<PathBuf> = jdks().into_iter().map(|j| j.home).collect();
+    let homes: Vec<PathBuf> = toolchains().into_iter().map(|j| j.home).collect();
     let fresh = update_gradle(None, &homes, tools).unwrap();
     assert_eq!(
         fresh,

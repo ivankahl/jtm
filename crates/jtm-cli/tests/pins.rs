@@ -266,3 +266,81 @@ fn exec_passes_the_exit_code_through() {
         .unwrap();
     assert_eq!(output.status.code(), Some(3));
 }
+
+#[test]
+fn activation_uses_the_locked_version() {
+    let f = ready();
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join(".jtm.toml"),
+        "[tools]\ndemo = \"1.0\"\n",
+    )
+    .unwrap();
+    let (code, value) = json_in(&f, project.path(), &["lock"]);
+    assert_eq!(code, 0, "{value}");
+    // Widen the pin; the lock still says 1.0.0, which satisfies it.
+    fs::write(project.path().join(".jtm.toml"), "[tools]\ndemo = \"1\"\n").unwrap();
+    let (code, value) = json_in(&f, project.path(), &["lock"]);
+    assert_eq!(code, 0, "{value}");
+    let (_, value) = json_in(&f, project.path(), &["current", "demo"]);
+    let demo = &value["data"]["tools"][0];
+    assert_eq!(demo["requested"], "1");
+    assert_eq!(demo["version"], "1.0.0", "{value}");
+    // --no-lock ignores it and prefers the highest installed match.
+    let (_, value) = json_in(&f, project.path(), &["--no-lock", "current", "demo"]);
+    assert_eq!(value["data"]["tools"][0]["version"], "1.1.0", "{value}");
+}
+
+#[test]
+fn conflicts_name_both_files_and_the_winner_in_json() {
+    let f = ready();
+    with_sdkmanrc(&f);
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join(".jtm.toml"),
+        "[tools]\ndemo = \"1.1\"\n",
+    )
+    .unwrap();
+    fs::write(project.path().join(".sdkmanrc"), "demo=1.0\n").unwrap();
+    for args in [&["current"][..], &["sync", "--dry-run"][..]] {
+        let (code, value) = json_in(&f, project.path(), args);
+        assert_eq!(code, 0, "{args:?}: {value}");
+        let warning = value["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["code"] == "W_PIN_CONFLICT")
+            .unwrap_or_else(|| panic!("{args:?}: {value}"));
+        let details = &warning["details"];
+        assert_eq!(details["tool"], "demo");
+        assert!(
+            details["winner"]["file"]
+                .as_str()
+                .unwrap()
+                .ends_with(".jtm.toml")
+        );
+        assert_eq!(details["winner"]["value"], "default:1.1");
+        assert!(
+            details["others"][0]["file"]
+                .as_str()
+                .unwrap()
+                .ends_with(".sdkmanrc")
+        );
+    }
+}
+
+#[test]
+fn pin_from_a_subdirectory_writes_the_project_file() {
+    let f = ready();
+    let project = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".jtm.toml"), "[tools]\n").unwrap();
+    let sub = project.path().join("module");
+    fs::create_dir(&sub).unwrap();
+    let (code, value) = json_in(&f, &sub, &["pin", "demo@1.1"]);
+    assert_eq!(code, 0, "{value}");
+    assert!(!sub.join(".jtm.toml").exists());
+    assert_eq!(
+        fs::read_to_string(project.path().join(".jtm.toml")).unwrap(),
+        "[tools]\ndemo = \"1.1\"\n"
+    );
+}

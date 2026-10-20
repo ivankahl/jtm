@@ -177,3 +177,32 @@ fn no_pins_means_nothing_to_lock() {
             .contains("jtm pin")
     );
 }
+
+#[test]
+fn a_changed_plugin_manifest_is_rejected_until_upgraded() {
+    let f = ready();
+    let p = project("1.0");
+    json_in(&f, p.path(), &["lock"]);
+    let manifest = f
+        .home
+        .path()
+        .join("plugins")
+        .join("demo@0123abc")
+        .join("plugin.toml");
+    let mut text = fs::read_to_string(&manifest).unwrap();
+    text.push_str("\n# changed\n");
+    fs::write(&manifest, text).unwrap();
+    let before = lock_text(p.path());
+
+    for args in [&["lock"][..], &["sync"][..]] {
+        let (code, value) = json_in(&f, p.path(), args);
+        assert_eq!(code, 6, "{args:?}: {value}");
+        assert_eq!(value["error"]["code"], "E_LOCK_INDEX_MISMATCH");
+        assert_eq!(value["error"]["details"]["tool"], "demo");
+    }
+    assert_eq!(lock_text(p.path()), before);
+
+    let (code, value) = json_in(&f, p.path(), &["lock", "--upgrade", "demo"]);
+    assert_eq!(code, 0, "{value}");
+    assert_ne!(lock_text(p.path()), before);
+}

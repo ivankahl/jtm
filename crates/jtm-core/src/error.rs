@@ -344,6 +344,20 @@ pub enum JtmError {
     #[error("jtm.lock entry for `{tool}` does not match the signed index: {message}")]
     LockIndexMismatch { tool: String, message: String },
 
+    /// A third-party plugin's manifest differs from the one `jtm.lock` recorded (SPEC.md
+    /// section 11). Maps to `E_LOCK_INDEX_MISMATCH`.
+    // SPEC-QUESTION: section 12 has no code for a changed plugin manifest; it is a lock
+    // mismatch like a changed hash, and exits 6.
+    #[error(
+        "plugin `{tool}` changed since jtm.lock recorded it (manifest sha256 {locked}, now \
+         {actual}); check the change, then run `jtm lock --upgrade {tool}`"
+    )]
+    LockPluginMismatch {
+        tool: String,
+        locked: String,
+        actual: String,
+    },
+
     #[error("plugin `{plugin}` is not trusted; to trust it, use {resolve}")]
     PluginUntrusted { plugin: String, resolve: String },
 
@@ -420,7 +434,9 @@ impl JtmError {
             JtmError::SizeExceeded { .. } => ErrorCode::SizeExceeded,
             JtmError::ArchiveUnsafe { .. } => ErrorCode::ArchiveUnsafe,
             JtmError::LockOutdated { .. } => ErrorCode::LockOutdated,
-            JtmError::LockIndexMismatch { .. } => ErrorCode::LockIndexMismatch,
+            JtmError::LockIndexMismatch { .. } | JtmError::LockPluginMismatch { .. } => {
+                ErrorCode::LockIndexMismatch
+            }
             JtmError::PluginUntrusted { .. } => ErrorCode::PluginUntrusted,
             JtmError::KeyChanged { .. } => ErrorCode::KeyChanged,
             JtmError::InputRequired { .. } => ErrorCode::InputRequired,
@@ -564,6 +580,15 @@ impl JtmError {
                 ("reason", reason.as_str().into()),
             ]),
             JtmError::LockIndexMismatch { tool, .. } => obj([("tool", tool.as_str().into())]),
+            JtmError::LockPluginMismatch {
+                tool,
+                locked,
+                actual,
+            } => obj([
+                ("tool", tool.as_str().into()),
+                ("locked", locked.as_str().into()),
+                ("actual", actual.as_str().into()),
+            ]),
             JtmError::PluginUntrusted { plugin, resolve } => obj([
                 ("plugin", plugin.as_str().into()),
                 ("resolve", resolve.as_str().into()),

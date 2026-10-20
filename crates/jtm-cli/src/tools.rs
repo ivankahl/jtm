@@ -276,6 +276,25 @@ impl Reporter {
     }
 }
 
+/// [`warnings`], with each pin conflict's files and winner in its `details`.
+pub(crate) fn warnings_with(
+    found: Vec<jtm_security::Warning>,
+    conflicts: &[jtm_core::pins::Conflict],
+) -> Vec<Warning> {
+    let mut out = warnings(found);
+    for warning in &mut out {
+        if warning.code != jtm_core::pins::W_PIN_CONFLICT {
+            continue;
+        }
+        if let Some(conflict) = conflicts.iter().find(|c| c.message() == warning.message)
+            && let Ok(Value::Object(details)) = serde_json::to_value(conflict)
+        {
+            warning.details = details;
+        }
+    }
+    out
+}
+
 pub(crate) fn warnings(found: Vec<jtm_security::Warning>) -> Vec<Warning> {
     let mut out: Vec<Warning> = Vec::new();
     for w in found {

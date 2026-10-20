@@ -93,7 +93,14 @@ fn new_terminal(f: &Fixture, home: &Path, shell: &str, script: &str) -> Option<S
         eprintln!("{shell} is not installed; skipping");
         return None;
     }
+    // A new macOS terminal starts a login shell, which is why setup writes .bash_profile there.
+    let login: &[&str] = if shell == "bash" && cfg!(target_os = "macos") {
+        &["-l"]
+    } else {
+        &[]
+    };
     let output = Command::new(shell)
+        .args(login)
         .args(["-i", "-c", script])
         .env_clear()
         .env("HOME", home)

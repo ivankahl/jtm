@@ -238,15 +238,9 @@ fn main() -> ExitCode {
             "lock",
             sync::lock(&ctx, &platform, upgrade.as_deref(), dry_run),
         ),
-        Some(Command::HookEnv { shell }) => match activate::hook_env(&ctx, &shell) {
-            Ok(script) => {
-                let mut stdout = io::stdout().lock();
-                let _ = stdout.write_all(script.as_bytes());
-                let _ = stdout.flush();
-                JtmExitCode::Success.into()
-            }
-            Err(err) => fail(&mut renderer, "hook-env", &err),
-        },
+        Some(Command::HookEnv { shell }) => {
+            render(&mut renderer, "hook-env", activate::hook_env(&ctx, &shell))
+        }
         Some(Command::Ide(IdeCommand::Sync {
             dry_run,
             maven_only,

@@ -379,3 +379,23 @@ fn the_hook_prints_nothing_when_nothing_changes() {
     assert!(second.status.success());
     assert_eq!(String::from_utf8(second.stdout).unwrap(), "");
 }
+
+#[test]
+fn hook_env_honours_json() {
+    let f = ready();
+    let (project, _other) = project();
+    let output = f
+        .jtm()
+        .current_dir(project.path())
+        .args(["--json", "hook-env", "--shell", "bash"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["command"], "hook-env");
+    assert!(
+        change(&value["data"]["changes"], "DEMO_HOME").is_some(),
+        "{value}"
+    );
+}

@@ -20,7 +20,7 @@ const GRADLE_KEY: &str = "org.gradle.java.installations.paths";
 
 /// One install offered to build tools.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Jdk {
+pub(crate) struct Toolchain {
     /// `tool@variant:version`.
     pub(crate) id: String,
     /// The Maven toolchain type.
@@ -31,23 +31,26 @@ pub(crate) struct Jdk {
     pub(crate) home: PathBuf,
 }
 
-/// The toolchains file's new text with jtm's block listing `jdks`, or `None` when it already
+/// The toolchains file's new text with jtm's block listing `toolchains`, or `None` when it already
 /// does. A file without `</toolchains>` is refused rather than guessed at.
-pub(crate) fn update_toolchains(existing: Option<&str>, jdks: &[Jdk]) -> Result<Option<String>> {
-    let mut sorted: Vec<&Jdk> = jdks.iter().collect();
+pub(crate) fn update_toolchains(
+    existing: Option<&str>,
+    toolchains: &[Toolchain],
+) -> Result<Option<String>> {
+    let mut sorted: Vec<&Toolchain> = toolchains.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
     let block = if sorted.is_empty() {
         String::new()
     } else {
         let mut block = format!("  {START}\n");
-        for jdk in sorted {
+        for entry in sorted {
             block.push_str(&format!(
                 "  <toolchain>\n    <type>{}</type>\n    <provides>\n      <version>{}</version>\n      <vendor>{}</vendor>\n      <id>jtm:{}</id>\n    </provides>\n    <configuration>\n      <jdkHome>{}</jdkHome>\n    </configuration>\n  </toolchain>\n",
-                xml(&jdk.kind),
-                xml(&jdk.version),
-                xml(&jdk.vendor),
-                xml(&jdk.id),
-                xml(&jdk.home.display().to_string()),
+                xml(&entry.kind),
+                xml(&entry.version),
+                xml(&entry.vendor),
+                xml(&entry.id),
+                xml(&entry.home.display().to_string()),
             ));
         }
         block.push_str(&format!("  {END}\n"));
@@ -287,7 +290,7 @@ pub(crate) struct IdeOptions {
 pub(crate) fn sync(ctx: &Context, options: IdeOptions) -> Result<crate::output::Outcome<IdeData>> {
     let session = Session::open(ctx)?;
     let home = user_home()?;
-    let mut maven_jdks = Vec::new();
+    let mut toolchains = Vec::new();
     let mut gradle_homes = Vec::new();
     for item in session.list(None)? {
         let Ok(plugin) = session.plugin(&item.version.id.tool) else {
@@ -299,7 +302,7 @@ pub(crate) fn sync(ctx: &Context, options: IdeOptions) -> Result<crate::output::
             .map(|r| home_dir(&dir, &r.home))
             .unwrap_or(dir);
         if let Some(kind) = &ide.maven_toolchain {
-            maven_jdks.push(Jdk {
+            toolchains.push(Toolchain {
                 id: item.version.id.to_string(),
                 kind: kind.clone(),
                 vendor: item.version.id.variant.clone(),
@@ -326,7 +329,7 @@ pub(crate) fn sync(ctx: &Context, options: IdeOptions) -> Result<crate::output::
 
     let maven = if options.maven {
         let file = home.join(".m2").join("toolchains.xml");
-        let update = update_toolchains(read(&file)?.as_deref(), &maven_jdks)?;
+        let update = update_toolchains(read(&file)?.as_deref(), &toolchains)?;
         if let Some(text) = &update
             && !options.dry_run
         {
@@ -335,7 +338,7 @@ pub(crate) fn sync(ctx: &Context, options: IdeOptions) -> Result<crate::output::
         Some(IdeFile {
             file,
             changed: update.is_some(),
-            entries: maven_jdks.len(),
+            entries: toolchains.len(),
         })
     } else {
         None

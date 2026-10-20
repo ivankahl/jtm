@@ -10,7 +10,7 @@ use jtm_core::{Context, ExitCode, JtmError, Platform, Result};
 use serde::Serialize;
 
 use crate::output::{Human, Outcome};
-use crate::tools::{Failure, InstallFailure, warnings};
+use crate::tools::{Failure, InstallFailure, warnings_with};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct LockData {
@@ -81,7 +81,7 @@ pub(crate) fn lock(
             dry_run,
             tools: report.tools,
         },
-        warnings: warnings(report.warnings),
+        warnings: warnings_with(report.warnings, &report.pins.conflicts),
     })
 }
 
@@ -160,7 +160,7 @@ pub(crate) fn sync(
                 installed,
                 failed: failures,
             },
-            warnings: warnings(found),
+            warnings: warnings_with(found, &report.conflicts),
         },
         code,
     ))
