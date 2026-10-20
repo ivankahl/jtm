@@ -6,24 +6,26 @@ use crate::shell::Shell;
 
 #[test]
 fn rc_files_cover_every_shell_setup_may_have_written_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_path_buf();
+    let zdotdir = home.join(".zsh");
     let env = |key: &str| match key {
-        "HOME" => Some("/home/u".to_owned()),
-        "ZDOTDIR" => Some("/home/u/.zsh".to_owned()),
+        "HOME" => Some(home.display().to_string()),
+        "ZDOTDIR" => Some(zdotdir.display().to_string()),
         "XDG_CONFIG_HOME" => Some("relative".to_owned()),
         _ => None,
     };
-    let files: Vec<String> = rc_files(&env)
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
     assert_eq!(
-        files,
+        rc_files(&env),
         [
-            "/home/u/.bashrc",
-            "/home/u/.bash_profile",
-            "/home/u/.profile",
-            "/home/u/.zsh/.zshrc",
-            "/home/u/.config/fish/conf.d/jtm.fish",
+            home.join(".bashrc"),
+            home.join(".bash_profile"),
+            home.join(".profile"),
+            zdotdir.join(".zshrc"),
+            home.join(".config")
+                .join("fish")
+                .join("conf.d")
+                .join("jtm.fish"),
         ]
     );
     assert!(rc_files(&|_| None).is_empty());
