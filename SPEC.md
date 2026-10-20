@@ -107,6 +107,7 @@ The CLI uses nvm-style verbs with a `<tool>@<spec>` argument; every command supp
 | `jtm mcp` | Run the MCP server over stdio |  |
 | `jtm self setup` | Add current-link bin dirs to `PATH` and set `[env]` variables in the user environment, and load the shell hook (section 5) | `--dry-run`, `--no-hook` |
 | `jtm self update` | Update jtm from a signed release | `--check` |
+| `jtm self uninstall` | Take jtm out of the user environment: undo `self setup`, remove the current links and defaults (section 5) | `--dry-run`, `--purge` |
 
 ### Global flags
 
@@ -736,6 +737,7 @@ Project files can never set `security.*`, `network.*`, `[mirrors]`, `extract.*`,
 
 - The installer (`install.ps1`, `install.sh`) and `jtm self setup` add the `current/<tool>` bin directories and `[env]` variables (section 5) to the user environment. On Windows this edits `HKCU\Environment` and broadcasts `WM_SETTINGCHANGE`; no admin needed.
 - On Unix, `jtm self setup` shows the lines it will add to the shell rc file and adds them after confirmation at the prompt, or straight away with `--yes`.
+- `jtm self uninstall` undoes this. It removes jtm's marked block from every rc file it could have written (`.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, fish's `conf.d/jtm.fish`) and from the PowerShell profile, deletes `env.sh` and `env.fish`, removes the `HKCU\Environment` values `self setup` recorded (a variable only while it still holds jtm's value), and removes the current links and the defaults. It lists all of this and asks first, or proceeds with `--yes`; without a terminal and without `--yes` it fails with exit 7. Installed versions, plugins, trust and the cache stay unless `--purge` is given, which deletes the entries jtm makes in its data and cache directories and then each directory once empty. `--purge` refuses a data or cache directory that is the file system root or holds the home directory. The user config file and the jtm binary are never deleted; the output names both.
 - `jtm shell-init <shell>` is needed for automatic project pins and for `jtm use`. `jtm self setup` adds it for bash, zsh, fish and PowerShell unless `--no-hook` is given; it can also be added to an rc file by hand.
 
 ## 15. First-party plugins

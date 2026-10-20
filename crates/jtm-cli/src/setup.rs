@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use jtm_core::activate::tool_env;
 use jtm_core::links;
 use jtm_core::session::Session;
-use jtm_core::{Context, JtmError, Os, Result};
+use jtm_core::{Context, Dirs, JtmError, Os, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::output::{Human, Outcome, Warning};
@@ -25,12 +25,12 @@ use crate::prompt::confirm;
 use crate::shell::{Shell, fish_quote, jtm_exe, posix_quote, pwsh_quote};
 
 #[cfg(windows)]
-mod windows;
+pub(crate) mod windows;
 
 /// Warning code for a shell hook `self setup` could not add.
 pub(crate) const W_SHELL_HOOK_SKIPPED: &str = "W_SHELL_HOOK_SKIPPED";
 
-const START: &str = "# >>> jtm >>>";
+pub(crate) const START: &str = "# >>> jtm >>>";
 const END: &str = "# <<< jtm <<<";
 
 /// What the user environment should hold: the current links' bin directories and the `[env]`
@@ -213,7 +213,7 @@ pub(crate) fn rc_file(
 
 /// The PowerShell profile for the current user and host, as PowerShell itself reports it, so a
 /// Documents folder moved by OneDrive is honoured. Tries PowerShell 7, then Windows PowerShell.
-fn powershell_profile() -> Option<PathBuf> {
+pub(crate) fn powershell_profile() -> Option<PathBuf> {
     ["pwsh", "powershell"].iter().find_map(|shell| {
         let output = std::process::Command::new(shell)
             .args([
@@ -314,7 +314,7 @@ pub(crate) fn refresh(session: &Session<'_>) -> Result<Vec<Target>> {
         });
     }
     #[cfg(windows)]
-    if let Some(previous) = applied(session)? {
+    if let Some(previous) = applied(session.dirs())? {
         targets.extend(windows::apply(&plan, &previous, false)?);
         record(session, &plan)?;
     }
@@ -324,14 +324,13 @@ pub(crate) fn refresh(session: &Session<'_>) -> Result<Vec<Target>> {
 /// The file `self setup` leaves in `<data>/state`, so `jtm default` knows to keep the user
 /// environment current. It holds the plan last applied, so a later run can remove variables
 /// and `PATH` entries for defaults that are gone.
-#[cfg_attr(not(windows), allow(dead_code))]
-const SETUP_MARKER: &str = "user-env";
+pub(crate) const SETUP_MARKER: &str = "user-env";
 
 /// The plan last applied by `self setup`, or `None` when it never ran. A marker from an older
 /// jtm, which is empty, reads as an empty plan.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn applied(session: &Session<'_>) -> Result<Option<SetupPlan>> {
-    let marker = session.dirs().state().join(SETUP_MARKER);
+pub(crate) fn applied(dirs: &Dirs) -> Result<Option<SetupPlan>> {
+    let marker = dirs.state().join(SETUP_MARKER);
     Ok(read_existing(&marker)?.map(|text| serde_json::from_str(&text).unwrap_or_default()))
 }
 
@@ -387,7 +386,7 @@ pub(crate) fn setup(ctx: &Context, options: SetupOptions) -> Result<Outcome<Setu
     if os == Os::Windows {
         #[cfg(windows)]
         {
-            let previous = applied(&session)?.unwrap_or_default();
+            let previous = applied(session.dirs())?.unwrap_or_default();
             targets.extend(windows::apply(&plan, &previous, dry_run)?);
         }
         match (powershell_profile(), exe.as_deref()) {

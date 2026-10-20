@@ -12,6 +12,7 @@ mod shell;
 mod sync;
 mod tools;
 mod trust;
+mod uninstall;
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
@@ -263,6 +264,11 @@ fn main() -> ExitCode {
             &mut renderer,
             "self setup",
             setup::setup(&ctx, setup::SetupOptions { dry_run, no_hook }),
+        ),
+        Some(Command::SelfCmd(SelfCommand::Uninstall { dry_run, purge })) => render(
+            &mut renderer,
+            "self uninstall",
+            uninstall::uninstall(&ctx, uninstall::UninstallOptions { dry_run, purge }),
         ),
         Some(Command::Trust(cmd)) => {
             let name = trust::command_name(&cmd);

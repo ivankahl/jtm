@@ -223,6 +223,17 @@ pub(crate) enum SelfCommand {
         #[arg(long)]
         no_hook: bool,
     },
+    /// Take jtm out of your environment: the rc-file and profile lines, the user PATH and
+    /// variables `self setup` set, the current links and the defaults. Asks first, or --yes.
+    /// Installed versions stay unless --purge; the config file and jtm itself always stay.
+    Uninstall {
+        /// Show what would be removed without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Also delete installed versions, plugins, trust and the download cache.
+        #[arg(long)]
+        purge: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

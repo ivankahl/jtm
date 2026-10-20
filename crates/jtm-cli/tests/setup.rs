@@ -259,3 +259,87 @@ fn uninstalling_the_default_clears_it_from_the_env_files() {
     assert_eq!(code, 0, "{value}");
     assert!(!fs::read_to_string(&env_sh).unwrap().contains("DEMO_HOME"));
 }
+
+fn uninstall(f: &Fixture, home: &Path, args: &[&str]) -> (i32, Value) {
+    let output = f
+        .jtm()
+        .env("HOME", home)
+        .env_remove("ZDOTDIR")
+        .env_remove("XDG_CONFIG_HOME")
+        .args(["--json", "self", "uninstall"])
+        .args(args)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    (
+        output.status.code().unwrap(),
+        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("{stdout}")),
+    )
+}
+
+#[test]
+fn self_uninstall_undoes_setup_and_defaults_but_keeps_installs() {
+    let (f, home) = ready();
+    fs::write(bash_rc(home.path()), "alias ll='ls -l'\n").unwrap();
+    let (code, value) = setup(&f, home.path(), "/bin/bash", &["--yes"]);
+    assert_eq!(code, 0, "{value}");
+    let link = f.home.path().join("current").join("demo");
+    assert!(link.exists());
+
+    // Nothing is removed without --yes when there is no terminal to ask on.
+    let (code, value) = uninstall(&f, home.path(), &[]);
+    assert_eq!(code, 7, "{value}");
+    assert!(link.exists());
+
+    let (code, value) = uninstall(&f, home.path(), &["--dry-run"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["changed"], false);
+    assert!(!value["data"]["removed"].as_array().unwrap().is_empty());
+    assert!(link.exists());
+
+    let (code, value) = uninstall(&f, home.path(), &["--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["changed"], true);
+    assert_eq!(
+        fs::read_to_string(bash_rc(home.path())).unwrap(),
+        "alias ll='ls -l'\n"
+    );
+    assert!(!link.exists() && fs::symlink_metadata(&link).is_err());
+    assert!(!f.home.path().join("env.sh").exists());
+    assert!(!f.home.path().join("state").join("defaults.toml").exists());
+    // The install itself stays, and jtm still works.
+    assert!(f.install_dir("1.0.0").is_dir());
+    let (code, value) = f.json(&["list"]);
+    assert_eq!(code, 0, "{value}");
+
+    // A second run has nothing left to do.
+    let (code, value) = uninstall(&f, home.path(), &["--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["changed"], false);
+}
+
+#[test]
+fn purge_deletes_jtms_files_but_keeps_the_config() {
+    let (f, home) = ready();
+    let (code, value) = setup(&f, home.path(), "/bin/bash", &["--yes"]);
+    assert_eq!(code, 0, "{value}");
+    let config = f.home.path().join("config.toml");
+    assert!(config.is_file());
+
+    let (code, value) = uninstall(&f, home.path(), &["--yes", "--purge"]);
+    assert_eq!(code, 0, "{value}");
+    for gone in ["tools", "current", "state", "plugins", "env.sh"] {
+        assert!(!f.home.path().join(gone).exists(), "{gone}: {value}");
+    }
+    assert!(config.is_file(), "the config file is never deleted");
+    let kept: Vec<&str> = value["data"]["kept"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        kept.contains(&config.display().to_string().as_str()),
+        "{value}"
+    );
+}
