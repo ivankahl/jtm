@@ -30,6 +30,8 @@ pub struct Here<'s, 'c> {
     pub resolved: ProjectPins,
     /// Session versions from `JTM_SESSION_*`.
     pub selected: BTreeMap<String, Selector>,
+    /// Warnings for `JTM_SESSION_*` values that were ignored.
+    pub session_warnings: Vec<Warning>,
     pub defaults: Defaults,
 }
 
@@ -76,7 +78,7 @@ impl<'s, 'c> Here<'s, 'c> {
         } else {
             pins.clone()
         };
-        let selected = session_from_env(&tools, env)?;
+        let (selected, session_warnings) = session_from_env(&tools, env);
         let defaults = Defaults::load(&session.dirs().defaults_file())?;
         Ok(Here {
             session,
@@ -84,6 +86,7 @@ impl<'s, 'c> Here<'s, 'c> {
             pins,
             resolved,
             selected,
+            session_warnings,
             defaults,
         })
     }
@@ -104,9 +107,11 @@ impl<'s, 'c> Here<'s, 'c> {
             })
     }
 
-    /// Pin conflicts as warnings.
+    /// Pin conflicts and ignored session values as warnings.
     pub fn warnings(&self) -> Vec<Warning> {
-        pin_warnings(&self.pins)
+        let mut warnings = pin_warnings(&self.pins);
+        warnings.extend(self.session_warnings.iter().cloned());
+        warnings
     }
 
     fn layers(&self) -> Layers<'_> {
@@ -174,7 +179,9 @@ impl<'s, 'c> Here<'s, 'c> {
         for (tool, _) in exec {
             pins.pins.remove(tool);
         }
-        let (mut overrides, warnings) = self.session.overrides(&selected, &pins, &self.plugins)?;
+        let (mut overrides, mut warnings) =
+            self.session.overrides(&selected, &pins, &self.plugins)?;
+        warnings.extend(self.session_warnings.iter().cloned());
         for (tool, found) in exec.iter().rev() {
             let plugin = self.plugin(tool)?;
             overrides.insert(

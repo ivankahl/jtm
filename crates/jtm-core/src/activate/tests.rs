@@ -120,14 +120,23 @@ fn session_values_are_read_from_the_environment() {
         _ => None,
     };
     let tools = ["java".to_owned(), "maven".to_owned(), "gradle".to_owned()];
-    let session = session_from_env(&tools, &env).unwrap();
+    let (session, warnings) = session_from_env(&tools, &env);
     assert_eq!(session.len(), 1);
     assert_eq!(session["java"], sel("temurin:21.0.5+11"));
+    assert!(warnings.is_empty());
+}
 
+#[test]
+fn an_invalid_session_value_is_ignored_with_a_warning() {
     let bad = |_: &str| Some(OsString::from("not a spec!"));
-    let err = session_from_env(&["java".to_owned()], &bad).unwrap_err();
-    assert_eq!(err.code(), "E_USAGE");
-    assert!(err.to_string().contains("JTM_SESSION_JAVA"), "{err}");
+    let (session, warnings) = session_from_env(&["java".to_owned()], &bad);
+    assert!(session.is_empty());
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].code, W_SESSION_INVALID);
+    assert!(
+        warnings[0].message.contains("JTM_SESSION_JAVA"),
+        "{warnings:?}"
+    );
 }
 
 #[test]

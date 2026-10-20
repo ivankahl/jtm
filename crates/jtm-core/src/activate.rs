@@ -15,6 +15,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use jtm_security::Warning;
 use serde::Serialize;
 
 use crate::error::{JtmError, Result};
@@ -236,28 +237,40 @@ pub fn plan_env(
         .collect()
 }
 
-/// The session versions of `tools` set in the environment. An empty variable is unset.
+/// Warning code for a `JTM_SESSION_*` value that is not a version and so is ignored.
+pub const W_SESSION_INVALID: &str = "W_SESSION_INVALID";
+
+/// The session versions of `tools` set in the environment. An empty variable is unset. A value
+/// that is not a version is skipped with a warning rather than failing, so the shell hook keeps
+/// working and clears it, and `jtm use <tool> --unset` can still run.
 pub fn session_from_env(
     tools: &[String],
     env: &dyn Fn(&str) -> Option<OsString>,
-) -> Result<BTreeMap<String, Selector>> {
+) -> (BTreeMap<String, Selector>, Vec<Warning>) {
     let mut session = BTreeMap::new();
+    let mut warnings = Vec::new();
     for tool in tools {
         let name = session_var(tool);
         let Some(raw) = env(&name).filter(|v| !v.is_empty()) else {
             continue;
         };
-        let text = raw
+        let parsed = raw
             .into_string()
-            .map_err(|_| JtmError::usage(format!("{name} is not valid UTF-8")))?;
-        let selector = Selector::parse(&text).map_err(|e| {
-            JtmError::usage(format!(
-                "{name} is `{text}`, which is not a version: {e}; run `jtm use {tool} --unset`"
-            ))
-        })?;
-        session.insert(tool.clone(), selector);
+            .map_err(|_| "it is not valid UTF-8".to_owned())
+            .and_then(|text| {
+                Selector::parse(&text).map_err(|e| format!("`{text}` is not a version: {e}"))
+            });
+        match parsed {
+            Ok(selector) => {
+                session.insert(tool.clone(), selector);
+            }
+            Err(reason) => warnings.push(Warning {
+                code: W_SESSION_INVALID,
+                message: format!("{name} is ignored because {reason}"),
+            }),
+        }
     }
-    Ok(session)
+    (session, warnings)
 }
 
 /// One installed version of a tool, as activation sees it.
