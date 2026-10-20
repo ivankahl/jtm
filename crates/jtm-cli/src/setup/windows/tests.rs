@@ -26,14 +26,14 @@ fn writes_path_and_variables_and_is_idempotent() {
         path: vec![PathBuf::from(r"C:\jtm\current\demo\bin")],
         vars: vec![("DEMO_HOME".to_owned(), r"C:\jtm\current\demo".to_owned())],
     };
-    let dry = apply_at(&scratch.0, &plan, true).unwrap();
+    let dry = apply_at(&scratch.0, &plan, &SetupPlan::default(), true).unwrap();
     assert!(dry.iter().all(|t| t.changed));
     assert_eq!(
         decode(&key.get_raw_value("Path").unwrap().bytes),
         r"%USERPROFILE%\bin"
     );
 
-    let done = apply_at(&scratch.0, &plan, false).unwrap();
+    let done = apply_at(&scratch.0, &plan, &SetupPlan::default(), false).unwrap();
     assert!(done.iter().all(|t| t.changed));
     let path = key.get_raw_value("Path").unwrap();
     assert_eq!(path.vtype, REG_EXPAND_SZ, "the value keeps its type");
@@ -46,6 +46,15 @@ fn writes_path_and_variables_and_is_idempotent() {
         r"C:\jtm\current\demo"
     );
 
-    let again = apply_at(&scratch.0, &plan, false).unwrap();
+    let again = apply_at(&scratch.0, &plan, &plan, false).unwrap();
     assert!(again.iter().all(|t| !t.changed));
+
+    // The default is gone: what jtm set before is removed, and the rest of Path is kept.
+    let cleared = apply_at(&scratch.0, &SetupPlan::default(), &plan, false).unwrap();
+    assert!(cleared.iter().all(|t| t.changed), "{cleared:?}");
+    assert_eq!(
+        decode(&key.get_raw_value("Path").unwrap().bytes),
+        r"%USERPROFILE%\bin"
+    );
+    assert!(key.get_raw_value("DEMO_HOME").is_err());
 }

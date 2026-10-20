@@ -14,7 +14,7 @@ use jtm_core::activate::tool_env;
 use jtm_core::links;
 use jtm_core::session::Session;
 use jtm_core::{Context, JtmError, Os, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::output::{Human, Outcome};
 use crate::prompt::confirm;
@@ -28,7 +28,7 @@ const END: &str = "# <<< jtm <<<";
 
 /// What the user environment should hold: the current links' bin directories and the `[env]`
 /// variables pointing at the links.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SetupPlan {
     pub(crate) path: Vec<PathBuf>,
     pub(crate) vars: Vec<(String, String)>,
@@ -176,6 +176,21 @@ pub(crate) fn merge_path(existing: &str, add: &[String]) -> Option<String> {
     Some(entries.join(";"))
 }
 
+/// Removes the entries of `remove` from the `;`-separated `existing`, compared as in
+/// [`merge_path`]. `None` when none is present.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn prune_path(existing: &str, remove: &[String]) -> Option<String> {
+    let norm = |entry: &str| entry.trim_end_matches(['\\', '/']).to_lowercase();
+    let remove: Vec<String> = remove.iter().map(|r| norm(r)).collect();
+    let entries: Vec<&str> = existing.split(';').filter(|e| !e.is_empty()).collect();
+    let kept: Vec<&str> = entries
+        .iter()
+        .copied()
+        .filter(|e| !remove.contains(&norm(e)))
+        .collect();
+    (kept.len() != entries.len()).then(|| kept.join(";"))
+}
+
 /// One file or setting `self setup` changed, or with `--dry-run` would change.
 #[derive(Debug, Serialize)]
 pub(crate) struct Target {
@@ -223,20 +238,47 @@ pub(crate) fn refresh(session: &Session<'_>) -> Result<Vec<Target>> {
         });
     }
     #[cfg(windows)]
-    if session.dirs().state().join(SETUP_MARKER).is_file() {
-        targets.extend(windows::apply(&plan, false)?);
+    if let Some(previous) = applied(session)? {
+        targets.extend(windows::apply(&plan, &previous, false)?);
+        record(session, &plan)?;
     }
     Ok(targets)
 }
 
 /// The file `self setup` leaves in `<data>/state`, so `jtm default` knows to keep the user
-/// environment current.
+/// environment current. It holds the plan last applied, so a later run can remove variables
+/// and `PATH` entries for defaults that are gone.
 #[cfg_attr(not(windows), allow(dead_code))]
 const SETUP_MARKER: &str = "user-env";
 
+/// The plan last applied by `self setup`, or `None` when it never ran. A marker from an older
+/// jtm, which is empty, reads as an empty plan.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn applied(session: &Session<'_>) -> Result<Option<SetupPlan>> {
+    let marker = session.dirs().state().join(SETUP_MARKER);
+    Ok(read_existing(&marker)?.map(|text| serde_json::from_str(&text).unwrap_or_default()))
+}
+
+/// Records `plan` as the one applied.
+fn record(session: &Session<'_>, plan: &SetupPlan) -> Result<()> {
+    let text = serde_json::to_string(plan).unwrap_or_default();
+    write_if_changed(&session.dirs().state().join(SETUP_MARKER), &text, false)?;
+    Ok(())
+}
+
+/// The text of `path`, or `None` when it does not exist. Any other failure, such as a file
+/// that is not UTF-8, is an error: treating it as missing would overwrite the user's file.
+pub(crate) fn read_existing(path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(JtmError::io(path, e)),
+    }
+}
+
 /// Writes `text` to `path` unless it already holds it. Returns whether it differed.
 fn write_if_changed(path: &Path, text: &str, dry_run: bool) -> Result<bool> {
-    let existing = std::fs::read_to_string(path).ok();
+    let existing = read_existing(path)?;
     if existing.as_deref() == Some(text) {
         return Ok(false);
     }
@@ -256,7 +298,10 @@ pub(crate) fn setup(ctx: &Context, dry_run: bool) -> Result<Outcome<SetupData>> 
     let os = session.platform().os();
     if os == Os::Windows {
         #[cfg(windows)]
-        targets.extend(windows::apply(&plan, dry_run)?);
+        {
+            let previous = applied(&session)?.unwrap_or_default();
+            targets.extend(windows::apply(&plan, &previous, dry_run)?);
+        }
     } else {
         for (name, text) in [("env.sh", env_sh(&plan)), ("env.fish", env_fish(&plan))] {
             let path = session.dirs().data.join(name);
@@ -276,7 +321,7 @@ pub(crate) fn setup(ctx: &Context, dry_run: bool) -> Result<Outcome<SetupData>> 
             .data
             .join(if fish { "env.fish" } else { "env.sh" });
         let block = rc_block(&env_file, fish);
-        let existing = std::fs::read_to_string(&rc).ok();
+        let existing = read_existing(&rc)?;
         let update = update_rc(existing.as_deref(), &block);
         if let Some(text) = &update
             && !dry_run
@@ -296,8 +341,7 @@ pub(crate) fn setup(ctx: &Context, dry_run: bool) -> Result<Outcome<SetupData>> 
         });
     }
     if !dry_run {
-        let state = session.dirs().state();
-        write_if_changed(&state.join(SETUP_MARKER), "", false)?;
+        record(&session, &plan)?;
     }
     Ok(Outcome {
         command: "self setup",

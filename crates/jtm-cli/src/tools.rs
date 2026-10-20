@@ -389,6 +389,14 @@ pub(crate) fn uninstall(
     let spec = ToolSpec::parse(spec)?;
     let session = Session::open(ctx)?;
     let (removed, found_warnings) = session.uninstall(&spec, options)?;
+    // A cleared default must also leave the user environment `jtm self setup` set up, or new
+    // shells keep pointing at the removed current link.
+    if found_warnings
+        .iter()
+        .any(|w| w.code == jtm_core::session::W_DEFAULT_CLEARED)
+    {
+        crate::setup::refresh(&session)?;
+    }
     Ok(Outcome {
         command: "uninstall",
         changed: !options.dry_run && !removed.is_empty(),

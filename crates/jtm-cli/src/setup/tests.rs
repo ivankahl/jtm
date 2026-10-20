@@ -78,6 +78,25 @@ fn windows_path_merge_prepends_missing_entries_only() {
 }
 
 #[test]
+fn windows_path_prune_removes_stale_entries_only() {
+    let stale = [r"C:\jtm\current\java\bin".to_owned()];
+    assert_eq!(
+        prune_path(r"c:\JTM\current\java\bin\;%USERPROFILE%\bin", &stale).as_deref(),
+        Some(r"%USERPROFILE%\bin")
+    );
+    assert_eq!(prune_path(r"%USERPROFILE%\bin", &stale), None);
+}
+
+#[test]
+fn an_unreadable_rc_file_is_an_error_not_a_missing_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let rc = dir.path().join(".bashrc");
+    std::fs::write(&rc, b"# caf\xe9\n").unwrap();
+    assert_eq!(read_existing(&rc).unwrap_err().code(), "E_IO");
+    assert_eq!(read_existing(&dir.path().join("missing")).unwrap(), None);
+}
+
+#[test]
 fn the_rc_file_follows_the_login_shell() {
     let home = Path::new("/home/u");
     let env = |shell: &'static str| {

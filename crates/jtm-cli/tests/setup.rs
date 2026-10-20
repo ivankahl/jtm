@@ -154,3 +154,27 @@ fn a_new_terminal_runs_the_default_in_bash_zsh_and_fish() {
         assert_eq!(fs::read_dir(home.path()).unwrap().count(), rc_before);
     }
 }
+
+#[test]
+fn an_unreadable_rc_file_is_never_overwritten() {
+    let (f, home) = ready();
+    let original = b"# caf\xe9\nalias ll='ls -l'\n";
+    fs::write(home.path().join(".bashrc"), original).unwrap();
+    let (code, value) = setup(&f, home.path(), "/bin/bash", &["--yes"]);
+    assert_ne!(code, 0, "{value}");
+    assert_eq!(value["error"]["code"], "E_IO");
+    assert_eq!(fs::read(home.path().join(".bashrc")).unwrap(), original);
+}
+
+#[test]
+fn uninstalling_the_default_clears_it_from_the_env_files() {
+    let (f, home) = ready();
+    let (code, value) = setup(&f, home.path(), "/bin/bash", &["--yes"]);
+    assert_eq!(code, 0, "{value}");
+    let env_sh = f.home.path().join("env.sh");
+    assert!(fs::read_to_string(&env_sh).unwrap().contains("DEMO_HOME"));
+
+    let (code, value) = f.json(&["uninstall", "demo@1.0.0"]);
+    assert_eq!(code, 0, "{value}");
+    assert!(!fs::read_to_string(&env_sh).unwrap().contains("DEMO_HOME"));
+}

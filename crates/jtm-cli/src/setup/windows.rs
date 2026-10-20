@@ -8,14 +8,15 @@ use jtm_core::{JtmError, Result};
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ, RegType};
 use winreg::{RegKey, RegValue};
 
-use super::{SetupPlan, Target, merge_path};
+use super::{SetupPlan, Target, merge_path, prune_path};
 
 /// The key Windows reads user environment variables from.
 const ENVIRONMENT: &str = "Environment";
 
-/// Writes `plan` to `HKCU\Environment` and tells running programs the environment changed.
-pub(crate) fn apply(plan: &SetupPlan, dry_run: bool) -> Result<Vec<Target>> {
-    let targets = apply_at(ENVIRONMENT, plan, dry_run)?;
+/// Writes `plan` to `HKCU\Environment`, removing what `previous` set that `plan` no longer
+/// does, and tells running programs the environment changed.
+pub(crate) fn apply(plan: &SetupPlan, previous: &SetupPlan, dry_run: bool) -> Result<Vec<Target>> {
+    let targets = apply_at(ENVIRONMENT, plan, previous, dry_run)?;
     if !dry_run && targets.iter().any(|t| t.changed) {
         broadcast();
     }
@@ -23,8 +24,15 @@ pub(crate) fn apply(plan: &SetupPlan, dry_run: bool) -> Result<Vec<Target>> {
 }
 
 /// Writes `plan` under `HKCU\<subkey>`: missing `PATH` entries go first, keeping the value's
-/// type so `%VARIABLES%` in it still expand, and each variable is set when it differs.
-pub(crate) fn apply_at(subkey: &str, plan: &SetupPlan, dry_run: bool) -> Result<Vec<Target>> {
+/// type so `%VARIABLES%` in it still expand, and each variable is set when it differs. `PATH`
+/// entries and variables in `previous` but not in `plan` are removed; a variable only while it
+/// still holds the value jtm set, so a value the user changed is left alone.
+pub(crate) fn apply_at(
+    subkey: &str,
+    plan: &SetupPlan,
+    previous: &SetupPlan,
+    dry_run: bool,
+) -> Result<Vec<Target>> {
     let display = |name: &str| format!(r"HKCU\{subkey}\{name}");
     let io_err = |name: &str, e: io::Error| JtmError::io(display(name), e);
     let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
@@ -38,7 +46,15 @@ pub(crate) fn apply_at(subkey: &str, plan: &SetupPlan, dry_run: bool) -> Result<
         Err(e) => return Err(io_err("Path", e)),
     };
     let add: Vec<String> = plan.path.iter().map(|p| p.display().to_string()).collect();
-    let merged = merge_path(&path_text, &add);
+    let stale: Vec<String> = previous
+        .path
+        .iter()
+        .filter(|p| !plan.path.contains(p))
+        .map(|p| p.display().to_string())
+        .collect();
+    let pruned = prune_path(&path_text, &stale);
+    let base = pruned.as_deref().unwrap_or(&path_text);
+    let merged = merge_path(base, &add).or(pruned);
     if let Some(merged) = &merged
         && !dry_run
     {
@@ -54,6 +70,21 @@ pub(crate) fn apply_at(subkey: &str, plan: &SetupPlan, dry_run: bool) -> Result<
         let changed = current.as_deref() != Some(value.as_str());
         if changed && !dry_run {
             write(&key, name, value, REG_SZ).map_err(|e| io_err(name, e))?;
+        }
+        targets.push(Target {
+            path: display(name),
+            changed,
+        });
+    }
+
+    for (name, old) in &previous.vars {
+        if plan.vars.iter().any(|(n, _)| n == name) {
+            continue;
+        }
+        let current = key.get_raw_value(name).ok().map(|v| decode(&v.bytes));
+        let changed = current.as_deref() == Some(old.as_str());
+        if changed && !dry_run {
+            key.delete_value(name).map_err(|e| io_err(name, e))?;
         }
         targets.push(Target {
             path: display(name),
