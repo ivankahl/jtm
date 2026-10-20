@@ -1,5 +1,6 @@
 //! Model, spec parsing, resolution, config layering, pins, lockfile and orchestration for jtm.
 
+pub mod activate;
 pub mod config;
 pub mod context;
 pub mod dirs;
