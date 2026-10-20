@@ -7,6 +7,8 @@ pub mod error;
 pub mod indices;
 pub mod install;
 pub mod platform;
+pub mod plugins;
+pub mod session;
 pub mod spec;
 pub mod trust;
 

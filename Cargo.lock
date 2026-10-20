@@ -1006,13 +1006,16 @@ dependencies = [
  "assert_cmd",
  "clap",
  "insta",
+ "jtm-archive",
  "jtm-core",
  "jtm-security",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]

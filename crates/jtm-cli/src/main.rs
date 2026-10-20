@@ -3,6 +3,7 @@
 mod cli;
 mod logging;
 mod output;
+mod tools;
 mod trust;
 
 use std::ffi::OsString;
@@ -79,6 +80,54 @@ fn main() -> ExitCode {
         return JtmExitCode::Success.into();
     }
     match cli.command {
+        Some(Command::Install {
+            specs,
+            dry_run,
+            force,
+            latest,
+        }) => {
+            let options = jtm_core::session::InstallOptions {
+                force,
+                dry_run,
+                latest,
+            };
+            match tools::install(&ctx, &specs, options) {
+                Ok((outcome, code)) => {
+                    let _ = renderer.success(&outcome);
+                    code.into()
+                }
+                Err(err) => fail(&mut renderer, "install", &err),
+            }
+        }
+        Some(Command::Uninstall {
+            spec,
+            all_variants,
+            dry_run,
+        }) => render(
+            &mut renderer,
+            "uninstall",
+            tools::uninstall(&ctx, &spec, all_variants, dry_run),
+        ),
+        Some(Command::List { tool }) => {
+            render(&mut renderer, "list", tools::list(&ctx, tool.as_deref()))
+        }
+        Some(Command::Available {
+            tool,
+            variant,
+            alias,
+            all,
+        }) => {
+            let options = jtm_core::session::AvailableOptions {
+                variant,
+                alias,
+                all,
+            };
+            render(
+                &mut renderer,
+                "available",
+                tools::available(&ctx, &tool, &options),
+            )
+        }
         Some(Command::Trust(cmd)) => {
             let name = trust::command_name(&cmd);
             let _ = match trust::run(&ctx, cmd) {
@@ -94,6 +143,20 @@ fn main() -> ExitCode {
             "jtm",
             &JtmError::usage("no command given; see `jtm --help`"),
         ),
+    }
+}
+
+fn render<O: Write, E: Write, T: Serialize + Human>(
+    renderer: &mut Renderer<O, E>,
+    command: &str,
+    result: jtm_core::Result<Outcome<T>>,
+) -> ExitCode {
+    match result {
+        Ok(outcome) => {
+            let _ = renderer.success(&outcome);
+            JtmExitCode::Success.into()
+        }
+        Err(err) => fail(renderer, command, &err),
     }
 }
 

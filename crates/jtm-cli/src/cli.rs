@@ -26,6 +26,51 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Download, verify and extract versions. Never changes the default.
+    Install {
+        /// What to install, such as `java@temurin:21`, `maven@3.9.9` or `gradle`.
+        #[arg(required = true, value_name = "SPEC")]
+        specs: Vec<String>,
+        /// Show what would be installed without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Reinstall even when the version is already installed.
+        #[arg(long)]
+        force: bool,
+        /// Refresh the index first, so the newest versions are considered.
+        #[arg(long)]
+        latest: bool,
+    },
+    /// Remove an installed version and clear a current link that points at it.
+    Uninstall {
+        /// The version to remove, such as `java@temurin:21.0.5+11` or `maven@3.9.9`.
+        #[arg(value_name = "TOOL@VERSION")]
+        spec: String,
+        /// Remove the version from every variant, not only the default one.
+        #[arg(long)]
+        all_variants: bool,
+        /// Show what would be removed without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List installed versions.
+    List {
+        /// Only list this tool.
+        tool: Option<String>,
+    },
+    /// List versions the index offers for this platform.
+    Available {
+        tool: String,
+        /// Show this variant instead of the default one.
+        #[arg(long, conflicts_with = "all")]
+        variant: Option<String>,
+        /// Only show the version this alias resolves to.
+        #[arg(long)]
+        alias: Option<String>,
+        /// Show every variant.
+        #[arg(long)]
+        all: bool,
+    },
     /// Manage keys trusted to sign version indices.
     #[command(subcommand)]
     Trust(TrustCommand),
@@ -185,6 +230,30 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn install_takes_several_specs_and_flags() {
+        let cli =
+            Cli::try_parse_from(["jtm", "install", "a@1", "b", "--dry-run", "--force"]).unwrap();
+        match cli.command {
+            Some(Command::Install {
+                specs,
+                dry_run,
+                force,
+                latest,
+            }) => {
+                assert_eq!(specs, ["a@1", "b"]);
+                assert!(dry_run && force && !latest);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["jtm", "install"]).is_err());
+    }
+
+    #[test]
+    fn available_variant_conflicts_with_all() {
+        assert!(Cli::try_parse_from(["jtm", "available", "a", "--variant", "x", "--all"]).is_err());
     }
 
     #[test]
