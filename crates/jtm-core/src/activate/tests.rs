@@ -215,7 +215,7 @@ fn an_installed_match_is_preferred_and_the_highest_one_wins() {
 
 #[test]
 fn a_tool_environment_fills_home_and_bin_placeholders() {
-    let text = JAVA.replace("[env]\n", "[env]\nJDK_BIN = \"{bin}\"\n");
+    let text = JAVA.replace("[env]", "[env]\nJDK_BIN = \"{bin}\"");
     let manifest = jtm_plugin::Manifest::parse(&text).unwrap();
     let home = PathBuf::from("/data/tools/java/temurin-21");
     let env = tool_env(&manifest, &home);
@@ -251,6 +251,14 @@ mod plan {
                 path: vec![home.join("bin")],
             },
         }
+    }
+
+    /// The bin directory of a demo install, joined as `tool_env` joins it on this OS.
+    fn bin(version: &str) -> String {
+        PathBuf::from(format!("{TOOLS}/demo/default-{version}"))
+            .join("bin")
+            .display()
+            .to_string()
     }
 
     fn plan(env: &HashMap<String, String>, overrides: &[Override]) -> Vec<Change> {
@@ -302,7 +310,7 @@ mod plan {
         assert_eq!(env["DEMO_HOME"], "/data/tools/demo/default-1.0.0");
         assert_eq!(
             env["PATH"],
-            "/data/tools/demo/default-1.0.0/bin:/data/current/demo/bin:/usr/bin"
+            format!("{}:/data/current/demo/bin:/usr/bin", bin("1.0.0"))
         );
         assert_eq!(env["JTM_SESSION_DEMO"], "default:1.0.0");
         assert!(!env.contains_key("JTM_PROJECT_DEMO"));
@@ -318,7 +326,7 @@ mod plan {
         step(&mut env, &[over("demo", Layer::Project, "1.1.0")]);
         assert_eq!(
             env["PATH"],
-            "/data/tools/demo/default-1.1.0/bin:/data/current/demo/bin:/usr/bin"
+            format!("{}:/data/current/demo/bin:/usr/bin", bin("1.1.0"))
         );
         assert_eq!(env["DEMO_HOME"], "/data/tools/demo/default-1.1.0");
         assert_eq!(env["JTM_PROJECT_DEMO"], "default:1.1.0");

@@ -21,6 +21,15 @@ fn ready() -> (Fixture, tempfile::TempDir) {
     (f, tempfile::tempdir().unwrap())
 }
 
+/// The rc file `self setup` edits for bash: `.bash_profile` on macOS, `.bashrc` elsewhere.
+fn bash_rc(home: &Path) -> std::path::PathBuf {
+    home.join(if cfg!(target_os = "macos") {
+        ".bash_profile"
+    } else {
+        ".bashrc"
+    })
+}
+
 fn setup(f: &Fixture, home: &Path, shell: &str, args: &[&str]) -> (i32, Value) {
     let output = f
         .jtm()
@@ -51,14 +60,14 @@ fn setup_needs_yes_without_a_terminal_and_is_idempotent() {
             .unwrap()
             .contains("--yes")
     );
-    assert!(!home.path().join(".bashrc").exists());
+    assert!(!bash_rc(home.path()).exists());
 
     let (code, value) = setup(&f, home.path(), "/bin/bash", &["--dry-run"]);
     assert_eq!(code, 0, "{value}");
     assert_eq!(value["changed"], false);
-    assert!(!home.path().join(".bashrc").exists());
+    assert!(!bash_rc(home.path()).exists());
 
-    fs::write(home.path().join(".bashrc"), "alias ll='ls -l'\n").unwrap();
+    fs::write(bash_rc(home.path()), "alias ll='ls -l'\n").unwrap();
     let (code, value) = setup(&f, home.path(), "/bin/bash", &["--yes"]);
     assert_eq!(code, 0, "{value}");
     assert_eq!(value["changed"], true);
@@ -71,14 +80,14 @@ fn setup_needs_yes_without_a_terminal_and_is_idempotent() {
         value["data"]["vars"]["DEMO_HOME"],
         current.display().to_string()
     );
-    let rc = fs::read_to_string(home.path().join(".bashrc")).unwrap();
+    let rc = fs::read_to_string(bash_rc(home.path())).unwrap();
     assert!(rc.starts_with("alias ll='ls -l'\n"), "{rc}");
     assert_eq!(rc.matches("# >>> jtm >>>").count(), 1);
 
     let (code, again) = setup(&f, home.path(), "/bin/bash", &["--yes"]);
     assert_eq!(code, 0);
     assert_eq!(again["changed"], false);
-    assert_eq!(fs::read_to_string(home.path().join(".bashrc")).unwrap(), rc);
+    assert_eq!(fs::read_to_string(bash_rc(home.path())).unwrap(), rc);
 }
 
 /// Starts `shell` as a new interactive shell with only `home`'s rc files, and prints where
@@ -159,11 +168,11 @@ fn a_new_terminal_runs_the_default_in_bash_zsh_and_fish() {
 fn an_unreadable_rc_file_is_never_overwritten() {
     let (f, home) = ready();
     let original = b"# caf\xe9\nalias ll='ls -l'\n";
-    fs::write(home.path().join(".bashrc"), original).unwrap();
+    fs::write(bash_rc(home.path()), original).unwrap();
     let (code, value) = setup(&f, home.path(), "/bin/bash", &["--yes"]);
     assert_ne!(code, 0, "{value}");
     assert_eq!(value["error"]["code"], "E_IO");
-    assert_eq!(fs::read(home.path().join(".bashrc")).unwrap(), original);
+    assert_eq!(fs::read(bash_rc(home.path())).unwrap(), original);
 }
 
 #[test]
