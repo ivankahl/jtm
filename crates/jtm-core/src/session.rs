@@ -395,6 +395,10 @@ impl<'a> Session<'a> {
             };
             return Ok((item(status, &dest, &entry.url), warnings));
         }
+        let script = match plugin.manifest.hooks.post_extract {
+            Some(_) => plugin.script(self.platform)?,
+            None => None,
+        };
         let request = InstallRequest {
             manifest: &plugin.manifest,
             manifest_sha256: &plugin.sha256,
@@ -402,6 +406,7 @@ impl<'a> Session<'a> {
             platform: self.platform,
             index_sequence,
             force: options.force,
+            script: script.as_ref(),
         };
         let limits = jtm_archive::Limits {
             max_bytes: self.settings.extract.max_bytes,

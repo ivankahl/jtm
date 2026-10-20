@@ -22,8 +22,12 @@ struct Fixture {
 }
 
 fn manifest() -> Manifest {
+    Manifest::parse(&manifest_text("")).unwrap()
+}
+
+fn manifest_text(extra: &str) -> String {
     let key = TestKey::generate().public_str();
-    Manifest::parse(&format!(
+    format!(
         r#"
 schema = 1
 name = "demo"
@@ -39,9 +43,9 @@ bin_dirs = ["bin"]
 [executables]
 unix = ["demo"]
 windows = ["demo.cmd"]
+{extra}
 "#
-    ))
-    .unwrap()
+    )
 }
 
 fn good_archive() -> Vec<u8> {
@@ -90,6 +94,7 @@ impl Fixture {
             platform: PLATFORM,
             index_sequence: 7,
             force,
+            script: None,
         };
         install(
             &self.dirs,
@@ -136,6 +141,7 @@ fn installs_and_writes_a_receipt() {
         platform: PLATFORM,
         index_sequence: 7,
         force: false,
+        script: None,
     };
     let done = install(
         &f.dirs,
@@ -237,6 +243,116 @@ fn a_failed_install_leaves_no_install_dir_but_keeps_the_download() {
     assert!(!f.dest().exists());
     assert!(f.tmp_entries().is_empty());
     assert!(f.dirs.downloads().join(&entry.sha256).is_file());
+}
+
+/// A fixture whose manifest runs `body` as its `post_extract` hook, with a short time limit.
+fn hooked(body: &str) -> (Fixture, Script) {
+    let mut f = Fixture::new();
+    let text = manifest_text("[hooks]\npost_extract = \"post\"");
+    f.manifest = Manifest::parse(&text).unwrap();
+    let host = jtm_plugin::script::Host {
+        platform: PLATFORM.as_str().into(),
+        os: PLATFORM.os().as_str().into(),
+        arch: PLATFORM.arch().as_str().into(),
+    };
+    let script = Script::new(
+        "demo",
+        &format!("function post(ctx)\n{body}\nend"),
+        &text,
+        None,
+        host,
+    )
+    .unwrap()
+    .with_limits(jtm_plugin::script::Limits {
+        time: std::time::Duration::from_millis(200),
+        ..jtm_plugin::script::Limits::default()
+    });
+    (f, script)
+}
+
+impl Fixture {
+    fn install_with(&self, entry: &IndexEntry, script: &Script) -> Result<Installed> {
+        let request = InstallRequest {
+            manifest: &self.manifest,
+            manifest_sha256: "ab",
+            entry,
+            platform: PLATFORM,
+            index_sequence: 7,
+            force: false,
+            script: Some(script),
+        };
+        install(
+            &self.dirs,
+            &self.archives(),
+            &request,
+            &jtm_archive::Limits::default(),
+            &mut |_| {},
+        )
+    }
+}
+
+#[test]
+fn post_extract_runs_inside_the_install_dir_before_the_executable_check() {
+    let (f, script) = hooked(
+        r#"
+        assert(ctx.version == "1.0.0" and ctx.home == "")
+        jtm.fs.rename("bin/demo-real", "bin/demo")
+        jtm.fs.rename("bin/demo-real.cmd", "bin/demo.cmd")
+        jtm.fs.remove("README")
+        "#,
+    );
+    let entry = f.seed(&tar_gz(&[
+        exe("demo-1.0.0/bin/demo-real", b"#!/bin/sh"),
+        exe("demo-1.0.0/bin/demo-real.cmd", b"@echo off"),
+        file("demo-1.0.0/README", b"readme"),
+    ]));
+    let done = f.install_with(&entry, &script).unwrap();
+    assert_eq!(done.status, Status::Installed);
+    assert!(f.dest().join("bin/demo").is_file());
+    assert!(!f.dest().join("README").exists());
+    assert!(f.tmp_entries().is_empty());
+}
+
+#[test]
+fn a_post_extract_limit_breach_leaves_no_install_dir_but_keeps_the_download() {
+    let (f, script) = hooked("while true do end");
+    let entry = f.seed(&good_archive());
+    let err = f.install_with(&entry, &script).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_SCRIPT_LIMIT");
+    assert!(!f.dest().exists());
+    assert!(f.tmp_entries().is_empty());
+    assert!(f.dirs.downloads().join(&entry.sha256).is_file());
+}
+
+#[test]
+fn post_extract_cannot_touch_files_outside_the_install_dir() {
+    let (f, script) = hooked("jtm.fs.remove('../../../../outside')");
+    let outside = f.dirs.tools_tmp().join("../../outside");
+    fs::create_dir_all(f.dirs.tools_tmp()).unwrap();
+    fs::write(&outside, "keep").unwrap();
+    let entry = f.seed(&good_archive());
+    let err = f.install_with(&entry, &script).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_SCRIPT_LIMIT");
+    assert!(outside.is_file());
+    assert!(!f.dest().exists());
+}
+
+#[test]
+fn a_failing_post_extract_hook_is_an_invalid_plugin() {
+    let (f, script) = hooked("error('broken')");
+    let entry = f.seed(&good_archive());
+    let err = f.install_with(&entry, &script).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    assert!(!f.dest().exists());
+}
+
+#[test]
+fn a_post_extract_hook_without_its_script_is_refused() {
+    let (f, _script) = hooked("");
+    let entry = f.seed(&good_archive());
+    let err = f.install(&entry, false).unwrap_err();
+    assert_eq!(err.code(), "E_INTERNAL");
+    assert!(!f.dest().exists());
 }
 
 #[test]

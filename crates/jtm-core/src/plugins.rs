@@ -7,19 +7,24 @@
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 
 use jtm_plugin::Manifest;
+use jtm_plugin::script::{Host, Script};
 
 use crate::dirs::{Dirs, dir_name};
 use crate::error::{JtmError, Result};
 use crate::indices::ManifestOrigin;
+use crate::platform::Platform;
 
 /// A manifest compiled into jtm.
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinManifest {
     pub name: &'static str,
     pub text: &'static str,
+    /// The plugin's `plugin.lua`, if it has one.
+    pub script: Option<&'static str>,
 }
 
 /// The first-party manifests compiled into this build.
@@ -35,6 +40,40 @@ pub struct Plugin {
     pub origin: ManifestOrigin,
     /// Where the manifest was read: `builtin` or a file path.
     pub location: String,
+    /// The manifest text, which hooks see as `jtm.manifest`.
+    pub text: String,
+    /// The `plugin.lua` source, when the plugin has one.
+    // SPEC-QUESTION: section 7 records only the manifest hash, so a changed `plugin.lua` at
+    // the same plugin revision is not detected. The revision pins both files until T9.3
+    // decides whether the script hash is recorded too.
+    pub script: Option<String>,
+}
+
+/// The largest `plugin.lua` jtm reads.
+const MAX_SCRIPT_BYTES: u64 = 1024 * 1024;
+
+impl Plugin {
+    /// The plugin's `plugin.lua` prepared to run hooks on `platform`, if it has one.
+    pub fn script(&self, platform: Platform) -> Result<Option<Script>> {
+        let Some(source) = &self.script else {
+            return Ok(None);
+        };
+        let host = Host {
+            platform: platform.as_str().to_owned(),
+            os: platform.os().as_str().to_owned(),
+            arch: platform.arch().as_str().to_owned(),
+        };
+        let name = &self.manifest.name;
+        Script::new(
+            name,
+            source,
+            &self.text,
+            self.manifest.versions.scheme.builtin(),
+            host,
+        )
+        .map(Some)
+        .map_err(|e| JtmError::script(name, e))
+    }
 }
 
 /// Plugin manifests for one jtm installation.
@@ -50,6 +89,7 @@ impl Registry<'_> {
         if let Some(found) = self.builtin.iter().find(|b| b.name == name) {
             return parse(
                 found.text.as_bytes(),
+                found.script.map(str::to_owned),
                 ManifestOrigin::Builtin,
                 "builtin",
                 name,
@@ -63,8 +103,10 @@ impl Registry<'_> {
             [dir] => {
                 let path = dir.join("plugin.toml");
                 let bytes = fs::read(&path).map_err(|e| JtmError::io(&path, e))?;
+                let script = read_script(&dir.join("plugin.lua"))?;
                 parse(
                     &bytes,
+                    script,
                     ManifestOrigin::External,
                     &path.display().to_string(),
                     name,
@@ -125,7 +167,36 @@ impl Registry<'_> {
     }
 }
 
-fn parse(bytes: &[u8], origin: ManifestOrigin, location: &str, name: &str) -> Result<Plugin> {
+/// The script at `path`, if there is one.
+fn read_script(path: &Path) -> Result<Option<String>> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(JtmError::io(path, e)),
+    };
+    let mut text = String::new();
+    let read = io::Read::take(file, MAX_SCRIPT_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| JtmError::io(path, e))?;
+    if read as u64 > MAX_SCRIPT_BYTES {
+        return Err(JtmError::io(
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("plugin.lua is larger than {MAX_SCRIPT_BYTES} bytes"),
+            ),
+        ));
+    }
+    Ok(Some(text))
+}
+
+fn parse(
+    bytes: &[u8],
+    script: Option<String>,
+    origin: ManifestOrigin,
+    location: &str,
+    name: &str,
+) -> Result<Plugin> {
     let invalid = |message: String| JtmError::InvalidManifest {
         origin: location.to_owned(),
         error: jtm_plugin::ManifestError {
@@ -147,12 +218,35 @@ fn parse(bytes: &[u8], origin: ManifestOrigin, location: &str, name: &str) -> Re
             manifest.name
         )));
     }
+    if script.is_none()
+        && let Some(hook) = first_hook(&manifest)
+    {
+        return Err(invalid(format!(
+            "names the hook `{hook}`, but the plugin has no plugin.lua"
+        )));
+    }
     Ok(Plugin {
         manifest,
         sha256: jtm_security::sha256_hex(bytes),
         origin,
         location: location.to_owned(),
+        text: text.to_owned(),
+        script,
     })
+}
+
+/// The first `[hooks]` entry the manifest sets, by its key.
+fn first_hook(manifest: &Manifest) -> Option<&'static str> {
+    let hooks = &manifest.hooks;
+    [
+        ("resolve_alias", &hooks.resolve_alias),
+        ("parse_interop", &hooks.parse_interop),
+        ("format_interop", &hooks.format_interop),
+        ("compare_versions", &hooks.compare_versions),
+        ("post_extract", &hooks.post_extract),
+    ]
+    .into_iter()
+    .find_map(|(key, value)| value.is_some().then_some(key))
 }
 
 #[cfg(test)]

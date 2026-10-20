@@ -56,7 +56,11 @@ fn builtin_manifests_win_and_are_preapproved() {
     let (_home, dirs) = dirs();
     add(&dirs, "demo@abc", &manifest("demo"));
     let text: &'static str = Box::leak(manifest("demo").into_boxed_str());
-    let builtin = [BuiltinManifest { name: "demo", text }];
+    let builtin = [BuiltinManifest {
+        name: "demo",
+        text,
+        script: None,
+    }];
     let registry = Registry {
         dirs: &dirs,
         builtin: &builtin,
@@ -104,4 +108,56 @@ fn several_revisions_are_refused() {
         builtin: &[],
     };
     assert_eq!(registry.find("demo").unwrap_err().code(), "E_USAGE");
+}
+
+#[test]
+fn external_plugins_read_their_script() {
+    let (_home, dirs) = dirs();
+    let text = format!(
+        "{}[hooks]\npost_extract = \"post\"\n",
+        manifest("acme/widget")
+    );
+    add(&dirs, "acme--widget@abc123", &text);
+    let registry = Registry {
+        dirs: &dirs,
+        builtin: &[],
+    };
+    let err = registry.find("acme/widget").unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    assert!(err.to_string().contains("plugin.lua"), "{err}");
+
+    let source = "function post() end";
+    fs::write(
+        dirs.plugins().join("acme--widget@abc123/plugin.lua"),
+        source,
+    )
+    .unwrap();
+    let plugin = registry.find("acme/widget").unwrap();
+    assert_eq!(plugin.script.as_deref(), Some(source));
+    assert!(
+        plugin
+            .script(crate::platform::Platform::LinuxX64)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn a_script_that_does_not_compile_is_an_invalid_plugin() {
+    let (_home, dirs) = dirs();
+    add(&dirs, "acme--widget@abc123", &manifest("acme/widget"));
+    fs::write(
+        dirs.plugins().join("acme--widget@abc123/plugin.lua"),
+        "function (",
+    )
+    .unwrap();
+    let registry = Registry {
+        dirs: &dirs,
+        builtin: &[],
+    };
+    let plugin = registry.find("acme/widget").unwrap();
+    let err = plugin
+        .script(crate::platform::Platform::LinuxX64)
+        .unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
 }
