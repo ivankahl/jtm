@@ -76,7 +76,7 @@ pub(crate) fn render(shell: Shell, changes: &[Change], separator: char) -> Resul
             }
             (Shell::Fish, Change::Unset { name }) => format!("set -e {name}"),
             (Shell::Pwsh, Change::Set { name, value }) => {
-                format!("$env:{name} = '{}'", value.replace('\'', "''"))
+                format!("$env:{name} = {}", pwsh_quote(value))
             }
             (Shell::Pwsh, Change::Unset { name }) => {
                 format!("Remove-Item -Path Env:{name} -ErrorAction SilentlyContinue")
@@ -120,8 +120,9 @@ jtm() {{
   fi
 }}
 _jtm_hook() {{
-  local __jtm_out
+  local __jtm_status=$? __jtm_out
   __jtm_out="$(command {exe} hook-env --shell {name})" && eval "$__jtm_out"
+  return $__jtm_status
 }}
 {hook}
 _jtm_hook
@@ -158,27 +159,36 @@ _jtm_hook
             )
         }
         Shell::Pwsh => {
-            let exe = exe.replace('\'', "''");
+            let exe = pwsh_quote(exe);
             format!(
                 r#"# jtm shell integration for PowerShell. Add to $PROFILE:
 #   Invoke-Expression ((& jtm shell-init pwsh) -join "`n")
 function global:jtm {{
     if ($args.Count -ge 1 -and $args[0] -eq 'use' -and -not ($args -contains '--json') -and -not ($args -contains '--help') -and -not ($args -contains '-h')) {{
         $rest = @($args | Select-Object -Skip 1)
-        $out = & '{exe}' use --shell pwsh @rest
+        $out = & {exe} use --shell pwsh @rest
         if ($LASTEXITCODE -ne 0) {{ return }}
         if ($out) {{ Invoke-Expression ($out -join "`n") }}
     }} else {{
-        & '{exe}' @args
+        & {exe} @args
     }}
 }}
 function global:_jtm_hook {{
-    $out = & '{exe}' hook-env --shell pwsh
+    $out = & {exe} hook-env --shell pwsh
     if ($LASTEXITCODE -eq 0 -and $out) {{ Invoke-Expression ($out -join "`n") }}
 }}
 if (-not $global:__jtm_prompt) {{
     $global:__jtm_prompt = $function:prompt
-    function global:prompt {{ _jtm_hook; & $global:__jtm_prompt }}
+    function global:prompt {{
+        # Keep the last command's status for the original prompt: the hook runs a native
+        # command, which resets $LASTEXITCODE and $?.
+        $__jtm_ok = $?
+        $__jtm_code = $global:LASTEXITCODE
+        _jtm_hook
+        $global:LASTEXITCODE = $__jtm_code
+        if (-not $__jtm_ok) {{ Write-Error -Message '' -ErrorAction Ignore }}
+        & $global:__jtm_prompt
+    }}
 }}
 _jtm_hook
 "#
@@ -196,6 +206,21 @@ _jtm_hook
 /// Single-quotes `text` for bash and zsh.
 pub(crate) fn posix_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// Single-quotes `text` for PowerShell. PowerShell ends a single-quoted string at any of
+/// `'`, U+2018, U+2019, U+201A and U+201B, and reads each doubled as one literal character.
+pub(crate) fn pwsh_quote(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('\'');
+    for c in text.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
 }
 
 /// Single-quotes `text` for fish, where `\` and `'` are escaped inside single quotes.

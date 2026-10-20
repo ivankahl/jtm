@@ -63,3 +63,14 @@ fn shell_names_parse() {
     assert_eq!(Shell::parse("powershell").unwrap(), Shell::Pwsh);
     assert_eq!(Shell::parse("tcsh").unwrap_err().code(), "E_USAGE");
 }
+
+#[test]
+fn pwsh_quotes_every_single_quote_character() {
+    assert_eq!(pwsh_quote("plain"), "'plain'");
+    assert_eq!(
+        pwsh_quote("Bob\u{2019}s 'x' \u{2018}\u{201A}\u{201B}"),
+        "'Bob\u{2019}\u{2019}s ''x'' \u{2018}\u{2018}\u{201A}\u{201A}\u{201B}\u{201B}'"
+    );
+    let text = render(Shell::Pwsh, &[set("PATH", "C:\\Bob\u{2019}s Tools")], ';').unwrap();
+    assert_eq!(text, "$env:PATH = 'C:\\Bob\u{2019}\u{2019}s Tools'\n");
+}

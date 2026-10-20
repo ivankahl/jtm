@@ -20,6 +20,15 @@ function global:_jtm_hook {
 }
 if (-not $global:__jtm_prompt) {
     $global:__jtm_prompt = $function:prompt
-    function global:prompt { _jtm_hook; & $global:__jtm_prompt }
+    function global:prompt {
+        # Keep the last command's status for the original prompt: the hook runs a native
+        # command, which resets $LASTEXITCODE and $?.
+        $__jtm_ok = $?
+        $__jtm_code = $global:LASTEXITCODE
+        _jtm_hook
+        $global:LASTEXITCODE = $__jtm_code
+        if (-not $__jtm_ok) { Write-Error -Message '' -ErrorAction Ignore }
+        & $global:__jtm_prompt
+    }
 }
 _jtm_hook

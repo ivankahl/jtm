@@ -18,8 +18,9 @@ jtm() {
   fi
 }
 _jtm_hook() {
-  local __jtm_out
+  local __jtm_status=$? __jtm_out
   __jtm_out="$(command '/opt/jtm'\''s/bin/jtm' hook-env --shell bash)" && eval "$__jtm_out"
+  return $__jtm_status
 }
 case ";${PROMPT_COMMAND-};" in
   *";_jtm_hook;"*) ;;
