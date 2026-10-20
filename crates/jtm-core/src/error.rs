@@ -656,6 +656,52 @@ impl From<jtm_security::Error> for JtmError {
     }
 }
 
+impl From<jtm_fetch::Error> for JtmError {
+    fn from(err: jtm_fetch::Error) -> Self {
+        use jtm_fetch::Error as F;
+        match err {
+            F::Scheme { url, reason } => {
+                JtmError::usage(format!("refusing to fetch {url}: {reason}"))
+            }
+            F::Network {
+                url,
+                message,
+                source,
+                ..
+            } => JtmError::Network {
+                url,
+                message,
+                source,
+            },
+            F::Status { url, status } => JtmError::Network {
+                message: format!("the server answered HTTP {status}"),
+                url,
+                source: None,
+            },
+            F::TooLarge { url, limit } => JtmError::SizeExceeded { what: url, limit },
+            F::HashMismatch {
+                url,
+                expected,
+                actual,
+            } => JtmError::HashMismatch {
+                url,
+                expected,
+                actual,
+            },
+            F::Io { path, source } if source.kind() == std::io::ErrorKind::PermissionDenied => {
+                JtmError::Permission {
+                    path,
+                    source: Some(source),
+                }
+            }
+            F::Io { path, source } => {
+                JtmError::internal(format!("cannot access {}: {source}", path.display()))
+            }
+            other => JtmError::internal(other.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -940,6 +986,40 @@ mod tests {
             source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
         });
         assert_eq!(denied.code(), "E_PERMISSION");
+    }
+
+    #[test]
+    fn fetch_errors_map_to_stable_codes() {
+        use jtm_fetch::Error as F;
+        let code = |err: F| JtmError::from(err).code();
+        assert_eq!(
+            code(F::Scheme {
+                url: "http://a".into(),
+                reason: "no".into()
+            }),
+            "E_USAGE"
+        );
+        assert_eq!(
+            code(F::Status {
+                url: "https://a".into(),
+                status: 503
+            }),
+            "E_NETWORK"
+        );
+        assert_eq!(
+            code(F::TooLarge {
+                url: "https://a".into(),
+                limit: 1
+            }),
+            "E_SIZE_EXCEEDED"
+        );
+        let mismatch = JtmError::from(F::HashMismatch {
+            url: "https://a".into(),
+            expected: "aa".into(),
+            actual: "bb".into(),
+        });
+        assert_eq!(mismatch.code(), "E_HASH_MISMATCH");
+        assert_eq!(mismatch.details()["url"], "https://a");
     }
 
     #[test]

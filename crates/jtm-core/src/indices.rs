@@ -75,6 +75,14 @@ pub trait Fetcher {
     fn fetch(&self, url: &str) -> Result<Option<Vec<u8>>>;
 }
 
+impl Fetcher for jtm_fetch::Client {
+    fn fetch(&self, url: &str) -> Result<Option<Vec<u8>>> {
+        // Index files are the largest thing fetched this way; keys files and signatures are
+        // checked against their own, smaller limits after verification starts.
+        Ok(self.get_bytes(url, jtm_security::index::MAX_INDEX_FILE as u64)?)
+    }
+}
+
 /// A signed index compiled into the binary.
 #[derive(Debug, Clone, Copy)]
 pub struct EmbeddedIndex {

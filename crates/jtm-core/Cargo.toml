@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+jtm-fetch.workspace = true
 jtm-plugin.workspace = true
 jtm-security.workspace = true
 toml.workspace = true
