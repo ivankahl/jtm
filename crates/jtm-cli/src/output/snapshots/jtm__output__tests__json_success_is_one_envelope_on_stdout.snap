@@ -1,5 +1,5 @@
 ---
-source: crates/jtm-cli/src/output.rs
+source: crates/jtm-cli/src/output/tests.rs
 expression: value
 ---
 {
