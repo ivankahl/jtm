@@ -1,5 +1,5 @@
 ---
-source: crates/jtm-core/src/error.rs
+source: crates/jtm-core/src/error/tests.rs
 expression: table
 ---
 E_USAGE                  exit=2 retryable=false
