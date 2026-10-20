@@ -46,6 +46,8 @@ pub(crate) fn default(
     let (item, changed, found) = with_install_prompt(ctx, &spec, options, |options| {
         session.set_default(&spec, options, &mut |_| {})
     })?;
+    // Keep the user environment `jtm self setup` set up in step with the defaults.
+    crate::setup::refresh(&session)?;
     Ok(Outcome {
         command: "default",
         changed,

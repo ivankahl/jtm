@@ -1,0 +1,8 @@
+---
+source: crates/jtm-cli/src/setup/tests.rs
+expression: "rc_block(Path::new(\"/home/o'neil/jtm/env.sh\"), false)"
+---
+# >>> jtm >>>
+# Added by `jtm self setup`: puts default tool versions on PATH.
+[ -f '/home/o'\''neil/jtm/env.sh' ] && . '/home/o'\''neil/jtm/env.sh'
+# <<< jtm <<<

@@ -194,12 +194,12 @@ _jtm_hook
 }
 
 /// Single-quotes `text` for bash and zsh.
-fn posix_quote(text: &str) -> String {
+pub(crate) fn posix_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// Single-quotes `text` for fish, where `\` and `'` are escaped inside single quotes.
-fn fish_quote(text: &str) -> String {
+pub(crate) fn fish_quote(text: &str) -> String {
     format!("'{}'", text.replace('\\', r"\\").replace('\'', r"\'"))
 }
 

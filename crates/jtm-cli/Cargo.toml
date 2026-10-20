@@ -34,3 +34,7 @@ toml.workspace = true
 
 [lints]
 workspace = true
+
+[target."cfg(windows)".dependencies]
+windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+winreg.workspace = true

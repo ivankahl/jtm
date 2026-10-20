@@ -181,9 +181,23 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SHELL")]
         shell: String,
     },
+    /// Manage jtm itself.
+    #[command(subcommand, name = "self")]
+    SelfCmd(SelfCommand),
     /// Manage keys trusted to sign version indices.
     #[command(subcommand)]
     Trust(TrustCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SelfCommand {
+    /// Put the default versions on the user PATH and set their variables, without admin
+    /// rights. Edits your shell's rc file on Unix after confirmation or with --yes.
+    Setup {
+        /// Show what would change without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
