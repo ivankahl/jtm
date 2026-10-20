@@ -171,6 +171,18 @@ fn download_part(
             .map_err(io_err)?;
         offset = copied;
     }
+    if offset == artifact.size {
+        // Every byte arrived before an earlier run stopped. Asking for the bytes after the
+        // end would get HTTP 416, so verify what is here, or start over.
+        if hex(&hasher.clone().finalize()) == artifact.sha256 {
+            progress(offset, artifact.size);
+            return Ok(artifact.url.to_owned());
+        }
+        file.set_len(0).map_err(io_err)?;
+        file.seek(SeekFrom::Start(0)).map_err(io_err)?;
+        hasher = Sha256::new();
+        offset = 0;
+    }
 
     let mut response = client.open(artifact.url, offset)?;
     if !response.resumed && offset > 0 {

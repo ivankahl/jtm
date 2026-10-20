@@ -5,15 +5,19 @@
 //! and never after an `https` hop: a redirect from `https` to `http` is always refused, and at
 //! most [`MAX_REDIRECTS`] redirects are followed. Transport security is defence in depth only;
 //! everything fetched is verified by signature or hash afterwards.
+//!
+//! Proxies come from `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` (and their lowercase forms)
+//! unless [`ClientOptions::proxy`] names one (SPEC.md section 13).
 
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::Once;
 use std::time::Duration;
 
 use reqwest::StatusCode;
 use reqwest::blocking::Response as HttpResponse;
 use reqwest::header::{CONTENT_RANGE, RANGE};
-use reqwest::redirect;
+use reqwest::{Certificate, NoProxy, Proxy, redirect};
 
 use crate::error::{Error, Result};
 
@@ -69,6 +73,11 @@ pub struct ClientOptions {
     /// The longest wait for the next bytes of a response. There is no limit on the whole
     /// transfer, since archives can be hundreds of megabytes.
     pub read_timeout: Duration,
+    /// An explicit proxy for every request, as `network.proxy` sets it. It replaces the proxy
+    /// variables; `NO_PROXY` still applies. `None` uses the environment.
+    pub proxy: Option<String>,
+    /// A PEM bundle trusted in addition to the OS store, as `network.extra_ca_file` sets it.
+    pub extra_ca_file: Option<PathBuf>,
 }
 
 impl ClientOptions {
@@ -80,6 +89,8 @@ impl ClientOptions {
             retry: RetryPolicy::default(),
             connect_timeout: Duration::from_secs(30),
             read_timeout: Duration::from_secs(60),
+            proxy: None,
+            extra_ca_file: None,
         }
     }
 }
@@ -132,7 +143,30 @@ impl Client {
                 Err(reason) => attempt.error(reason),
             }
         });
-        let http = reqwest::blocking::Client::builder()
+        let mut builder = reqwest::blocking::Client::builder();
+        if let Some(proxy) = &options.proxy {
+            // The URL may hold credentials, so it stays out of the message.
+            let proxy = Proxy::all(proxy.as_str())
+                .map_err(|e| start_error("`network.proxy` is not a valid proxy URL", e))?;
+            builder = builder.proxy(proxy.no_proxy(NoProxy::from_env()));
+        }
+        if let Some(path) = &options.extra_ca_file {
+            let pem = std::fs::read(path).map_err(|e| Error::io(path, e))?;
+            let certs = Certificate::from_pem_bundle(&pem)
+                .ok()
+                .filter(|certs| !certs.is_empty())
+                .ok_or_else(|| {
+                    Error::io(
+                        path,
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "holds no PEM certificates",
+                        ),
+                    )
+                })?;
+            builder = builder.tls_certs_merge(certs);
+        }
+        let http = builder
             .user_agent(options.user_agent.clone())
             .redirect(policy)
             .https_only(!allow_http)
@@ -141,12 +175,7 @@ impl Client {
             // the body, not to the whole transfer.
             .timeout(options.read_timeout)
             .build()
-            .map_err(|e| Error::Network {
-                url: String::new(),
-                message: format!("cannot start the HTTP client: {e}"),
-                transient: false,
-                source: Some(Box::new(e)),
-            })?;
+            .map_err(|e| start_error("cannot start the HTTP client", e))?;
         Ok(Client { http, options })
     }
 
@@ -224,6 +253,16 @@ impl Client {
             resumed,
             inner: response,
         })
+    }
+}
+
+/// A failure to build the client, which retrying cannot fix.
+fn start_error(message: &str, err: reqwest::Error) -> Error {
+    Error::Network {
+        url: String::new(),
+        message: format!("{message}: {err}"),
+        transient: false,
+        source: Some(Box::new(err)),
     }
 }
 

@@ -586,7 +586,6 @@ impl JtmError {
         }
     }
 
-    /// Shorthand for [`JtmError::Internal`].
     /// A failed file operation on `path`: `E_PERMISSION` when access was denied, otherwise
     /// `E_IO`.
     pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
@@ -601,6 +600,7 @@ impl JtmError {
         }
     }
 
+    /// Shorthand for [`JtmError::Internal`].
     pub fn internal(message: impl Into<String>) -> Self {
         JtmError::Internal {
             message: message.into(),

@@ -2,10 +2,11 @@
 
 use std::cell::Cell;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read};
 use std::path::Path;
 use std::rc::Rc;
 
+use crate::counting::Counting;
 use crate::entry::Sink;
 use crate::error::{Error, Result};
 
@@ -38,35 +39,11 @@ pub(crate) fn mode_kind(mode: u32) -> ModeKind {
     }
 }
 
-/// Counts the bytes read through it, so an entry's ratio uses the compressed bytes actually
-/// consumed rather than the size the archive claims.
-struct Counting<R> {
-    inner: R,
-    count: Rc<Cell<u64>>,
-}
-
-impl<R: Read> Read for Counting<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        self.count.set(self.count.get() + n as u64);
-        Ok(n)
-    }
-}
-
-impl<R: Seek> Seek for Counting<R> {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        self.inner.seek(pos)
-    }
-}
-
 pub(crate) fn read(archive: &Path, sink: &mut Sink<'_>) -> Result<()> {
     let file = File::open(archive).map_err(|e| Error::io(archive, e))?;
     let consumed = Rc::new(Cell::new(0u64));
-    let mut zip = zip::ZipArchive::new(Counting {
-        inner: BufReader::new(file),
-        count: Rc::clone(&consumed),
-    })
-    .map_err(malformed)?;
+    let mut zip =
+        zip::ZipArchive::new(Counting::new(BufReader::new(file), &consumed)).map_err(malformed)?;
     let limits = sink.limits();
     if zip.len() as u64 > limits.max_entries {
         return Err(Error::unsafe_entry(

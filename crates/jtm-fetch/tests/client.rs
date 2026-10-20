@@ -5,7 +5,7 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{Mock, client, flaky_server, options};
-use jtm_fetch::{Client, Error, MAX_REDIRECTS};
+use jtm_fetch::{Client, ClientOptions, Error, MAX_REDIRECTS};
 use wiremock::matchers::{header_exists, method, path};
 use wiremock::{Mock as Route, ResponseTemplate};
 
@@ -192,4 +192,70 @@ fn refuses_a_redirect_to_another_scheme() {
         "{err:?}"
     );
     assert_eq!(mock.requests().len(), 1);
+}
+
+#[test]
+fn an_explicit_proxy_carries_every_request() {
+    // The proxy is a mock server; the requested host does not exist, so only a request sent
+    // through the proxy can be answered.
+    let proxy = Mock::start();
+    proxy.mount(
+        Route::given(method("GET"))
+            .and(path("/a.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"proxied".to_vec())),
+    );
+    let client = Client::new(ClientOptions {
+        proxy: Some(proxy.server.uri()),
+        ..options(true)
+    })
+    .unwrap();
+    let body = client
+        .get_bytes("http://jtm-proxy-test.invalid/a.json", 1024)
+        .unwrap();
+    assert_eq!(body.as_deref(), Some(&b"proxied"[..]));
+    let requests = proxy.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].headers.get("host").unwrap(),
+        "jtm-proxy-test.invalid"
+    );
+}
+
+#[test]
+fn an_invalid_proxy_is_refused() {
+    let err = Client::new(ClientOptions {
+        proxy: Some("http://user:s3cret@[bad".to_owned()),
+        ..options(false)
+    })
+    .unwrap_err();
+    assert!(!err.to_string().contains("s3cret"), "{err}");
+}
+
+#[test]
+fn an_extra_ca_file_is_loaded() {
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extra-ca.pem");
+    Client::new(ClientOptions {
+        extra_ca_file: Some(fixture),
+        ..options(false)
+    })
+    .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.pem");
+    let err = Client::new(ClientOptions {
+        extra_ca_file: Some(missing),
+        ..options(false)
+    })
+    .unwrap_err();
+    assert!(matches!(err, Error::Io { .. }), "{err:?}");
+
+    let empty = dir.path().join("empty.pem");
+    std::fs::write(&empty, b"not a certificate").unwrap();
+    let err = Client::new(ClientOptions {
+        extra_ca_file: Some(empty),
+        ..options(false)
+    })
+    .unwrap_err();
+    assert!(matches!(err, Error::Io { .. }), "{err:?}");
 }

@@ -92,8 +92,10 @@ pub struct Available {
     pub tool: String,
     pub platform: String,
     pub versions: Vec<AvailableItem>,
-    /// Each alias and the version it resolves to in the default variant.
+    /// Each alias and the version it resolves to in `alias_variant`.
     pub aliases: BTreeMap<String, String>,
+    /// The variant `aliases` resolve in: the one asked for, or the default.
+    pub alias_variant: String,
 }
 
 /// Options for [`Session::install`].
@@ -131,6 +133,16 @@ pub struct Planned {
     warnings: Vec<Warning>,
 }
 
+/// The HTTP client options `settings` ask for.
+fn client_options(settings: &Settings) -> ClientOptions {
+    ClientOptions {
+        allow_http: settings.security.allow_http_mirrors,
+        proxy: settings.network.proxy.clone(),
+        extra_ca_file: settings.network.extra_ca_file.clone(),
+        ..ClientOptions::new(env!("CARGO_PKG_VERSION"))
+    }
+}
+
 /// The outcome of installing one spec, and the warnings met on the way.
 pub type InstallResult = Result<(InstallItem, Vec<Warning>)>;
 
@@ -158,10 +170,7 @@ impl<'a> Session<'a> {
         let client = if ctx.offline {
             None
         } else {
-            Some(Client::new(ClientOptions {
-                allow_http: settings.security.allow_http_mirrors,
-                ..ClientOptions::new(env!("CARGO_PKG_VERSION"))
-            })?)
+            Some(Client::new(client_options(&settings))?)
         };
         Ok(Session {
             ctx,
@@ -545,6 +554,7 @@ impl<'a> Session<'a> {
                 platform: self.platform.as_str().to_owned(),
                 versions,
                 aliases,
+                alias_variant: variant,
             },
             index.warnings,
         ))
@@ -710,4 +720,31 @@ fn read_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
         .collect();
     dirs.sort();
     Ok(dirs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_settings_reach_the_http_client() {
+        let mut settings = Config::load(&ConfigInputs {
+            user: None,
+            project: None,
+            env: &|_| None,
+            flags: &[],
+        })
+        .unwrap()
+        .settings;
+        settings.security.allow_http_mirrors = true;
+        settings.network.proxy = Some("http://proxy.example:8080".to_owned());
+        settings.network.extra_ca_file = Some(PathBuf::from("/etc/corp-ca.pem"));
+        let options = client_options(&settings);
+        assert!(options.allow_http);
+        assert_eq!(options.proxy.as_deref(), Some("http://proxy.example:8080"));
+        assert_eq!(
+            options.extra_ca_file.as_deref(),
+            Some(Path::new("/etc/corp-ca.pem"))
+        );
+    }
 }

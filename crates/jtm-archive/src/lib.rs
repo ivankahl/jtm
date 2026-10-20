@@ -7,9 +7,12 @@
 //!
 //! Links are created last. Each link's target is resolved through the archive's own links, so
 //! a chain of individually harmless links cannot point outside the destination, and no entry
-//! may be written through a link. On Windows, links are materialised as copies so no privilege
+//! may be written through a link. Names are matched without regard to case, as macOS and
+//! Windows match them, and each link created is checked again against where the file system
+//! itself resolves it. On Windows, links are materialised as copies so no privilege
 //! is needed.
 
+mod counting;
 mod entry;
 mod error;
 mod name;

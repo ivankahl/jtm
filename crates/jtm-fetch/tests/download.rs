@@ -6,7 +6,7 @@ use std::fs;
 
 use common::{Mock, client, sha256, unsized_server};
 use jtm_fetch::{Artifact, DownloadCache, Error, Origin};
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{header, header_exists, method, path};
 use wiremock::{Mock as Route, ResponseTemplate};
 
 fn body() -> Vec<u8> {
@@ -293,4 +293,66 @@ fn an_interrupted_transfer_resumes_where_it_stopped() {
         .unwrap();
     assert_eq!(fs::read(got.path).unwrap(), data);
     assert_eq!(*ranges.lock().unwrap(), [None, Some("50000".to_owned())]);
+}
+
+/// Serves `data` in full, and 416 to any range request, as a server does when asked for the
+/// bytes after the end of the file.
+fn serve_refusing_ranges(mock: &Mock, data: Vec<u8>) {
+    mock.mount(
+        Route::given(method("GET"))
+            .and(header_exists("range"))
+            .respond_with(ResponseTemplate::new(416))
+            .with_priority(1),
+    );
+    serve(mock, data);
+}
+
+#[test]
+fn a_complete_partial_file_is_verified_without_a_request() {
+    let mock = Mock::start();
+    let data = body();
+    serve_refusing_ranges(&mock, data.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let digest = sha256(&data);
+    let part = dir.path().join(format!("{digest}.part"));
+    fs::write(&part, &data).unwrap();
+    let url = mock.url("/a.zip");
+    let artifact = Artifact {
+        url: &url,
+        sha256: &digest,
+        size: data.len() as u64,
+    };
+    let got = DownloadCache::new(dir.path())
+        .fetch(&client(), &artifact, &mut noop())
+        .unwrap();
+    assert_eq!(fs::read(got.path).unwrap(), data);
+    assert!(!part.exists());
+    assert!(mock.requests().is_empty());
+}
+
+#[test]
+fn a_full_size_corrupt_partial_file_starts_over() {
+    let mock = Mock::start();
+    let data = body();
+    serve_refusing_ranges(&mock, data.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let digest = sha256(&data);
+    fs::write(
+        dir.path().join(format!("{digest}.part")),
+        vec![0u8; data.len()],
+    )
+    .unwrap();
+    let url = mock.url("/a.zip");
+    let artifact = Artifact {
+        url: &url,
+        sha256: &digest,
+        size: data.len() as u64,
+    };
+    let got = DownloadCache::new(dir.path())
+        .fetch(&client(), &artifact, &mut noop())
+        .unwrap();
+    assert_eq!(fs::read(got.path).unwrap(), data);
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].headers.get("range").is_none());
 }

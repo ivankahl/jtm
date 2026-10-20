@@ -9,22 +9,9 @@ use std::rc::Rc;
 use flate2::read::GzDecoder;
 use tar::EntryType;
 
+use crate::counting::Counting;
 use crate::entry::Sink;
 use crate::error::{Error, Result};
-
-/// Counts the bytes read through it.
-struct Counting<R> {
-    inner: R,
-    count: Rc<Cell<u64>>,
-}
-
-impl<R: Read> Read for Counting<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        self.count.set(self.count.get() + n as u64);
-        Ok(n)
-    }
-}
 
 /// The compression around the tar stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,10 +28,7 @@ pub(crate) fn read(archive: &Path, codec: Codec, sink: &mut Sink<'_>) -> Result<
     let file = File::open(archive).map_err(|e| Error::io(archive, e))?;
     let compressed = Rc::new(Cell::new(0u64));
     let expanded = Rc::new(Cell::new(0u64));
-    let input = Counting {
-        inner: BufReader::new(file),
-        count: Rc::clone(&compressed),
-    };
+    let input = Counting::new(BufReader::new(file), &compressed);
     let decoder: Box<dyn Read> = match codec {
         Codec::Gzip => Box::new(GzDecoder::new(input)),
         Codec::Xz => Box::new(lzma_rust2::XzReader::new_mem_limit(
@@ -53,10 +37,7 @@ pub(crate) fn read(archive: &Path, codec: Codec, sink: &mut Sink<'_>) -> Result<
             XZ_MEMORY_LIMIT_KIB,
         )),
     };
-    let mut tar = tar::Archive::new(Counting {
-        inner: decoder,
-        count: Rc::clone(&expanded),
-    });
+    let mut tar = tar::Archive::new(Counting::new(decoder, &expanded));
     let limits = sink.limits();
     // A gzip or xz stream does not say how many compressed bytes belong to each entry, so the
     // ratio applies to the stream as a whole once it has produced `ratio_floor` bytes. A bomb
@@ -75,6 +56,11 @@ pub(crate) fn read(archive: &Path, codec: Codec, sink: &mut Sink<'_>) -> Result<
         sink.count_entry(&display)?;
         let kind = entry.header().entry_type();
         match kind {
+            // A pax global header holds metadata for the whole archive, such as the commit
+            // `git archive` was made from, and no file.
+            EntryType::XGlobalHeader => {}
+            // Pre-POSIX tars mark a directory with a regular-file type and a trailing slash.
+            EntryType::Regular if raw.ends_with(b"/") => sink.dir(&raw)?,
             EntryType::Regular | EntryType::Continuous => {
                 let mode = entry.header().mode().ok();
                 sink.file(&raw, mode, &mut entry, &ratio)?;

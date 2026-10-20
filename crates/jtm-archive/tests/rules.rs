@@ -447,3 +447,67 @@ fn tar_xz_follows_the_same_rules() {
         "expands more than",
     );
 }
+
+#[test]
+fn links_are_resolved_as_a_case_insensitive_filesystem_would() {
+    // On default macOS APFS, `up` opens the link `Up`. Without folding case, `b` looks as if
+    // it stays at `jdk/sub`; the OS goes `jdk/sub/Up` -> `jdk` twice and then climbs past
+    // the root.
+    for (format, bytes) in both(&[
+        dir("jdk/sub/"),
+        symlink("jdk/sub/Up", ".."),
+        symlink("jdk/b", "sub/up/sub/up/../../.."),
+        file("other", b"x"),
+    ]) {
+        let s = Scratch::new();
+        assert_unsafe(s.extract(&bytes, format, &Options::default()), "outside");
+    }
+}
+
+#[test]
+fn entries_that_differ_from_a_link_only_in_case_are_refused() {
+    for entries in [
+        vec![symlink("Up", "."), file("up/evil", b"x")],
+        vec![symlink("Up", "."), symlink("up/x", "y")],
+        vec![file("lib", b"x"), symlink("LIB", "lib")],
+    ] {
+        for (format, bytes) in both(&entries) {
+            let s = Scratch::new();
+            assert!(
+                matches!(
+                    s.extract(&bytes, format, &Options::default()),
+                    Err(Error::Unsafe { .. })
+                ),
+                "{format:?} {entries:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pax_global_headers_are_skipped() {
+    let s = Scratch::new();
+    let bytes = tar_gz(&[
+        E::Special("pax_global_header".into(), EntryType::XGlobalHeader),
+        file("tool-1.0/bin/x", b"x"),
+    ]);
+    let summary = s
+        .extract(&bytes, Format::TarGz, &Options::default())
+        .unwrap();
+    assert_eq!(summary.files, 1);
+    assert!(!s.dest().join("pax_global_header").exists());
+}
+
+#[test]
+fn old_style_tar_directories_are_directories() {
+    // Pre-POSIX tars mark a directory with a regular-file type and a trailing slash.
+    let s = Scratch::new();
+    let bytes = tar_gz(&[
+        E::Special("tool-1.0/".into(), EntryType::Regular),
+        file("tool-1.0/bin/x", b"x"),
+    ]);
+    s.extract(&bytes, Format::TarGz, &Options::default())
+        .unwrap();
+    assert!(s.dest().join("tool-1.0").is_dir());
+    assert_eq!(fs::read(s.dest().join("tool-1.0/bin/x")).unwrap(), b"x");
+}

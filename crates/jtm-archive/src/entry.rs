@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::name::{self, Step};
-use crate::{LinkMode, Options, Summary};
+use crate::{Limits, LinkMode, Options, Summary};
 
 /// How many links one lookup may pass through, as on Linux.
 const MAX_LINK_DEPTH: usize = 40;
@@ -48,7 +48,11 @@ pub(crate) struct Sink<'o> {
     entries: u64,
     written: BTreeMap<Vec<String>, Node>,
     symlinks: BTreeMap<Vec<String>, Symlink>,
+    /// Each symlink's path folded by [`fold`], to the path as the archive spells it.
+    folded_links: BTreeMap<Vec<String>, Vec<String>>,
     hardlinks: BTreeMap<Vec<String>, HardLink>,
+    /// Reused for every file, so a large archive does not allocate a buffer per entry.
+    buf: Vec<u8>,
 }
 
 impl<'o> Sink<'o> {
@@ -68,11 +72,13 @@ impl<'o> Sink<'o> {
             entries: 0,
             written: BTreeMap::new(),
             symlinks: BTreeMap::new(),
+            folded_links: BTreeMap::new(),
             hardlinks: BTreeMap::new(),
+            buf: vec![0u8; CHUNK],
         })
     }
 
-    pub(crate) fn limits(&self) -> crate::Limits {
+    pub(crate) fn limits(&self) -> Limits {
         self.options.limits
     }
 
@@ -137,7 +143,11 @@ impl<'o> Sink<'o> {
                     let path = self.path(&parts[..end]);
                     match fs::create_dir(&path) {
                         Ok(()) => {}
-                        Err(e) if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
+                        // Not `is_dir`, which follows links: on a case-insensitive file system
+                        // `lib` may already exist as the link `LIB`.
+                        Err(e)
+                            if e.kind() == io::ErrorKind::AlreadyExists
+                                && fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) => {}
                         Err(e) => return Err(Error::io(&path, e)),
                     }
                     self.written.insert(parts[..end].to_vec(), Node::Dir);
@@ -160,9 +170,6 @@ impl<'o> Sink<'o> {
         let Some(parts) = self.place(raw)? else {
             return Ok(());
         };
-        if parts.is_empty() {
-            return Err(Error::unsafe_entry(display, "a file has no name"));
-        }
         if self.written.get(&parts) == Some(&Node::Dir) {
             return Err(Error::unsafe_entry(
                 display,
@@ -179,9 +186,8 @@ impl<'o> Sink<'o> {
             .map_err(|e| Error::io(&path, e))?;
 
         let mut written = 0u64;
-        let mut buf = vec![0u8; CHUNK];
         loop {
-            let n = match reader.read(&mut buf) {
+            let n = match reader.read(&mut self.buf) {
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -192,11 +198,12 @@ impl<'o> Sink<'o> {
                 }
             };
             written += n as u64;
-            self.add_bytes(&display, n as u64)?;
+            add_bytes(&mut self.summary, &self.options.limits, &display, n as u64)?;
             if let Some(reason) = ratio(written) {
                 return Err(Error::unsafe_entry(display, reason));
             }
-            out.write_all(&buf[..n]).map_err(|e| Error::io(&path, e))?;
+            out.write_all(&self.buf[..n])
+                .map_err(|e| Error::io(&path, e))?;
         }
         drop(out);
         set_mode(&path, mode)?;
@@ -205,28 +212,11 @@ impl<'o> Sink<'o> {
         Ok(())
     }
 
-    fn add_bytes(&mut self, display: &str, n: u64) -> Result<()> {
-        self.summary.bytes += n;
-        if self.summary.bytes > self.options.limits.max_bytes {
-            return Err(Error::unsafe_entry(
-                display,
-                format!(
-                    "the archive expands to more than {} bytes",
-                    self.options.limits.max_bytes
-                ),
-            ));
-        }
-        Ok(())
-    }
-
     pub(crate) fn symlink(&mut self, raw: &[u8], target: &[u8]) -> Result<()> {
         let display = String::from_utf8_lossy(raw).into_owned();
         let Some(parts) = self.place(raw)? else {
             return Ok(());
         };
-        if parts.is_empty() {
-            return Err(Error::unsafe_entry(display, "a link has no name"));
-        }
         let steps = name::link_steps(target).map_err(|r| Error::unsafe_entry(&display, r))?;
         let target = String::from_utf8_lossy(target).into_owned();
         self.symlinks.insert(
@@ -246,14 +236,11 @@ impl<'o> Sink<'o> {
         let Some(parts) = self.place(raw)? else {
             return Ok(());
         };
-        let target = match self.place(target)? {
-            Some(target) if !parts.is_empty() && !target.is_empty() => target,
-            _ => {
-                return Err(Error::unsafe_entry(
-                    display,
-                    "a hard link must name a file inside the archive",
-                ));
-            }
+        let Some(target) = self.place(target)? else {
+            return Err(Error::unsafe_entry(
+                display,
+                "a hard link must name a file inside the archive",
+            ));
         };
         self.hardlinks.insert(parts, HardLink { display, target });
         Ok(())
@@ -261,6 +248,7 @@ impl<'o> Sink<'o> {
 
     /// Creates the links, once every file and directory is in place.
     pub(crate) fn finish(mut self) -> Result<Summary> {
+        self.fold_links()?;
         self.check_nothing_inside_links()?;
 
         let hardlinks = std::mem::take(&mut self.hardlinks);
@@ -288,8 +276,14 @@ impl<'o> Sink<'o> {
 
         let top = self.single_top_level();
         let mut resolved = Vec::new();
+        let others: BTreeSet<Vec<String>> = self
+            .written
+            .keys()
+            .chain(hardlinks.keys())
+            .map(|p| fold(p))
+            .collect();
         for (parts, link) in &self.symlinks {
-            if self.written.contains_key(parts) {
+            if others.contains(&fold(parts)) {
                 return Err(Error::unsafe_entry(
                     &link.display,
                     "is both a link and another entry",
@@ -310,12 +304,14 @@ impl<'o> Sink<'o> {
             }
             resolved.push((parts.clone(), target));
         }
+        let mut created_links = Vec::new();
         for (parts, target) in resolved {
             let display = self.symlinks[&parts].display.clone();
             self.make_dirs(&display, &parts[..parts.len() - 1])?;
             let created = match self.options.links {
                 LinkMode::Symlink if cfg!(unix) => {
                     self.create_symlink(&parts)?;
+                    created_links.push(parts.clone());
                     true
                 }
                 _ => self.copy_logical(&display, &target, &self.path(&parts), 0)?,
@@ -327,7 +323,55 @@ impl<'o> Sink<'o> {
                 tracing::warn!(link, "skipping a link whose target is not in the archive");
             }
         }
+        self.check_links_on_disk(&created_links, top.as_deref())?;
         Ok(self.summary)
+    }
+
+    /// Indexes the symlinks by their folded paths, refusing two that differ only in case.
+    fn fold_links(&mut self) -> Result<()> {
+        for (parts, link) in &self.symlinks {
+            if let Some(other) = self.folded_links.insert(fold(parts), parts.clone()) {
+                return Err(Error::unsafe_entry(
+                    &link.display,
+                    format!("differs only in case from the link `{}`", other.join("/")),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The symlink at `parts`, matched as a case-insensitive file system such as macOS APFS
+    /// or Windows NTFS would match it.
+    fn link_at(&self, parts: &[String]) -> Option<&Symlink> {
+        self.folded_links
+            .get(&fold(parts))
+            .and_then(|exact| self.symlinks.get(exact))
+    }
+
+    /// Asks the file system where each created link leads, since it, not this crate's model
+    /// of it, decides how names match. A link that resolves must stay inside the destination,
+    /// and inside `top` when there is a single top-level directory. A dangling link resolves
+    /// nowhere and was already checked against the archive.
+    fn check_links_on_disk(&self, links: &[Vec<String>], top: Option<&str>) -> Result<()> {
+        let inside = match top {
+            Some(top) => self.root.join(top),
+            None => self.root.clone(),
+        };
+        for parts in links {
+            let path = self.path(parts);
+            let real = match fs::canonicalize(&path) {
+                Ok(real) => real,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(Error::io(&path, e)),
+            };
+            if !real.starts_with(&inside) {
+                return Err(Error::unsafe_entry(
+                    &self.symlinks[parts].display,
+                    "links outside the archive on this file system",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// The first component every entry shares, when the archive holds a single top-level
@@ -362,10 +406,10 @@ impl<'o> Sink<'o> {
             .chain(self.hardlinks.iter().map(|(p, l)| (p, l.display.clone())));
         for (parts, display) in paths {
             for end in 1..parts.len() {
-                if self.symlinks.contains_key(&parts[..end]) {
+                if let Some(link) = self.link_at(&parts[..end]) {
                     return Err(Error::unsafe_entry(
                         display,
-                        format!("is inside the link `{}`", parts[..end].join("/")),
+                        format!("is inside the link `{}`", link.display),
                     ));
                 }
             }
@@ -391,7 +435,7 @@ impl<'o> Sink<'o> {
                 }
                 Step::Name(name) => {
                     current.push(name.clone());
-                    if let Some(link) = self.symlinks.get(&current) {
+                    if let Some(link) = self.link_at(&current) {
                         if depth >= MAX_LINK_DEPTH {
                             return Err("has too many levels of links".to_owned());
                         }
@@ -479,7 +523,7 @@ impl<'o> Sink<'o> {
         for child in children {
             let mut path = source.to_vec();
             path.push(child.clone());
-            let target = match self.symlinks.get(&path) {
+            let target = match self.link_at(&path) {
                 Some(link) => {
                     let steps = link.steps.clone();
                     self.resolve(source.to_vec(), &steps, 0)
@@ -494,7 +538,7 @@ impl<'o> Sink<'o> {
 
     fn copy_file(&mut self, display: &str, from: &Path, to: &Path) -> Result<()> {
         let len = fs::metadata(from).map_err(|e| Error::io(from, e))?.len();
-        self.add_bytes(display, len)?;
+        add_bytes(&mut self.summary, &self.options.limits, display, len)?;
         let mut input = File::open(from).map_err(|e| Error::io(from, e))?;
         let mut output = File::create(to).map_err(|e| Error::io(to, e))?;
         io::copy(&mut input, &mut output).map_err(|e| Error::io(to, e))?;
@@ -502,6 +546,28 @@ impl<'o> Sink<'o> {
         let mode = file_mode(from);
         set_mode(to, mode)
     }
+}
+
+/// Counts `n` more bytes written, against the total size limit.
+fn add_bytes(summary: &mut Summary, limits: &Limits, display: &str, n: u64) -> Result<()> {
+    summary.bytes += n;
+    if summary.bytes > limits.max_bytes {
+        return Err(Error::unsafe_entry(
+            display,
+            format!(
+                "the archive expands to more than {} bytes",
+                limits.max_bytes
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// `parts` with each name lowercased, so names that a case-insensitive file system treats as
+/// one compare equal. Links are resolved on folded names everywhere, so an archive is judged
+/// the same on every platform.
+fn fold(parts: &[String]) -> Vec<String> {
+    parts.iter().map(|p| p.to_lowercase()).collect()
 }
 
 /// Keeps the executable bits of `mode` and drops setuid, setgid, sticky and write access for

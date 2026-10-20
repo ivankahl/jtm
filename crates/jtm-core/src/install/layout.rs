@@ -75,7 +75,7 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
             let sub =
                 relative(sub).ok_or_else(|| mismatch(format!("`{sub}` is not a relative path")))?;
             let dir = root.join(&sub);
-            if !inside(&root, &dir)? {
+            if !inside(&root, &dir)? || !dir.is_dir() {
                 return Err(mismatch(format!(
                     "home `{}` is not a directory inside the archive",
                     sub.display()
@@ -236,6 +236,14 @@ windows = ["demo.cmd"]
     fn a_missing_home_subdir_is_a_layout_mismatch() {
         let l = layout("bin_dirs = [\"bin\"]\nhome_subdir = { macos = \"Contents/Home\" }");
         let dir = tree(&["jdk/bin/demo"]);
+        let err = apply("demo", dir.path(), &l, Os::Macos).unwrap_err();
+        assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    }
+
+    #[test]
+    fn a_home_subdir_that_is_a_file_is_a_layout_mismatch() {
+        let l = layout("bin_dirs = [\"bin\"]\nhome_subdir = { macos = \"Contents/Info.plist\" }");
+        let dir = tree(&["jdk/Contents/Info.plist", "jdk/Contents/Home/bin/demo"]);
         let err = apply("demo", dir.path(), &l, Os::Macos).unwrap_err();
         assert_eq!(err.code(), "E_PLUGIN_INVALID");
     }
