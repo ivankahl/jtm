@@ -24,7 +24,7 @@ pub(crate) struct Failure {
 }
 
 impl Failure {
-    fn new(spec: String, err: &JtmError) -> Failure {
+    pub(crate) fn new(spec: String, err: &JtmError) -> Failure {
         Failure {
             spec,
             code: err.code(),
@@ -39,6 +39,16 @@ impl Failure {
 pub(crate) struct InstallFailure {
     pub(crate) error: JtmError,
     pub(crate) failed: Vec<Failure>,
+}
+
+impl Failure {
+    pub(crate) fn render_human(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(
+            out,
+            "failed {}: [{}] {}",
+            self.spec, self.code, self.message
+        )
+    }
 }
 
 impl From<JtmError> for InstallFailure {
@@ -87,11 +97,7 @@ impl Human for InstallData {
             }
         }
         for failure in &self.failed {
-            writeln!(
-                out,
-                "failed {}: [{}] {}",
-                failure.spec, failure.code, failure.message
-            )?;
+            failure.render_human(out)?;
         }
         Ok(())
     }

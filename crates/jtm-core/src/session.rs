@@ -160,10 +160,10 @@ pub struct AvailableOptions {
 /// A spec resolved against a verified index, ready to install.
 #[derive(Debug, Clone)]
 pub struct Planned {
-    plugin: Plugin,
-    entry: IndexEntry,
-    index_sequence: u64,
-    warnings: Vec<Warning>,
+    pub(crate) plugin: Plugin,
+    pub(crate) entry: IndexEntry,
+    pub(crate) index_sequence: u64,
+    pub(crate) warnings: Vec<Warning>,
 }
 
 /// The HTTP client options `settings` ask for.
@@ -222,6 +222,11 @@ impl<'a> Session<'a> {
             Some(Client::new(client_options(&self.settings))?)
         };
         Ok(self.client.get_or_init(|| client).as_ref())
+    }
+
+    /// Whether `jtm.lock` is honoured: false under `--no-lock`.
+    pub fn uses_lockfile(&self) -> bool {
+        self.ctx.use_lockfile
     }
 
     /// The platform jtm runs on.

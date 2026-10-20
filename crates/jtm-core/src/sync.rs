@@ -3,7 +3,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use jtm_security::{IndexEntry, Warning};
+use jtm_security::{ArchiveKind, IndexEntry, Warning};
 use serde::Serialize;
 
 use crate::error::{JtmError, Result};
@@ -12,7 +12,7 @@ use crate::pins::{ProjectPins, discover};
 use crate::platform::Platform;
 use crate::plugins::Plugin;
 use crate::project::{PROJECT_FILE, ProjectFile};
-use crate::session::{Session, pin_warnings};
+use crate::session::{InstallOptions, InstallResult, Planned, Session, pin_warnings};
 use crate::spec::{Selector, ToolSpec};
 
 /// Which locked tools `jtm lock --upgrade` re-resolves.
@@ -288,6 +288,251 @@ impl Session<'_> {
             .entries
             .into_iter()
             .find(|e| e.variant == variant && e.version == version))
+    }
+}
+
+/// Warning code for a locked version the index no longer lists; it installs from the locked
+/// URL and hash.
+pub const W_LOCK_NOT_IN_INDEX: &str = "W_LOCK_NOT_IN_INDEX";
+/// Warning code for a wrapper file declaring a different SHA-256 for the same archive.
+pub const W_WRAPPER_HASH_MISMATCH: &str = "W_WRAPPER_HASH_MISMATCH";
+
+/// Options for [`Session::sync`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SyncOptions {
+    pub dry_run: bool,
+    /// Fail with `E_LOCK_OUTDATED` instead of changing `jtm.lock`.
+    pub frozen: bool,
+}
+
+/// The outcome of [`Session::sync`].
+#[derive(Debug)]
+pub struct SyncReport {
+    /// The lockfile, unless `--no-lock`.
+    pub file: Option<PathBuf>,
+    pub lock: Vec<LockItem>,
+    /// Whether `jtm.lock` changed, or with a dry run would change.
+    pub lock_differs: bool,
+    pub results: Vec<(String, InstallResult)>,
+    pub warnings: Vec<Warning>,
+}
+
+impl Session<'_> {
+    /// Installs what the project around `start` pins (SPEC.md section 11). The locked version
+    /// wins while its pin is unchanged; every locked artifact for this platform is checked
+    /// against the signed index before anything is installed, and a hash disagreement is
+    /// `E_LOCK_INDEX_MISMATCH`. With `--no-lock` the pins are resolved afresh and `jtm.lock`
+    /// is neither read nor written.
+    pub fn sync(&self, start: &Path, options: SyncOptions) -> Result<SyncReport> {
+        let install = InstallOptions {
+            dry_run: options.dry_run,
+            ..InstallOptions::default()
+        };
+        if !self.uses_lockfile() {
+            let plugins = self.plugins()?;
+            let root = project_root(start, &plugins)?;
+            let pins = discover(&root, &plugins)?;
+            let mut results = Vec::new();
+            for (tool, pin) in &pins.pins {
+                let spec = ToolSpec {
+                    tool: tool.clone(),
+                    selector: Some(pin.selector.clone()),
+                };
+                let result = self
+                    .plan(&spec, install)
+                    .and_then(|planned| self.execute(planned, install, &mut |_| {}));
+                results.push((tool.clone(), result));
+            }
+            return Ok(SyncReport {
+                file: None,
+                lock: Vec::new(),
+                lock_differs: false,
+                results,
+                warnings: pin_warnings(&pins),
+            });
+        }
+
+        let report = self.lock(
+            start,
+            &LockOptions {
+                dry_run: true,
+                ..LockOptions::default()
+            },
+        )?;
+        if options.frozen && report.differs {
+            let changes: Vec<String> = report
+                .tools
+                .iter()
+                .filter(|t| t.status != LockStatus::Kept)
+                .map(|t| {
+                    let status = match t.status {
+                        LockStatus::Added => "would be added",
+                        LockStatus::Removed => "would be removed",
+                        _ => "would change",
+                    };
+                    format!("`{}` {status}", t.tool)
+                })
+                .collect();
+            let detail = if changes.is_empty() {
+                "it would be rewritten".to_owned()
+            } else {
+                changes.join(", ")
+            };
+            return Err(JtmError::LockOutdated {
+                message: format!("{detail}; run `jtm lock` and commit {LOCK_FILE}"),
+            });
+        }
+
+        let mut warnings = report.warnings.clone();
+        let mut planned = Vec::new();
+        let mut results = Vec::new();
+        let host = self.platform();
+        for locked in &report.lockfile.tools {
+            let plugin = self.plugin(&locked.name)?;
+            let Some(artifact) = locked.artifact(host.as_str()) else {
+                results.push((
+                    locked.name.clone(),
+                    Err(JtmError::PlatformUnsupported {
+                        tool: format!("{}@{}:{}", locked.name, locked.variant, locked.version),
+                        platform: host.as_str().to_owned(),
+                    }),
+                ));
+                continue;
+            };
+            let (entry, index_sequence) =
+                self.locked_entry(&plugin, locked, artifact, &mut warnings)?;
+            if let Some(pin) = report.pins.pins.get(&locked.name)
+                && let Some(wrapper) = &pin.wrapper
+                && let Some(declared) = &wrapper.sha256
+                && entry.url.rsplit('/').next() == Some(wrapper.file_name.as_str())
+                && !declared.eq_ignore_ascii_case(&entry.sha256)
+            {
+                warnings.push(Warning {
+                    code: W_WRAPPER_HASH_MISMATCH,
+                    message: format!(
+                        "{} declares sha256 {declared} for {}, but the signed index has {}; \
+                         jtm installs the signed one",
+                        pin.file.display(),
+                        wrapper.file_name,
+                        entry.sha256
+                    ),
+                });
+            }
+            planned.push(Planned {
+                plugin,
+                entry,
+                index_sequence,
+                warnings: Vec::new(),
+            });
+        }
+
+        if report.differs && !options.dry_run {
+            report.lockfile.write(&report.root)?;
+        }
+        for plan in planned {
+            let tool = plan.plugin.manifest.name.clone();
+            results.push((tool, self.execute(plan, install, &mut |_| {})));
+        }
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(SyncReport {
+            file: Some(report.file),
+            lock: report.tools,
+            lock_differs: report.differs,
+            results,
+            warnings,
+        })
+    }
+
+    /// The entry to install for a locked artifact: the signed index's entry when it lists the
+    /// version, which must agree with the lock, or else the lock's own URL and hash.
+    fn locked_entry(
+        &self,
+        plugin: &Plugin,
+        locked: &LockedTool,
+        artifact: &LockedArtifact,
+        warnings: &mut Vec<Warning>,
+    ) -> Result<(IndexEntry, u64)> {
+        let host = self.platform();
+        let index = match self.index(plugin, host, false) {
+            Ok(index) => Some(index),
+            Err(JtmError::PlatformUnsupported { .. } | JtmError::Offline { .. }) => None,
+            Err(err) => return Err(err),
+        };
+        let found = index.as_ref().and_then(|index| {
+            index
+                .index
+                .entries
+                .iter()
+                .find(|e| e.variant == locked.variant && e.version == locked.version)
+                .map(|e| (e.clone(), index.index.sequence))
+        });
+        match found {
+            Some((entry, sequence)) => {
+                if !entry.sha256.eq_ignore_ascii_case(&artifact.sha256)
+                    || entry.size != artifact.size
+                {
+                    return Err(JtmError::LockIndexMismatch {
+                        tool: locked.name.clone(),
+                        message: format!(
+                            "{}:{} for {} is locked as sha256 {} ({} bytes), but the signed \
+                             index has sha256 {} ({} bytes)",
+                            locked.variant,
+                            locked.version,
+                            host,
+                            artifact.sha256,
+                            artifact.size,
+                            entry.sha256,
+                            entry.size
+                        ),
+                    });
+                }
+                Ok((entry, sequence))
+            }
+            None => {
+                warnings.push(Warning {
+                    code: W_LOCK_NOT_IN_INDEX,
+                    message: format!(
+                        "{}@{}:{} is not in the index; installing it from the locked URL and \
+                         hash",
+                        locked.name, locked.variant, locked.version
+                    ),
+                });
+                let archive =
+                    archive_kind(&artifact.url).ok_or_else(|| JtmError::LockOutdated {
+                        message: format!(
+                            "the archive type of {} cannot be told from its name",
+                            artifact.url
+                        ),
+                    })?;
+                Ok((
+                    IndexEntry {
+                        variant: locked.variant.clone(),
+                        version: locked.version.clone(),
+                        tags: Vec::new(),
+                        url: artifact.url.clone(),
+                        archive,
+                        size: artifact.size,
+                        sha256: artifact.sha256.clone(),
+                        provenance: Vec::new(),
+                    },
+                    0,
+                ))
+            }
+        }
+    }
+}
+
+/// The archive type a URL's file name implies.
+fn archive_kind(url: &str) -> Option<ArchiveKind> {
+    let name = url.rsplit('/').next()?.to_ascii_lowercase();
+    if name.ends_with(".zip") {
+        Some(ArchiveKind::Zip)
+    } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        Some(ArchiveKind::TarGz)
+    } else if name.ends_with(".tar.xz") || name.ends_with(".txz") {
+        Some(ArchiveKind::TarXz)
+    } else {
+        None
     }
 }
 

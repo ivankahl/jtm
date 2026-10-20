@@ -154,6 +154,15 @@ pub(crate) enum Command {
         #[arg(last = true, required = true, value_name = "COMMAND")]
         command: Vec<String>,
     },
+    /// Install everything the project's pins need and update jtm.lock.
+    Sync {
+        /// Show what would be installed and locked without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Fail instead of changing jtm.lock. For CI.
+        #[arg(long)]
+        frozen: bool,
+    },
     /// Resolve the project's pins and write jtm.lock without installing.
     Lock {
         /// Lock only this platform, such as `linux-x64`. Repeatable.

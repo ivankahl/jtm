@@ -217,6 +217,16 @@ fn main() -> ExitCode {
             }
             Err(err) => fail(&mut renderer, "exec", &err),
         },
+        Some(Command::Sync { dry_run, frozen }) => match sync::sync(&ctx, dry_run, frozen) {
+            Ok((outcome, code)) => {
+                let _ = renderer.success(&outcome);
+                code.into()
+            }
+            Err(failure) => {
+                let _ = renderer.failure_with("sync", &failure.error, failure.details());
+                failure.error.exit_code().into()
+            }
+        },
         Some(Command::Lock {
             platform,
             upgrade,
