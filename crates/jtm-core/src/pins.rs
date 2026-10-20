@@ -135,172 +135,200 @@ pub fn discover_within(
             .cmp(&parser_rank(b.interop.parser))
             .then_with(|| a.interop.file.cmp(&b.interop.file))
     });
-    let default_variant = |tool: &str| {
-        plugins
-            .iter()
-            .find(|p| p.manifest.name == tool)
-            .map(|p| p.manifest.default_variant().to_owned())
-            .unwrap_or_default()
-    };
-
-    let dirs: Vec<&Path> = match top {
-        Some(top) => {
-            let mut dirs = Vec::new();
-            for dir in start.ancestors() {
-                dirs.push(dir);
-                if dir == top {
-                    break;
-                }
-            }
-            dirs
-        }
-        None => start.ancestors().collect(),
-    };
+    let (wrappers, files): (Vec<Source<'_>>, Vec<Source<'_>>) = sources
+        .into_iter()
+        .partition(|s| s.interop.parser == InteropParser::Wrapper);
+    let dirs = search_dirs(start, top);
 
     let mut found = ProjectPins::default();
     let mut seen_project_file = false;
     for &dir in &dirs {
-        // Every pin this directory sets, per tool, in read order.
-        let mut here: BTreeMap<String, Vec<(PathBuf, Selector, PinKind)>> = BTreeMap::new();
+        let mut here = Candidates::new();
         if let Some(file) = ProjectFile::read(dir)? {
-            found.files.push(file.path().to_path_buf());
-            for (tool, selector) in file.tools() {
-                if found.pins.contains_key(&tool) {
-                    continue;
-                }
-                if !plugins.iter().any(|p| p.manifest.name == tool) {
-                    if seen_project_file {
-                        found.ignored.push(format!(
-                            "{} pins `{tool}`, which no plugin provides, so it is ignored",
-                            file.path().display()
-                        ));
-                        continue;
-                    }
-                    return Err(JtmError::PinToolUnknown {
-                        tool,
-                        file: file.path().to_path_buf(),
-                    });
-                }
-                here.entry(tool).or_default().push((
-                    file.path().to_path_buf(),
-                    selector,
-                    PinKind::Native,
-                ));
-            }
+            native_pins(&file, plugins, seen_project_file, &mut found, &mut here)?;
             seen_project_file = true;
         }
-        let mut texts: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
-        for source in sources
-            .iter()
-            .filter(|s| s.interop.parser != InteropParser::Wrapper)
-        {
-            let tool = &source.plugin.manifest.name;
-            // A nearer directory already decided this tool.
-            if found.pins.contains_key(tool) {
-                continue;
-            }
-            let path = dir.join(&source.interop.file);
-            let text = match texts.get(&path) {
-                Some(text) => text.clone(),
-                None => {
-                    let text = read_optional(&path)?;
-                    if text.is_some() {
-                        found.files.push(path.clone());
-                    }
-                    texts.insert(path.clone(), text.clone());
-                    text
-                }
-            };
-            let Some(text) = text else { continue };
-            let value = interop::read(&source.plugin.manifest, source.interop, &text)
-                .map_err(|e| interop_error(tool, &path, &e))?;
-            if let Some(value) = value {
-                let selector = Selector {
-                    variant: value.variant,
-                    value: value.value,
-                };
-                here.entry(tool.clone())
-                    .or_default()
-                    .push((path, selector, PinKind::Interop));
-            }
-        }
-        for (tool, values) in here {
-            if found.pins.contains_key(&tool) {
-                continue;
-            }
-            let default = default_variant(&tool);
-            let full =
-                |s: &Selector| format!("{}:{}", s.variant.as_deref().unwrap_or(&default), s.value);
-            let mut values = values.into_iter();
-            let Some((file, selector, kind)) = values.next() else {
-                continue;
-            };
-            let winner = full(&selector);
-            let others: Vec<PinValue> = values
-                .filter(|(_, s, _)| full(s) != winner)
-                .map(|(file, s, _)| PinValue {
-                    file,
-                    value: full(&s),
-                })
-                .collect();
-            if !others.is_empty() {
-                found.conflicts.push(Conflict {
-                    tool: tool.clone(),
-                    winner: PinValue {
-                        file: file.clone(),
-                        value: winner,
-                    },
-                    others,
-                });
-            }
-            found.pins.insert(
-                tool.clone(),
-                Pin {
-                    tool,
-                    selector,
-                    file,
-                    kind,
-                    wrapper: None,
-                },
-            );
+        interop_pins(dir, &files, &mut found, &mut here)?;
+        settle(here, plugins, &mut found);
+    }
+    for source in &wrappers {
+        wrapper_pin(source, &dirs, &mut found)?;
+    }
+    Ok(found)
+}
+
+/// Every pin one directory sets, per tool, in read order.
+type Candidates = BTreeMap<String, Vec<(PathBuf, Selector, PinKind)>>;
+
+/// The directories to read, nearest first: `start` and its ancestors up to `top`.
+fn search_dirs<'a>(start: &'a Path, top: Option<&Path>) -> Vec<&'a Path> {
+    let mut dirs = Vec::new();
+    for dir in start.ancestors() {
+        dirs.push(dir);
+        if Some(dir) == top {
+            break;
         }
     }
+    dirs
+}
 
-    for source in sources
-        .iter()
-        .filter(|s| s.interop.parser == InteropParser::Wrapper)
-    {
+/// Adds the `[tools]` of `file` to `here`, for tools no nearer directory decided. An unknown
+/// tool is an error in the nearest `.jtm.toml`, and a warning in one further up.
+fn native_pins(
+    file: &ProjectFile,
+    plugins: &[Plugin],
+    nearer_project_file: bool,
+    found: &mut ProjectPins,
+    here: &mut Candidates,
+) -> Result<()> {
+    found.files.push(file.path().to_path_buf());
+    for (tool, selector) in file.tools() {
+        if found.pins.contains_key(&tool) {
+            continue;
+        }
+        if !plugins.iter().any(|p| p.manifest.name == tool) {
+            if nearer_project_file {
+                found.ignored.push(format!(
+                    "{} pins `{tool}`, which no plugin provides, so it is ignored",
+                    file.path().display()
+                ));
+                continue;
+            }
+            return Err(JtmError::PinToolUnknown {
+                tool,
+                file: file.path().to_path_buf(),
+            });
+        }
+        here.entry(tool)
+            .or_default()
+            .push((file.path().to_path_buf(), selector, PinKind::Native));
+    }
+    Ok(())
+}
+
+/// Adds what the interop files in `dir` set to `here`, for tools no nearer directory decided.
+fn interop_pins(
+    dir: &Path,
+    sources: &[Source<'_>],
+    found: &mut ProjectPins,
+    here: &mut Candidates,
+) -> Result<()> {
+    let mut texts: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
+    for source in sources {
         let tool = &source.plugin.manifest.name;
+        // A nearer directory already decided this tool.
         if found.pins.contains_key(tool) {
             continue;
         }
-        for &dir in &dirs {
-            let path = dir.join(&source.interop.file);
-            let Some(text) = read_optional(&path)? else {
-                continue;
-            };
-            found.files.push(path.clone());
-            let wrapper = interop::read_wrapper(source.interop, &text)
-                .map_err(|e| interop_error(tool, &path, &e))?;
-            if let Some(wrapper) = wrapper {
-                found.pins.insert(
-                    tool.clone(),
-                    Pin {
-                        tool: tool.clone(),
-                        selector: Selector {
-                            variant: None,
-                            value: wrapper.version.clone(),
-                        },
-                        file: path,
-                        kind: PinKind::Wrapper,
-                        wrapper: Some(wrapper),
-                    },
-                );
-                break;
+        let path = dir.join(&source.interop.file);
+        let text = match texts.get(&path) {
+            Some(text) => text.clone(),
+            None => {
+                let text = read_optional(&path)?;
+                if text.is_some() {
+                    found.files.push(path.clone());
+                }
+                texts.insert(path.clone(), text.clone());
+                text
             }
+        };
+        let Some(text) = text else { continue };
+        let value = interop::read(&source.plugin.manifest, source.interop, &text)
+            .map_err(|e| interop_error(tool, &path, &e))?;
+        if let Some(value) = value {
+            let selector = Selector {
+                variant: value.variant,
+                value: value.value,
+            };
+            here.entry(tool.clone())
+                .or_default()
+                .push((path, selector, PinKind::Interop));
         }
     }
-    Ok(found)
+    Ok(())
+}
+
+/// Takes the first pin per tool in `here` as the winner, reporting the others that disagree.
+fn settle(here: Candidates, plugins: &[Plugin], found: &mut ProjectPins) {
+    for (tool, values) in here {
+        if found.pins.contains_key(&tool) {
+            continue;
+        }
+        let default = plugins
+            .iter()
+            .find(|p| p.manifest.name == tool)
+            .map(|p| p.manifest.default_variant().to_owned())
+            .unwrap_or_default();
+        let full =
+            |s: &Selector| format!("{}:{}", s.variant.as_deref().unwrap_or(&default), s.value);
+        let mut values = values.into_iter();
+        let Some((file, selector, kind)) = values.next() else {
+            continue;
+        };
+        let winner = full(&selector);
+        let others: Vec<PinValue> = values
+            .filter(|(_, s, _)| full(s) != winner)
+            .map(|(file, s, _)| PinValue {
+                file,
+                value: full(&s),
+            })
+            .collect();
+        if !others.is_empty() {
+            found.conflicts.push(Conflict {
+                tool: tool.clone(),
+                winner: PinValue {
+                    file: file.clone(),
+                    value: winner,
+                },
+                others,
+            });
+        }
+        found.pins.insert(
+            tool.clone(),
+            Pin {
+                tool,
+                selector,
+                file,
+                kind,
+                wrapper: None,
+            },
+        );
+    }
+}
+
+/// Pins the tool of the wrapper `source` from the nearest wrapper file in `dirs`, when no pin
+/// file set it.
+fn wrapper_pin(source: &Source<'_>, dirs: &[&Path], found: &mut ProjectPins) -> Result<()> {
+    let tool = &source.plugin.manifest.name;
+    if found.pins.contains_key(tool) {
+        return Ok(());
+    }
+    for &dir in dirs {
+        let path = dir.join(&source.interop.file);
+        let Some(text) = read_optional(&path)? else {
+            continue;
+        };
+        found.files.push(path.clone());
+        let wrapper = interop::read_wrapper(source.interop, &text)
+            .map_err(|e| interop_error(tool, &path, &e))?;
+        if let Some(wrapper) = wrapper {
+            found.pins.insert(
+                tool.clone(),
+                Pin {
+                    tool: tool.clone(),
+                    selector: Selector {
+                        variant: None,
+                        value: wrapper.version.clone(),
+                    },
+                    file: path,
+                    kind: PinKind::Wrapper,
+                    wrapper: Some(wrapper),
+                },
+            );
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// The position of a parser in the read order within one directory.

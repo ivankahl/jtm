@@ -188,24 +188,9 @@ impl ProjectFile {
         self.doc.get_mut("tools").and_then(Item::as_table_like_mut)
     }
 
-    fn validate(&self) -> Result<()> {
+    /// Checks each `[tools]` entry: a plugin name and a version string.
+    fn validate_tools(&self) -> Result<()> {
         let path = &self.path;
-        for (key, item) in self.doc.iter() {
-            if !TABLES.contains(&key) {
-                return Err(error(
-                    path,
-                    key,
-                    format!("unknown table; a .jtm.toml holds {}", list(TABLES)),
-                ));
-            }
-            if item.as_table_like().is_none() {
-                return Err(error(
-                    path,
-                    key,
-                    format!("expected a table such as `[{key}]`"),
-                ));
-            }
-        }
         if let Some(tools) = self.doc.get("tools").and_then(Item::as_table_like) {
             for (tool, item) in tools.iter() {
                 let key = format!("tools.{tool}");
@@ -220,6 +205,12 @@ impl ProjectFile {
                 Selector::parse(text).map_err(|e| error(path, &key, e.to_string()))?;
             }
         }
+        Ok(())
+    }
+
+    /// Checks each `[plugins]` entry: a plugin name with a `source` and a `rev`.
+    fn validate_plugins(&self) -> Result<()> {
+        let path = &self.path;
         if let Some(plugins) = self.doc.get("plugins").and_then(Item::as_table_like) {
             for (name, item) in plugins.iter() {
                 let key = format!("plugins.{name}");
@@ -258,6 +249,29 @@ impl ProjectFile {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<()> {
+        let path = &self.path;
+        for (key, item) in self.doc.iter() {
+            if !TABLES.contains(&key) {
+                return Err(error(
+                    path,
+                    key,
+                    format!("unknown table; a .jtm.toml holds {}", list(TABLES)),
+                ));
+            }
+            if item.as_table_like().is_none() {
+                return Err(error(
+                    path,
+                    key,
+                    format!("expected a table such as `[{key}]`"),
+                ));
+            }
+        }
+        self.validate_tools()?;
+        self.validate_plugins()?;
         if let Some(lock) = self.doc.get("lock").and_then(Item::as_table_like) {
             for (field, item) in lock.iter() {
                 let key = format!("lock.{field}");
