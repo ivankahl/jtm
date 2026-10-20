@@ -225,10 +225,24 @@ impl Home {
     }
 }
 
-/// The executables `name`'s shipped manifest declares for `os`.
+/// The commands `name` ships on `os`, as a vendor archive has them. Manifests name no
+/// executables; these only fill the fixture archives.
 fn executables(name: &str, os: &str) -> Vec<String> {
-    let manifest = jtm_plugin::Manifest::parse(&shipped(name)).unwrap();
-    manifest.executables.for_os(os).to_vec()
+    let unix: &[&str] = match name {
+        "java" => &["java", "javac", "jar", "jshell"],
+        "maven" => &["mvn", "mvnDebug"],
+        "gradle" => &["gradle"],
+        "kotlin" => &["kotlin", "kotlinc"],
+        "spring-boot-cli" => &["spring"],
+        _ => panic!("no fixture executables for {name}"),
+    };
+    let ext = match (os, name) {
+        ("windows", "java") => ".exe",
+        ("windows", "maven") => ".cmd",
+        ("windows", _) => ".bat",
+        _ => "",
+    };
+    unix.iter().map(|e| format!("{e}{ext}")).collect()
 }
 
 /// An archive with `top/` holding `home_prefix` + `bin/<exe>` for each of `name`'s executables
@@ -542,7 +556,7 @@ fn the_java_layout_finds_each_os_home_on_any_host() {
         assert_eq!(placed.root, out.join("jdk-21.0.5+11"));
         let home = if os == Os::Macos { "Contents/Home" } else { "" };
         assert_eq!(placed.home, Path::new(home), "{os}");
-        layout::check_executables("java", &placed, &manifest.layout, &manifest.executables, os)
+        layout::check_bin_dirs("java", &placed, &manifest.layout)
             .unwrap_or_else(|e| panic!("{os}: {e}"));
     }
 }
@@ -930,4 +944,23 @@ fn mvn_runs_with_the_pinned_java() {
     );
     let maven_line = stdout.lines().find(|l| l.contains("Maven home")).unwrap();
     assert!(maven_line.contains("default-3.9.0"), "{maven_line}");
+}
+
+#[test]
+fn which_finds_any_command_in_the_active_bin_dirs() {
+    let mut h = Home::new();
+    with_java(&mut h);
+    h.ok(&["install", "fp-java@21"]);
+    let project = h.project(&[(".java-version", "21\n")]);
+    // `jshell` is in no manifest; it is found because it is in the active JDK's bin dir.
+    let (code, value) = h.json(&project, &["which", "jshell"]);
+    assert_eq!(code, 0, "{value}");
+    let item = &value["data"];
+    assert_eq!(item["tool"], "fp-java", "{value}");
+    assert_eq!(item["layer"], "project", "{value}");
+    let bin = java_home(h.os, &h, "temurin", "21.0.5+11").join("bin");
+    assert!(
+        PathBuf::from(item["path"].as_str().unwrap()).starts_with(bin),
+        "{value}"
+    );
 }

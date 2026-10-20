@@ -45,7 +45,6 @@ pub struct Manifest {
     pub aliases: BTreeMap<String, Alias>,
     pub index: Index,
     pub layout: Layout,
-    pub executables: Executables,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// Other tools this one needs at runtime, with a version requirement such as `>=8`.
@@ -178,37 +177,6 @@ pub enum StripComponents {
     #[default]
     Auto,
     Count(u32),
-}
-
-/// `[executables]`: file names per OS. `macos` and `linux` take precedence over `unix`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Executables {
-    #[serde(default)]
-    pub windows: Vec<String>,
-    #[serde(default)]
-    pub unix: Vec<String>,
-    #[serde(default)]
-    pub macos: Vec<String>,
-    #[serde(default)]
-    pub linux: Vec<String>,
-}
-
-impl Executables {
-    /// The executables the tool provides on `os` (`windows`, `macos` or `linux`).
-    pub fn for_os(&self, os: &str) -> &[String] {
-        let specific = match os {
-            "windows" => return &self.windows,
-            "macos" => &self.macos,
-            "linux" => &self.linux,
-            _ => return &[],
-        };
-        if specific.is_empty() {
-            &self.unix
-        } else {
-            specific
-        }
-    }
 }
 
 /// One `[[interop]]` entry: a pin file this plugin reads and writes.
@@ -374,7 +342,6 @@ impl Manifest {
         self.validate_aliases(p);
         self.validate_index(p);
         self.validate_layout(p);
-        self.validate_executables(p);
         self.validate_env(p);
         self.validate_requires(p);
         self.validate_interop(p);
@@ -550,32 +517,6 @@ impl Manifest {
         }
         for (i, dir) in layout.bin_dirs.iter().enumerate() {
             check_relative_path(p, &format!("layout.bin_dirs[{i}]"), dir, true);
-        }
-    }
-
-    fn validate_executables(&self, p: &mut Problems) {
-        let exe = &self.executables;
-        let lists = [
-            ("windows", &exe.windows),
-            ("unix", &exe.unix),
-            ("macos", &exe.macos),
-            ("linux", &exe.linux),
-        ];
-        if lists.iter().all(|(_, list)| list.is_empty()) {
-            p.push("executables", "list at least one executable");
-        }
-        for (os, list) in lists {
-            for (i, name) in list.iter().enumerate() {
-                if !is_file_name(name) {
-                    p.push(
-                        format!("executables.{os}[{i}]"),
-                        format!(
-                            "`{name}` must be a plain file name not starting with `-`, such as \
-                             `tool` or `tool.cmd`"
-                        ),
-                    );
-                }
-            }
         }
     }
 
@@ -981,18 +922,6 @@ fn check_relative_path(p: &mut Problems, path: &str, value: &str, allow_dot: boo
     if let Some(message) = message {
         p.push(path, format!("`{value}` {message}"));
     }
-}
-
-/// A plain file name. It cannot start with `-`, so it is never read as an option when it reaches
-/// a command line.
-fn is_file_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('-')
-        && name != "."
-        && name != ".."
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'))
 }
 
 fn is_interop_text(text: &str) -> bool {

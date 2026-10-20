@@ -22,9 +22,5 @@ format = 1
 strip_components = "all"
 bin_dirs = ["bin"]
 
-[executables]
-unix = ["demo"]
-windows = ["demo.exe"]
-
 [env]
 DEMO_HOME = "{home}"

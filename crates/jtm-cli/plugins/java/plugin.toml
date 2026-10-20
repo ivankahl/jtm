@@ -39,12 +39,6 @@ bin_dirs = ["bin"]
 # A macOS JDK is an app bundle; its home is inside it.
 home_subdir = { macos = "Contents/Home" }
 
-# Only executables every JDK from 8 onwards ships, since the install checks each one. Everything
-# else in `bin`, such as `jshell` or `jlink`, is on PATH too.
-[executables]
-unix = ["java", "javac", "jar", "javadoc", "keytool", "jcmd"]
-windows = ["java.exe", "javac.exe", "jar.exe", "javadoc.exe", "keytool.exe", "jcmd.exe"]
-
 [env]
 JAVA_HOME = "{home}"
 

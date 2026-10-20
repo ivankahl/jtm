@@ -40,9 +40,6 @@ signing_keys = ["{key}"]
 format = 1
 [layout]
 bin_dirs = ["bin"]
-[executables]
-unix = ["demo"]
-windows = ["demo.cmd"]
 {extra}
 "#
     )
@@ -235,8 +232,8 @@ fn concurrent_installs_of_one_version_install_once() {
 #[test]
 fn a_failed_install_leaves_no_install_dir_but_keeps_the_download() {
     let f = Fixture::new();
-    // No `bin/demo`, so the executable check fails after extraction.
-    let archive = tar_gz(&[file("demo-1.0.0/bin/other", b"x")]);
+    // No `bin` dir, so the bin dir check fails after extraction.
+    let archive = tar_gz(&[file("demo-1.0.0/lib/other", b"x")]);
     let entry = f.seed(&archive);
     let err = f.install(&entry, false).unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
@@ -290,7 +287,7 @@ impl Fixture {
 }
 
 #[test]
-fn post_extract_runs_inside_the_install_dir_before_the_executable_check() {
+fn post_extract_runs_inside_the_install_dir_before_the_bin_dir_check() {
     let (f, script) = hooked(
         r#"
         assert(ctx.version == "1.0.0" and ctx.home == "")

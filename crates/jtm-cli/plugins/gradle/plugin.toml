@@ -37,10 +37,6 @@ format = 1
 strip_components = "auto"
 bin_dirs = ["bin"]
 
-[executables]
-unix = ["gradle"]
-windows = ["gradle.bat"]
-
 [env]
 GRADLE_HOME = "{home}"
 

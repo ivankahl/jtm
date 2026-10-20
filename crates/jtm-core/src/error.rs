@@ -236,7 +236,7 @@ pub enum JtmError {
     PluginSigningKeys { plugin: String, message: String },
 
     /// An extracted archive does not have the layout the plugin's manifest describes, such as
-    /// a missing `home_subdir` or a declared executable that is not there.
+    /// a missing `home_subdir` or a bin dir with no files.
     #[error("the `{plugin}` archive does not match its manifest: {message}")]
     LayoutMismatch { plugin: String, message: String },
 

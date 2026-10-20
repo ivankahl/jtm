@@ -35,20 +35,6 @@ fn placeholders() {
 }
 
 #[test]
-fn executables_fall_back_to_unix() {
-    let exe = Executables {
-        windows: vec!["mvn.cmd".into()],
-        unix: vec!["mvn".into()],
-        macos: vec!["mvn-mac".into()],
-        linux: vec![],
-    };
-    assert_eq!(exe.for_os("windows"), ["mvn.cmd"]);
-    assert_eq!(exe.for_os("macos"), ["mvn-mac"]);
-    assert_eq!(exe.for_os("linux"), ["mvn"]);
-    assert!(exe.for_os("plan9").is_empty());
-}
-
-#[test]
 fn an_index_url_without_os_or_arch_is_platform_independent() {
     let mut index = Index {
         url: "https://example.test/tool-any.json".to_owned(),

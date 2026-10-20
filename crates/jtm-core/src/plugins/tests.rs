@@ -17,8 +17,6 @@ signing_keys = ["{key}"]
 format = 1
 [layout]
 bin_dirs = ["bin"]
-[executables]
-unix = ["demo"]
 "#
     )
 }

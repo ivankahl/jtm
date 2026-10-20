@@ -263,7 +263,7 @@ pub fn install(
             .post_extract(function, &placed.root, &context)
             .map_err(|e| JtmError::script(plugin, e))?;
     }
-    layout::check_executables(plugin, &placed, &manifest.layout, &manifest.executables, os)?;
+    layout::check_bin_dirs(plugin, &placed, &manifest.layout)?;
 
     let receipt = Receipt {
         plugin: plugin.to_owned(),

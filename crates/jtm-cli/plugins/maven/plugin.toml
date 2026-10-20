@@ -37,10 +37,6 @@ format = 1
 strip_components = "auto"
 bin_dirs = ["bin"]
 
-[executables]
-unix = ["mvn", "mvnDebug"]
-windows = ["mvn.cmd", "mvnDebug.cmd"]
-
 [env]
 MAVEN_HOME = "{home}"
 M2_HOME = "{home}"

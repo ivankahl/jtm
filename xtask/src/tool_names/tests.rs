@@ -78,15 +78,7 @@ fn reads_names_from_the_first_party_manifests() {
         .join("..")
         .join(PLUGINS);
     let names = tool_names(&dir).unwrap_or_else(|e| panic!("{e}"));
-    for expected in [
-        "java",
-        "temurin",
-        "JAVA_HOME",
-        "mvn",
-        "gradle",
-        "kotlinc",
-        "springboot",
-    ] {
+    for expected in ["java", "temurin", "JAVA_HOME", "gradle", "springboot"] {
         assert!(
             names.iter().any(|n| n == expected),
             "{expected} in {names:?}"

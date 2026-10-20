@@ -1,10 +1,9 @@
 //! `cargo xtask check-tool-names`: the CI check that no core crate names a first-party tool.
 //!
 //! The tool names come from the first-party manifests themselves: each plugin's name, its
-//! variants, `[env]` variables, executables (without `.exe`, `.cmd` or `.bat`) and interop
-//! keys. The check looks at string literals in the library crates' source, skipping comments
-//! (where examples are fine) and test code, and fails on any literal that contains one of the
-//! names as a whole word.
+//! variants, `[env]` variables and interop keys. The check looks at string literals in the
+//! library crates' source, skipping comments (where examples are fine) and test code, and fails
+//! on any literal that contains one of the names as a whole word.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -126,17 +125,6 @@ fn manifest_names(manifest: &toml::Table) -> Vec<String> {
         manifest.get("versions").and_then(|v| v.get("variants")),
     ));
     names.extend(keys(manifest.get("env")));
-    if let Some(executables) = manifest.get("executables").and_then(|v| v.as_table()) {
-        for list in executables.values() {
-            for exe in strings(Some(list)) {
-                let stem = [".exe", ".cmd", ".bat"]
-                    .iter()
-                    .find_map(|ext| exe.strip_suffix(ext))
-                    .unwrap_or(&exe);
-                names.push(stem.to_owned());
-            }
-        }
-    }
     if let Some(interop) = manifest.get("interop").and_then(|v| v.as_array()) {
         for entry in interop {
             names.extend(entry.get("key").and_then(|v| v.as_str()).map(str::to_owned));

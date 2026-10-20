@@ -35,10 +35,6 @@ format = 1
 strip_components = "auto"
 bin_dirs = ["bin"]
 
-[executables]
-unix = ["spring"]
-windows = ["spring.bat"]
-
 # Spring Boot 3 needs Java 17.
 [requires]
 java = ">=17"

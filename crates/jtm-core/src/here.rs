@@ -260,48 +260,25 @@ impl<'s, 'c> Here<'s, 'c> {
         )
     }
 
-    /// The executable `command` runs here. A command a plugin declares comes from that tool's
-    /// active install; anything else is looked up on `path`.
+    /// The executable `command` runs here: the first active install whose bin dirs hold it, so
+    /// any file a tool ships maps to that tool, whatever the version calls it; anything else is
+    /// looked up on `path`.
     pub fn which(&self, command: &str, os: Os, path: Option<&str>) -> Result<WhichItem> {
         for plugin in &self.plugins {
             let tool = plugin.manifest.name.as_str();
-            let Some(file) = plugin
-                .manifest
-                .executables
-                .for_os(os.as_str())
-                .iter()
-                .find(|e| *e == command || file_stem(e) == command)
-            else {
-                continue;
-            };
             let Some(choice) = self.layers().choose(tool) else {
                 continue;
             };
-            let found = self
+            let Some(found) = self
                 .session
                 .installed_match(plugin, choice.selector.as_ref())?
-                .ok_or_else(|| JtmError::VersionNotFound {
-                    tool: tool.to_owned(),
-                    spec: format!(
-                        "{} (set by {}, not installed)",
-                        choice
-                            .selector
-                            .as_ref()
-                            .map(ToString::to_string)
-                            .unwrap_or_default(),
-                        choice.origin
-                    ),
-                })?;
+            else {
+                continue;
+            };
             let env = tool_env(&plugin.manifest, &found.home);
-            let path = env
-                .path
-                .iter()
-                .map(|dir| dir.join(file))
-                .find(|p| p.is_file())
-                .ok_or_else(|| JtmError::LayoutMismatch {
-                    plugin: tool.to_owned(),
-                    message: format!("`{file}` is missing from {}", found.home.display()),
-                })?;
+            let Some(path) = find_in_dirs(command, &env.path, os) else {
+                continue;
+            };
             return Ok(WhichItem {
                 command: command.to_owned(),
                 tool: Some(tool.to_owned()),
@@ -336,12 +313,19 @@ fn meets(manifest: &jtm_plugin::Manifest, version: &str, requirement: &str) -> O
     Some(true)
 }
 
-fn file_stem(name: &str) -> &str {
-    name.rsplit_once('.').map_or(name, |(stem, _)| stem)
-}
-
 /// The first file named `command` in `path`, trying Windows executable extensions on Windows.
 pub fn find_on_path(command: &str, path: Option<&str>, os: Os) -> Option<PathBuf> {
+    let separator = if os == Os::Windows { ';' } else { ':' };
+    let dirs: Vec<PathBuf> = path?
+        .split(separator)
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    find_in_dirs(command, &dirs, os)
+}
+
+/// The first file named `command` in `dirs`, trying Windows executable extensions on Windows.
+pub fn find_in_dirs(command: &str, dirs: &[PathBuf], os: Os) -> Option<PathBuf> {
     let candidates: Vec<String> = if os == Os::Windows && !command.contains('.') {
         let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
         pathext
@@ -353,10 +337,7 @@ pub fn find_on_path(command: &str, path: Option<&str>, os: Os) -> Option<PathBuf
     } else {
         vec![command.to_owned()]
     };
-    let separator = if os == Os::Windows { ';' } else { ':' };
-    path?
-        .split(separator)
-        .filter(|dir| !dir.is_empty())
-        .flat_map(|dir| candidates.iter().map(move |c| Path::new(dir).join(c)))
+    dirs.iter()
+        .flat_map(|dir| candidates.iter().map(move |c| dir.join(c)))
         .find(|p| p.is_file())
 }

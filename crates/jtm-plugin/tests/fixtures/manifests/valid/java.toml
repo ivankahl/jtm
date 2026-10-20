@@ -33,10 +33,6 @@ bin_dirs = ["bin"]
 [layout.home_subdir]
 macos = "Contents/Home"
 
-[executables]
-unix = ["java", "javac", "jar", "jshell"]
-windows = ["java.exe", "javac.exe", "jar.exe", "jshell.exe"]
-
 [env]
 JAVA_HOME = "{home}"
 

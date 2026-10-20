@@ -23,9 +23,5 @@ strip_components = 1
 bin_dirs = ["bin"]
 home_subdir = { macos = "Contents\\Home" }
 
-[executables]
-unix = ["demo"]
-windows = ["demo.exe"]
-
 [env]
 DEMO_HOME = "{home}"

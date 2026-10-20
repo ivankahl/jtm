@@ -235,7 +235,6 @@ jtm-plugin-maven/
 | `[aliases]` | No | Named aliases and how each resolves: `highest`, `index-tag`, `fixed`, or `script` |
 | `[index]` | Yes | `url` template, `signing_keys` (Ed25519 public keys: the plugin's trust anchors), `threshold` (how many signing keys must sign; default 1), `keys_url` (optional `https` URL of a keys file signed by the signing keys), `format` |
 | `[layout]` | Yes | How to find the tool home inside the archive: `strip_components`, a number of leading directories to strip or `"auto"` (strip a single top-level directory, the default), per-OS `home_subdir` table keyed by `windows`, `macos` or `linux` (for example `home_subdir = { macos = "Contents/Home" }` for JDKs), `bin_dirs` |
-| `[executables]` | Yes | Executables the tool provides, per OS, used by which and doctor checks (`mvn` and `mvn.cmd`) |
 | `[env]` | No | Variables to set when active, using `{home}` and `{bin}` placeholders, for example `JAVA_HOME = "{home}"` |
 | `[requires]` | No | Runtime dependencies, for example Maven requires `java >= 8`; used for `W_REQUIRES_UNMET` warnings by `current`, `exec`, `env`, `use` and the shell hook, never auto-installs |
 | `[[interop]]` | No | Pin files this plugin reads or writes, the parser (`keyvalue`, `tool-versions`, `single-line`, or the read-only `wrapper` with a `pattern` such as `gradle-{version}-*.zip` and an optional `sha256_key` naming the checksum property), the key, and a mapping table or script function. `keyvalue` maps a version suffix (`21.0.5-tem`); `tool-versions` and `single-line` take an optional variant prefix (`temurin-21`) |
@@ -268,10 +267,6 @@ format = 1
 [layout]
 strip_components = 1
 bin_dirs = ["bin"]
-
-[executables]
-unix = ["mvn", "mvnDebug"]
-windows = ["mvn.cmd", "mvnDebug.cmd"]
 
 [env]
 MAVEN_HOME = "{home}"
@@ -486,7 +481,7 @@ An install is idempotent and atomic: it either produces a complete, verified ins
 7. **Extract** into `tools/.tmp/<random>` under the archive rules below.
 8. **Apply layout:** `strip_components`, or `auto` (strip a single top-level directory), then the per-OS `home_subdir`.
 9. **Run `post_extract`** if the plugin defines it, inside the Luau sandbox.
-10. **Sanity check** that each declared executable exists. Downloaded binaries are never executed during install.
+10. **Sanity check** that each `bin_dirs` entry is a directory inside the install holding at least one file. Manifests name no executables, so a vendor can rename or add commands in any version; whatever the bin dirs hold goes on `PATH`, and `jtm which` maps a command to the active install whose bin dirs contain it. Downloaded binaries are never executed during install.
 11. **Write the receipt** `.jtm-receipt.json`: plugin, manifest hash, variant, version, platform, final URL, sha256, size, index sequence, install time, jtm version, and the tool home relative to the install dir (after `home_subdir`).
 12. **Commit** with an atomic rename from the temp dir to `tools/<plugin>/<variant>-<version>`. On Windows, retry the rename for up to 10 seconds because antivirus scanners briefly lock new files.
 13. **Update the lockfile** if the command was run in a project with locking enabled. Installing never sets or changes the default, even for a tool's first install and even with `--yes`; the default is only ever set explicitly with `jtm default`.
@@ -746,7 +741,7 @@ The five v1 tools ship as ordinary plugins embedded in the binary, which proves 
 
 They also use the same trust model as any other plugin (section 9). Each manifest lists jtm's root keys as `signing_keys` with `threshold = 2` and points `keys_url` at the shared `keys.json`, whose CI-held index keys sign the indices. Their signing keys are pre-approved only because the manifests are compiled into jtm. The compiled-in manifests are the only authority for their anchors; the unpacked `plugins/builtin` copy is a working copy, never a trust decision (section 9).
 
-| Plugin | Variants | Scheme | Aliases | Env | Executables on PATH |
+| Plugin | Variants | Scheme | Aliases | Env | Typical executables on PATH (whatever the bin dir holds) |
 | --- | --- | --- | --- | --- | --- |
 | `java` | `temurin` (default), `corretto`, `zulu`, `liberica`, `microsoft`, `graalvm-community` | `java` | `lts` (highest version tagged `lts`), `latest` | `JAVA_HOME` | `java`, `javac`, `jar`, `jshell`, `javadoc`, `keytool`, `jlink`, `jpackage`, `jcmd`, `jfr` |
 | `maven` | none | `maven` | `latest`, `3`, `4` | `MAVEN_HOME`, `M2_HOME` | `mvn`, `mvnDebug` |

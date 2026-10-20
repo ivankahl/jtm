@@ -15,9 +15,6 @@ signing_keys = ["{key}"]
 format = 1
 [layout]
 {toml}
-[executables]
-unix = ["demo"]
-windows = ["demo.cmd"]
 "#
     );
     jtm_plugin::Manifest::parse(&text).unwrap().layout
@@ -126,20 +123,16 @@ fn an_empty_archive_is_a_layout_mismatch() {
 }
 
 #[test]
-fn executables_must_be_in_a_bin_dir() {
+fn every_bin_dir_must_hold_a_file() {
     let l = layout("bin_dirs = [\"bin\", \"lib/bin\"]");
-    let manifest_exes = Executables {
-        unix: vec!["demo".into()],
-        windows: vec!["demo.cmd".into()],
-        ..Executables::default()
-    };
-    let good = tree(&["t/lib/bin/demo", "t/lib/bin/demo.cmd"]);
+    let good = tree(&["t/bin/anything", "t/lib/bin/other.cmd"]);
     let placed = apply("demo", good.path(), &l, Os::Linux).unwrap();
-    check_executables("demo", &placed, &l, &manifest_exes, Os::Linux).unwrap();
-    check_executables("demo", &placed, &l, &manifest_exes, Os::Windows).unwrap();
+    check_bin_dirs("demo", &placed, &l).unwrap();
 
-    let bad = tree(&["t/demo"]);
-    let placed = apply("demo", bad.path(), &l, Os::Linux).unwrap();
-    let err = check_executables("demo", &placed, &l, &manifest_exes, Os::Linux).unwrap_err();
-    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    for files in [&["t/demo"][..], &["t/bin/x", "t/lib/bin/empty/"][..]] {
+        let bad = tree(files);
+        let placed = apply("demo", bad.path(), &l, Os::Linux).unwrap();
+        let err = check_bin_dirs("demo", &placed, &l).unwrap_err();
+        assert_eq!(err.code(), "E_PLUGIN_INVALID", "{files:?}");
+    }
 }

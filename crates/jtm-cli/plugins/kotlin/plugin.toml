@@ -35,10 +35,6 @@ format = 1
 strip_components = "auto"
 bin_dirs = ["bin"]
 
-[executables]
-unix = ["kotlin", "kotlinc", "kotlinc-jvm"]
-windows = ["kotlin.bat", "kotlinc.bat", "kotlinc-jvm.bat"]
-
 [env]
 KOTLIN_HOME = "{home}"
 
