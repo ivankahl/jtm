@@ -1,0 +1,68 @@
+# A first-party plugin, compiled into jtm (SPEC.md section 15). Its signing keys are jtm's
+# root keys and are pre-approved only because this file is embedded in the binary.
+#
+# The root keys below are placeholders whose private keys were never kept, so nothing can sign
+# for them; the root key ceremony (T6.5) replaces them in every first-party manifest at once.
+
+schema = 1
+name = "java"
+display_name = "Java Development Kit"
+description = "OpenJDK builds from Temurin, Corretto, Zulu, Liberica, Microsoft and GraalVM Community"
+homepage = "https://openjdk.org"
+license = "GPL-2.0-with-classpath-exception"
+min_jtm = "0.1.0"
+
+[versions]
+scheme = "java"
+variants = ["temurin", "corretto", "zulu", "liberica", "microsoft", "graalvm-community"]
+default_variant = "temurin"
+default_alias = "latest"
+
+[aliases]
+latest = { kind = "highest" }
+lts = { kind = "index-tag", tag = "lts" }
+
+[index]
+url = "https://github.com/jtm-dev/index/releases/download/java-{index_version}/java-{os}-{arch}.json"
+signing_keys = [
+  "RWRysDZolh28UjrMjL/6mCMDPnqfDtDj5Al+TxN8z6RkXGawmRo1ob7K",
+  "RWTzLKb42g206mejNh0fzVSVIUErPPx9vwRRSf+bTzSu3b21Ok57nca0",
+  "RWSNUwyhcXRhYMqQR0mQfp48nxBnT4qSHl01yqJKVPSJEIFmmj+XtONm",
+]
+threshold = 2
+keys_url = "https://github.com/jtm-dev/index/releases/latest/download/keys.json"
+format = 1
+
+[layout]
+strip_components = "auto"
+bin_dirs = ["bin"]
+# A macOS JDK is an app bundle; its home is inside it.
+home_subdir = { macos = "Contents/Home" }
+
+# Only executables every JDK from 8 onwards ships, since the install checks each one. Everything
+# else in `bin`, such as `jshell` or `jlink`, is on PATH too.
+[executables]
+unix = ["java", "javac", "jar", "javadoc", "keytool", "jcmd"]
+windows = ["java.exe", "javac.exe", "jar.exe", "javadoc.exe", "keytool.exe", "jcmd.exe"]
+
+[env]
+JAVA_HOME = "{home}"
+
+[[interop]]
+file = ".sdkmanrc"
+parser = "keyvalue"
+key = "java"
+mapping = { tem = "temurin", amzn = "corretto", zulu = "zulu", librca = "liberica", ms = "microsoft", graalce = "graalvm-community" }
+
+[[interop]]
+file = ".tool-versions"
+parser = "tool-versions"
+key = "java"
+
+[[interop]]
+file = ".java-version"
+parser = "single-line"
+
+[ide]
+maven_toolchain = "jdk"
+gradle_installations = true
