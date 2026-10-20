@@ -1,0 +1,9 @@
+---
+source: crates/jtm-cli/src/setup/tests.rs
+expression: "rc_block(Some(Path::new(\"/data/env.sh\")), Some(shell), exe)"
+---
+# >>> jtm >>>
+# Added by `jtm self setup`: puts default tool versions on PATH and applies project pins on cd.
+[ -f '/data/env.sh' ] && . '/data/env.sh'
+[ -x '/opt/o'\''neil/bin/jtm' ] && eval "$('/opt/o'\''neil/bin/jtm' shell-init bash)"
+# <<< jtm <<<

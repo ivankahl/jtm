@@ -14,6 +14,7 @@ use jtm_plugin::{Candidate, ResolveError};
 use jtm_security::{IndexEntry, Timestamp, Warning};
 use serde::Serialize;
 
+use crate::activate::{Defaults, Installed, Layers, Override, pick_installed, tool_env};
 use crate::config::{AutoRefresh, Config, ConfigInputs, FileSource, Settings};
 use crate::context::Context;
 use crate::dirs::{Dirs, dir_name};
@@ -23,12 +24,20 @@ use crate::indices::{
     PluginKeys, cache_path,
 };
 use crate::install::{self, Archives, InstallRequest, Progress, Receipt, Status, VersionId};
+use crate::links;
+use crate::pins::{ProjectPins, W_PIN_CONFLICT};
 use crate::platform::Platform;
 use crate::plugins::{BUILTIN, Plugin, Registry};
-use crate::spec::ToolSpec;
+use crate::project::PROJECT_FILE;
+use crate::spec::{Selector, ToolSpec};
 
 /// Warning code when uninstalling the version the user default pointed at.
 pub const W_DEFAULT_CLEARED: &str = "W_DEFAULT_CLEARED";
+/// Warning code for a session or project version that is not installed, so it does not apply.
+pub const W_NOT_INSTALLED: &str = "W_NOT_INSTALLED";
+
+/// The `PATH` list separator on this OS.
+pub const PATH_SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
 
 /// The first-party indices compiled into this build.
 // Embedded by T6.6; until then every index comes from the cache or the network.
@@ -42,7 +51,8 @@ pub struct Session<'a> {
     dirs: Dirs,
     settings: Settings,
     platform: Platform,
-    client: Option<Client>,
+    /// Built on first use: setting up TLS costs more than the shell hook can spend on a prompt.
+    client: std::sync::OnceLock<Option<Client>>,
     cache: DownloadCache,
 }
 
@@ -107,6 +117,29 @@ pub struct InstallOptions {
     pub latest: bool,
 }
 
+/// Options for commands that need a version installed, such as `jtm default`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EnsureOptions {
+    /// Install the version when it is missing.
+    pub install: bool,
+    /// Resolve against a refreshed index instead of preferring an installed match.
+    pub latest: bool,
+}
+
+/// What `jtm default` set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DefaultItem {
+    #[serde(flatten)]
+    pub version: VersionItem,
+    /// The tool home the link points at.
+    pub home: String,
+    pub link: String,
+    /// The default before, as `tool@variant:version`, when it was another version.
+    pub previous: Option<String>,
+    /// Whether the version was installed by this command.
+    pub installed: bool,
+}
+
 /// Options for [`Session::uninstall`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UninstallOptions {
@@ -127,10 +160,10 @@ pub struct AvailableOptions {
 /// A spec resolved against a verified index, ready to install.
 #[derive(Debug, Clone)]
 pub struct Planned {
-    plugin: Plugin,
-    entry: IndexEntry,
-    index_sequence: u64,
-    warnings: Vec<Warning>,
+    pub(crate) plugin: Plugin,
+    pub(crate) entry: IndexEntry,
+    pub(crate) index_sequence: u64,
+    pub(crate) warnings: Vec<Warning>,
 }
 
 /// The HTTP client options `settings` ask for.
@@ -150,7 +183,8 @@ impl<'a> Session<'a> {
     /// Opens a session from the process environment.
     pub fn open(ctx: &'a Context) -> Result<Session<'a>> {
         let dirs = Dirs::for_context(ctx)?;
-        let config = load_config(&dirs, &|key| std::env::var_os(key))?;
+        let cwd = std::env::current_dir().ok();
+        let config = load_config(&dirs, cwd.as_deref(), &|key| std::env::var_os(key))?;
         Session::new(ctx, dirs, config.settings, Platform::detect()?)
     }
 
@@ -167,19 +201,32 @@ impl<'a> Session<'a> {
                 .clone()
                 .unwrap_or_else(|| dirs.downloads()),
         );
-        let client = if ctx.offline {
-            None
-        } else {
-            Some(Client::new(client_options(&settings))?)
-        };
         Ok(Session {
             ctx,
             dirs,
             settings,
             platform,
-            client,
+            client: std::sync::OnceLock::new(),
             cache,
         })
+    }
+
+    /// The HTTP client, or `None` offline.
+    fn client(&self) -> Result<Option<&Client>> {
+        if let Some(client) = self.client.get() {
+            return Ok(client.as_ref());
+        }
+        let client = if self.ctx.offline {
+            None
+        } else {
+            Some(Client::new(client_options(&self.settings))?)
+        };
+        Ok(self.client.get_or_init(|| client).as_ref())
+    }
+
+    /// Whether `jtm.lock` is honoured: false under `--no-lock`.
+    pub fn uses_lockfile(&self) -> bool {
+        self.ctx.use_lockfile
     }
 
     /// The platform jtm runs on.
@@ -207,7 +254,7 @@ impl<'a> Session<'a> {
             dirs: &self.dirs,
             embedded: EMBEDDED_INDICES,
             embedded_keys: EMBEDDED_KEYS,
-            fetcher: self.client.as_ref().map(|c| c as &dyn Fetcher),
+            fetcher: self.client()?.map(|c| c as &dyn Fetcher),
         };
         let options = LoadOptions {
             refresh,
@@ -333,7 +380,7 @@ impl<'a> Session<'a> {
         };
         let archives = Archives {
             cache: &self.cache,
-            client: self.client.as_ref(),
+            client: self.client()?,
             mirrors: &self.settings.mirrors,
         };
 
@@ -625,6 +672,10 @@ impl<'a> Session<'a> {
                 if let Some(link) = link
                     && clear_link(&link)
                 {
+                    let mut defaults = Defaults::load(&self.dirs.defaults_file())?;
+                    if defaults.remove(&v.id.tool) {
+                        defaults.save()?;
+                    }
                     warnings.push(Warning {
                         code: W_DEFAULT_CLEARED,
                         message: format!(
@@ -639,14 +690,227 @@ impl<'a> Session<'a> {
         Ok((removed, warnings))
     }
 
-    /// `current/<tool>`, when it points at `install_dir`.
+    /// `current/<tool>`, when it points at `install_dir` or a directory inside it.
     fn current_link_to(&self, tool: &str, install_dir: &Path) -> Option<PathBuf> {
-        let link = self.dirs.current().join(dir_name(tool));
+        let link = self.current_link(tool);
         match (fs::canonicalize(&link), fs::canonicalize(install_dir)) {
-            (Ok(a), Ok(b)) if a == b => Some(link),
+            (Ok(a), Ok(b)) if a.starts_with(&b) => Some(link),
             _ => None,
         }
     }
+
+    /// `<data>/current/<tool>`.
+    pub fn current_link(&self, tool: &str) -> PathBuf {
+        self.dirs.current().join(dir_name(tool))
+    }
+
+    pub fn dirs(&self) -> &Dirs {
+        &self.dirs
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Every plugin available, builtin first.
+    pub fn plugins(&self) -> Result<Vec<Plugin>> {
+        let registry = self.registry();
+        registry
+            .names()?
+            .iter()
+            .map(|name| registry.find(name))
+            .collect()
+    }
+
+    /// The installed versions of `tool`, highest first per variant.
+    pub fn installed(&self, tool: &str) -> Result<Vec<Installed>> {
+        Ok(self
+            .list(Some(tool))?
+            .into_iter()
+            .map(|item| {
+                let dir = PathBuf::from(&item.version.path);
+                let home = install_home(&dir);
+                Installed {
+                    variant: item.version.id.variant,
+                    version: item.version.id.version,
+                    dir,
+                    home,
+                }
+            })
+            .collect())
+    }
+
+    /// The installed version `selector` picks for `plugin`, as activation uses it.
+    pub fn installed_match(
+        &self,
+        plugin: &Plugin,
+        selector: Option<&Selector>,
+    ) -> Result<Option<Installed>> {
+        let installed = self.installed(&plugin.manifest.name)?;
+        Ok(pick_installed(&plugin.manifest, selector, &installed).cloned())
+    }
+
+    /// The installed version `spec` picks, installing it first when `install` is set. Without
+    /// `install`, a missing version fails with `E_INPUT_REQUIRED` naming `--install`.
+    pub fn ensure_installed(
+        &self,
+        spec: &ToolSpec,
+        options: EnsureOptions,
+        progress: &mut dyn FnMut(Progress),
+    ) -> Result<(Installed, bool, Vec<Warning>)> {
+        let plugin = self.plugin(&spec.tool)?;
+        if !options.latest
+            && let Some(found) = self.installed_match(&plugin, spec.selector.as_ref())?
+        {
+            return Ok((found, false, Vec::new()));
+        }
+        if !options.install {
+            return Err(JtmError::InputRequired {
+                action: format!("`{spec}` is not installed, and installing it"),
+                resolve: "--install (or --yes)".to_owned(),
+            });
+        }
+        let install_options = InstallOptions {
+            latest: options.latest,
+            ..InstallOptions::default()
+        };
+        let (item, warnings) = self.install(spec, install_options, progress)?;
+        let dir = PathBuf::from(&item.version.path);
+        let home = install_home(&dir);
+        let installed = Installed {
+            variant: item.version.id.variant,
+            version: item.version.id.version,
+            dir,
+            home,
+        };
+        Ok((installed, item.status.changed(), warnings))
+    }
+
+    /// The tools a shell should use from real install dirs: the session and project choices
+    /// in `session` and `pins`. Defaults are left to the current links. A choice with no
+    /// matching install is skipped with a `W_NOT_INSTALLED` warning.
+    pub fn overrides(
+        &self,
+        session: &BTreeMap<String, Selector>,
+        pins: &ProjectPins,
+        plugins: &[Plugin],
+    ) -> Result<(Vec<Override>, Vec<Warning>)> {
+        let defaults = Defaults::empty(self.dirs.defaults_file());
+        let layers = Layers {
+            exec: &[],
+            session,
+            project: pins,
+            defaults: &defaults,
+        };
+        let mut overrides = Vec::new();
+        let mut warnings = pin_warnings(pins);
+        for plugin in plugins {
+            let tool = plugin.manifest.name.as_str();
+            let Some(choice) = layers.choose(tool) else {
+                continue;
+            };
+            match self.installed_match(plugin, choice.selector.as_ref())? {
+                Some(found) => overrides.push(Override {
+                    tool: tool.to_owned(),
+                    layer: choice.layer,
+                    env: tool_env(&plugin.manifest, &found.home),
+                    selector: Selector {
+                        variant: Some(found.variant),
+                        value: found.version,
+                    },
+                }),
+                None => {
+                    let wanted = choice
+                        .selector
+                        .as_ref()
+                        .map(|s| format!("{tool}@{s}"))
+                        .unwrap_or_else(|| tool.to_owned());
+                    warnings.push(Warning {
+                        code: W_NOT_INSTALLED,
+                        message: format!(
+                            "{} sets `{wanted}`, which is not installed; run `jtm install \
+                             {wanted}` or `jtm sync`",
+                            choice.origin
+                        ),
+                    });
+                }
+            }
+        }
+        Ok((overrides, warnings))
+    }
+
+    /// Makes the version `spec` picks the user default: points `current/<tool>` at it and
+    /// records it in `state/defaults.toml`.
+    pub fn set_default(
+        &self,
+        spec: &ToolSpec,
+        options: EnsureOptions,
+        progress: &mut dyn FnMut(Progress),
+    ) -> Result<(DefaultItem, bool, Vec<Warning>)> {
+        let (found, installed, warnings) = self.ensure_installed(spec, options, progress)?;
+        let tool = spec.tool.as_str();
+        let link = self.current_link(tool);
+        let mut defaults = Defaults::load(&self.dirs.defaults_file())?;
+        let previous = defaults
+            .get(tool)
+            .map(|s| format!("{tool}@{s}"))
+            .filter(|_| links::read(&link).is_some());
+        let selector = Selector {
+            variant: Some(found.variant.clone()),
+            value: found.version.clone(),
+        };
+        // The link points at the tool home, not the install dir (SPEC.md section 5), so `{home}`
+        // stays a valid home through the link for layouts like a macOS JDK's `Contents/Home`.
+        let link_changed = links::set(&link, &found.home)?;
+        let default_changed = defaults.set(tool, selector);
+        if default_changed {
+            defaults.save()?;
+        }
+        let id = VersionId {
+            tool: tool.to_owned(),
+            variant: found.variant,
+            version: found.version,
+        };
+        let previous = previous.filter(|p| *p != id.to_string());
+        let item = DefaultItem {
+            version: VersionItem {
+                id,
+                path: found.dir.display().to_string(),
+            },
+            home: found.home.display().to_string(),
+            link: link.display().to_string(),
+            previous,
+            installed,
+        };
+        Ok((item, link_changed || default_changed || installed, warnings))
+    }
+}
+
+/// A `W_PIN_CONFLICT` warning for each conflict between pin files.
+pub fn pin_warnings(pins: &ProjectPins) -> Vec<Warning> {
+    pins.conflicts
+        .iter()
+        .map(|c| Warning {
+            code: W_PIN_CONFLICT,
+            message: c.message(),
+        })
+        .chain(pins.ignored.iter().map(|message| Warning {
+            code: crate::pins::W_PIN_IGNORED,
+            message: message.clone(),
+        }))
+        .collect()
+}
+
+/// The tool home of the install at `dir`, from its receipt, or `dir` itself without one.
+pub fn install_home(dir: &Path) -> PathBuf {
+    Receipt::read(dir).map_or_else(|| dir.to_path_buf(), |r| home_dir(dir, &r.home))
+}
+
+/// The tool home of an install: `dir` plus the receipt's `/`-separated `home`.
+pub fn home_dir(dir: &Path, home: &str) -> PathBuf {
+    home.split('/')
+        .filter(|part| !part.is_empty())
+        .fold(dir.to_path_buf(), |dir, part| dir.join(part))
 }
 
 /// Removes a current link. Returns whether it did.
@@ -658,19 +922,35 @@ fn clear_link(link: &Path) -> bool {
     removed.is_ok()
 }
 
-/// Loads the user config file, if any, and `JTM__*` variables.
-pub fn load_config(dirs: &Dirs, env: &dyn Fn(&str) -> Option<OsString>) -> Result<Config> {
-    let text = match fs::read_to_string(&dirs.config_file) {
-        Ok(text) => Some(text),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => return Err(JtmError::io(&dirs.config_file, e)),
+/// Loads the user config file, the `[settings]` of the nearest `.jtm.toml` at or above `cwd`,
+/// and `JTM__*` variables.
+pub fn load_config(
+    dirs: &Dirs,
+    cwd: Option<&Path>,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<Config> {
+    let read = |path: &Path| match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(JtmError::io(path, e)),
     };
+    let user = read(&dirs.config_file)?;
+    let mut project = None;
+    for dir in cwd.into_iter().flat_map(Path::ancestors) {
+        let path = dir.join(PROJECT_FILE);
+        if let Some(text) = read(&path)? {
+            project = Some((path, text));
+            break;
+        }
+    }
     Config::load(&ConfigInputs {
-        user: text.as_deref().map(|text| FileSource {
+        user: user.as_deref().map(|text| FileSource {
             path: &dirs.config_file,
             text,
         }),
-        project: None,
+        project: project
+            .as_ref()
+            .map(|(path, text)| FileSource { path, text }),
         env,
         flags: &[],
     })

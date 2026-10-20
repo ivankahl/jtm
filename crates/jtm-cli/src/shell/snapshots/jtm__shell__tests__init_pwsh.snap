@@ -1,0 +1,34 @@
+---
+source: crates/jtm-cli/src/shell/tests.rs
+expression: text
+---
+# jtm shell integration for PowerShell. Add to $PROFILE:
+#   Invoke-Expression ((& jtm shell-init pwsh) -join "`n")
+function global:jtm {
+    if ($args.Count -ge 1 -and $args[0] -eq 'use' -and -not ($args -contains '--json') -and -not ($args -contains '--help') -and -not ($args -contains '-h')) {
+        $rest = @($args | Select-Object -Skip 1)
+        $out = & '/opt/jtm''s/bin/jtm' use --shell pwsh @rest
+        if ($LASTEXITCODE -ne 0) { return }
+        if ($out) { Invoke-Expression ($out -join "`n") }
+    } else {
+        & '/opt/jtm''s/bin/jtm' @args
+    }
+}
+function global:_jtm_hook {
+    $out = & '/opt/jtm''s/bin/jtm' hook-env --shell pwsh
+    if ($LASTEXITCODE -eq 0 -and $out) { Invoke-Expression ($out -join "`n") }
+}
+if (-not $global:__jtm_prompt) {
+    $global:__jtm_prompt = $function:prompt
+    function global:prompt {
+        # Keep the last command's status for the original prompt: the hook runs a native
+        # command, which resets $LASTEXITCODE and $?.
+        $__jtm_ok = $?
+        $__jtm_code = $global:LASTEXITCODE
+        _jtm_hook
+        $global:LASTEXITCODE = $__jtm_code
+        if (-not $__jtm_ok) { Write-Error -Message '' -ErrorAction Ignore }
+        & $global:__jtm_prompt
+    }
+}
+_jtm_hook

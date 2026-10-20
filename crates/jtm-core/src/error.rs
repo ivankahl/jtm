@@ -252,6 +252,13 @@ pub enum JtmError {
     #[error("unknown tool `{tool}`")]
     ToolUnknown { tool: String },
 
+    /// A pin file pins a tool no installed plugin provides.
+    #[error(
+        "{} pins `{tool}`, but no plugin `{tool}` is installed; add it with `jtm plugin add {tool}`",
+        file.display()
+    )]
+    PinToolUnknown { tool: String, file: PathBuf },
+
     #[error("no version of `{tool}` matches `{spec}`")]
     VersionNotFound { tool: String, spec: String },
 
@@ -337,6 +344,19 @@ pub enum JtmError {
     #[error("jtm.lock entry for `{tool}` does not match the signed index: {message}")]
     LockIndexMismatch { tool: String, message: String },
 
+    /// A third-party plugin's manifest differs from the one `jtm.lock` recorded (SPEC.md
+    /// section 11). Maps to `E_LOCK_INDEX_MISMATCH` and exits 6: it is a lock mismatch like a
+    /// changed hash.
+    #[error(
+        "plugin `{tool}` changed since jtm.lock recorded it (manifest sha256 {locked}, now \
+         {actual}); check the change, then run `jtm lock --upgrade {tool}`"
+    )]
+    LockPluginMismatch {
+        tool: String,
+        locked: String,
+        actual: String,
+    },
+
     #[error("plugin `{plugin}` is not trusted; to trust it, use {resolve}")]
     PluginUntrusted { plugin: String, resolve: String },
 
@@ -393,7 +413,9 @@ impl JtmError {
             JtmError::InvalidManifest { .. }
             | JtmError::PluginSigningKeys { .. }
             | JtmError::LayoutMismatch { .. } => ErrorCode::PluginInvalid,
-            JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
+            JtmError::ToolUnknown { .. } | JtmError::PinToolUnknown { .. } => {
+                ErrorCode::ToolUnknown
+            }
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
             JtmError::PlatformUnsupported { .. } | JtmError::HostUnsupported { .. } => {
@@ -411,7 +433,9 @@ impl JtmError {
             JtmError::SizeExceeded { .. } => ErrorCode::SizeExceeded,
             JtmError::ArchiveUnsafe { .. } => ErrorCode::ArchiveUnsafe,
             JtmError::LockOutdated { .. } => ErrorCode::LockOutdated,
-            JtmError::LockIndexMismatch { .. } => ErrorCode::LockIndexMismatch,
+            JtmError::LockIndexMismatch { .. } | JtmError::LockPluginMismatch { .. } => {
+                ErrorCode::LockIndexMismatch
+            }
             JtmError::PluginUntrusted { .. } => ErrorCode::PluginUntrusted,
             JtmError::KeyChanged { .. } => ErrorCode::KeyChanged,
             JtmError::InputRequired { .. } => ErrorCode::InputRequired,
@@ -485,6 +509,11 @@ impl JtmError {
                 ("key", key.as_str().into()),
             ]),
             JtmError::ToolUnknown { tool } => obj([("tool", tool.as_str().into())]),
+            JtmError::PinToolUnknown { tool, file } => obj([
+                ("tool", tool.as_str().into()),
+                ("file", path(file)),
+                ("resolve", format!("jtm plugin add {tool}").into()),
+            ]),
             JtmError::VersionNotFound { tool, spec } => obj([
                 ("tool", tool.as_str().into()),
                 ("spec", spec.as_str().into()),
@@ -550,6 +579,15 @@ impl JtmError {
                 ("reason", reason.as_str().into()),
             ]),
             JtmError::LockIndexMismatch { tool, .. } => obj([("tool", tool.as_str().into())]),
+            JtmError::LockPluginMismatch {
+                tool,
+                locked,
+                actual,
+            } => obj([
+                ("tool", tool.as_str().into()),
+                ("locked", locked.as_str().into()),
+                ("actual", actual.as_str().into()),
+            ]),
             JtmError::PluginUntrusted { plugin, resolve } => obj([
                 ("plugin", plugin.as_str().into()),
                 ("resolve", resolve.as_str().into()),

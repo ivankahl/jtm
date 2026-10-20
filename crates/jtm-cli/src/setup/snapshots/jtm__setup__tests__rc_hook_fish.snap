@@ -1,0 +1,9 @@
+---
+source: crates/jtm-cli/src/setup/tests.rs
+expression: "rc_block(Some(Path::new(env)), Some(shell), exe)"
+---
+# >>> jtm >>>
+# Added by `jtm self setup`: puts default tool versions on PATH and applies project pins on cd.
+test -f '/data/env.fish'; and source '/data/env.fish'
+status is-interactive; and test -x '/opt/o\'neil/bin/jtm'; and '/opt/o\'neil/bin/jtm' shell-init fish | source
+# <<< jtm <<<

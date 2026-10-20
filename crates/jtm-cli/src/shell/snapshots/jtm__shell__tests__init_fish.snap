@@ -1,0 +1,18 @@
+---
+source: crates/jtm-cli/src/shell/tests.rs
+expression: text
+---
+# jtm shell integration for fish. Add to ~/.config/fish/config.fish:
+#   jtm shell-init fish | source
+function jtm
+    if test (count $argv) -ge 1; and test "$argv[1]" = use; and not contains -- --json $argv; and not contains -- --help $argv; and not contains -- -h $argv
+        set -l __jtm_out (command '/opt/jtm\'s/bin/jtm' use --shell fish $argv[2..-1]); or return $status
+        string join \n -- $__jtm_out | source
+    else
+        command '/opt/jtm\'s/bin/jtm' $argv
+    end
+end
+function _jtm_hook --on-variable PWD --on-event fish_prompt
+    command '/opt/jtm\'s/bin/jtm' hook-env --shell fish | source
+end
+_jtm_hook

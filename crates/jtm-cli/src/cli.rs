@@ -71,9 +71,169 @@ pub(crate) enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Set the persistent user-wide version of a tool.
+    Default {
+        /// The version to make the default, such as `java@temurin:21` or `maven@3.9`.
+        #[arg(value_name = "SPEC")]
+        spec: String,
+        /// Install the version first when it is missing.
+        #[arg(long)]
+        install: bool,
+        /// Refresh the index and use the newest match instead of an installed one.
+        #[arg(long)]
+        latest: bool,
+    },
+    /// Use a version in the current shell only. Needs the shell hook from `jtm shell-init`.
+    Use {
+        /// The version to use, such as `java@21`; with `--unset`, only the tool.
+        #[arg(value_name = "SPEC")]
+        spec: String,
+        /// Stop using a session version, going back to the project pin or default.
+        #[arg(long, conflicts_with_all = ["install", "latest"])]
+        unset: bool,
+        /// Install the version first when it is missing.
+        #[arg(long)]
+        install: bool,
+        /// Refresh the index and use the newest match instead of an installed one.
+        #[arg(long)]
+        latest: bool,
+        /// Print code for this shell; the shell hook passes it.
+        #[arg(long, value_name = "SHELL")]
+        shell: Option<String>,
+    },
+    /// Print the environment changes for the active versions.
+    Env {
+        /// bash, zsh, fish, pwsh or cmd; the default is bash, or pwsh on Windows.
+        #[arg(long, value_name = "SHELL")]
+        shell: Option<String>,
+    },
+    /// Print the shell hook for bash, zsh, fish or pwsh.
+    ShellInit {
+        #[arg(value_name = "SHELL")]
+        shell: String,
+    },
+    /// Pin a version for the current project, in `.jtm.toml` or an interop file.
+    Pin {
+        /// The version to pin, such as `java@temurin:21` or `maven@3.9`.
+        #[arg(value_name = "SPEC")]
+        spec: String,
+        /// The file to write: native (.jtm.toml) or an interop format such as sdkmanrc,
+        /// tool-versions or java-version. The default is `pin.default_format`.
+        #[arg(long)]
+        format: Option<String>,
+        /// Pin the exact version the spec resolves to.
+        #[arg(long)]
+        exact: bool,
+        /// Show what would be written without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove a tool's project pin.
+    Unpin {
+        tool: String,
+        /// Only remove it from files in this format.
+        #[arg(long)]
+        format: Option<String>,
+    },
+    /// Show the active version of each tool and the layer that set it.
+    Current { tool: Option<String> },
+    /// Show the executable a command runs here, and which layer chose it.
+    Which { command: String },
+    /// Run a command with specific versions, without changing any state.
+    Exec {
+        /// Versions to use, such as `java@17`.
+        #[arg(value_name = "SPEC")]
+        specs: Vec<String>,
+        /// Install missing versions first.
+        #[arg(long)]
+        install: bool,
+        /// Refresh the index and use the newest matches.
+        #[arg(long)]
+        latest: bool,
+        /// The command to run, after `--`.
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Install everything the project's pins need and update jtm.lock.
+    Sync {
+        /// Show what would be installed and locked without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Fail instead of changing jtm.lock. For CI.
+        #[arg(long)]
+        frozen: bool,
+    },
+    /// Resolve the project's pins and write jtm.lock without installing.
+    Lock {
+        /// Lock only this platform, such as `linux-x64`. Repeatable.
+        #[arg(long, value_name = "PLATFORM")]
+        platform: Vec<String>,
+        /// Move locked versions forward: every tool, or only the one named.
+        #[arg(long, value_name = "TOOL", num_args = 0..=1, default_missing_value = "")]
+        upgrade: Option<String>,
+        /// Show what would be locked without writing jtm.lock.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Print the changes the shell hook applies at a prompt. Called by the hook itself.
+    #[command(hide = true)]
+    HookEnv {
+        #[arg(long, value_name = "SHELL")]
+        shell: String,
+    },
+    /// Offer installed JDKs to Maven and Gradle toolchains, which IDEs read.
+    #[command(subcommand)]
+    Ide(IdeCommand),
+    /// Manage jtm itself.
+    #[command(subcommand, name = "self")]
+    SelfCmd(SelfCommand),
     /// Manage keys trusted to sign version indices.
     #[command(subcommand)]
     Trust(TrustCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum IdeCommand {
+    /// Write installed JDKs into ~/.m2/toolchains.xml and Gradle's
+    /// org.gradle.java.installations.paths, leaving other entries alone.
+    Sync {
+        /// Show what would change without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Only update Maven's toolchains.xml.
+        #[arg(long, conflicts_with = "gradle_only")]
+        maven_only: bool,
+        /// Only update Gradle's gradle.properties.
+        #[arg(long)]
+        gradle_only: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SelfCommand {
+    /// Put the default versions on the user PATH and set their variables, without admin
+    /// rights, and load the shell hook so project pins apply on cd. Edits your shell's rc file
+    /// (your PowerShell profile on Windows) after confirmation or with --yes.
+    Setup {
+        /// Show what would change without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Leave out the shell hook (`jtm shell-init`), so only the default versions are set
+        /// up. Re-running without it adds the hook back.
+        #[arg(long)]
+        no_hook: bool,
+    },
+    /// Take jtm out of your environment: the rc-file and profile lines, the user PATH and
+    /// variables `self setup` set, the current links and the defaults. Asks first, or --yes.
+    /// Installed versions stay unless --purge; the config file and jtm itself always stay.
+    Uninstall {
+        /// Show what would be removed without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Also delete installed versions, plugins, trust and the download cache.
+        #[arg(long)]
+        purge: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

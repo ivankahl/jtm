@@ -1,0 +1,28 @@
+---
+source: crates/jtm-cli/src/shell/tests.rs
+expression: text
+---
+# jtm shell integration for zsh. Add to your rc file:
+#   eval "$(jtm shell-init zsh)"
+jtm() {
+  case " $* " in
+    *" --json "*|*" --help "*|*" -h "*) command '/opt/jtm'\''s/bin/jtm' "$@"; return $? ;;
+  esac
+  if [ "${1-}" = use ]; then
+    shift
+    local __jtm_out
+    __jtm_out="$(command '/opt/jtm'\''s/bin/jtm' use --shell zsh "$@")" || return $?
+    eval "$__jtm_out"
+  else
+    command '/opt/jtm'\''s/bin/jtm' "$@"
+  fi
+}
+_jtm_hook() {
+  local __jtm_status=$? __jtm_out
+  __jtm_out="$(command '/opt/jtm'\''s/bin/jtm' hook-env --shell zsh)" && eval "$__jtm_out"
+  return $__jtm_status
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _jtm_hook
+add-zsh-hook chpwd _jtm_hook
+_jtm_hook

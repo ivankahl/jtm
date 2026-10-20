@@ -1,10 +1,18 @@
 //! The `jtm` command-line interface.
 
+mod activate;
 mod cli;
+mod ide;
 mod logging;
 mod output;
+mod project;
+mod prompt;
+mod setup;
+mod shell;
+mod sync;
 mod tools;
 mod trust;
+mod uninstall;
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
@@ -15,7 +23,7 @@ use clap::error::ErrorKind;
 use jtm_core::{Context, ExitCode as JtmExitCode, GlobalFlags, JtmError, Terminal};
 use serde::Serialize;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, IdeCommand, SelfCommand};
 use crate::output::{Format, Human, JTM_VERSION, Outcome, Renderer};
 use crate::trust::TrustOutcome;
 
@@ -138,6 +146,130 @@ fn main() -> ExitCode {
                 tools::available(&ctx, &tool, &options),
             )
         }
+        Some(Command::Default {
+            spec,
+            install,
+            latest,
+        }) => render(
+            &mut renderer,
+            "default",
+            activate::default(&ctx, &spec, install, latest),
+        ),
+        Some(Command::Use {
+            spec,
+            unset,
+            install,
+            latest,
+            shell,
+        }) => render(
+            &mut renderer,
+            "use",
+            activate::use_version(
+                &ctx,
+                &spec,
+                activate::UseOptions {
+                    unset,
+                    install,
+                    latest,
+                    shell: shell.as_deref(),
+                },
+            ),
+        ),
+        Some(Command::Env { shell }) => {
+            render(&mut renderer, "env", activate::env(&ctx, shell.as_deref()))
+        }
+        Some(Command::ShellInit { shell }) => {
+            render(&mut renderer, "shell-init", activate::shell_init(&shell))
+        }
+        Some(Command::Pin {
+            spec,
+            format,
+            exact,
+            dry_run,
+        }) => render(
+            &mut renderer,
+            "pin",
+            project::pin(&ctx, &spec, format.as_deref(), exact, dry_run),
+        ),
+        Some(Command::Unpin { tool, format }) => render(
+            &mut renderer,
+            "unpin",
+            project::unpin(&ctx, &tool, format.as_deref()),
+        ),
+        Some(Command::Current { tool }) => render(
+            &mut renderer,
+            "current",
+            project::current(&ctx, tool.as_deref()),
+        ),
+        Some(Command::Which { command }) => {
+            render(&mut renderer, "which", project::which(&ctx, &command))
+        }
+        Some(Command::Exec {
+            specs,
+            install,
+            latest,
+            command,
+        }) => match project::exec(&ctx, &specs, &command, install, latest) {
+            Ok((outcome, code)) => {
+                if ctx.json {
+                    let _ = renderer.success(&outcome);
+                    JtmExitCode::Success.into()
+                } else {
+                    // Pass the child's code on whole: `ExitCode` holds only 0 to 255, which
+                    // would lose a Windows code such as 0xC000013A for Ctrl+C.
+                    std::process::exit(code)
+                }
+            }
+            Err(err) => fail(&mut renderer, "exec", &err),
+        },
+        Some(Command::Sync { dry_run, frozen }) => match sync::sync(&ctx, dry_run, frozen) {
+            Ok((outcome, code)) => {
+                let _ = renderer.success(&outcome);
+                code.into()
+            }
+            Err(failure) => {
+                let _ = renderer.failure_with("sync", &failure.error, failure.details());
+                failure.error.exit_code().into()
+            }
+        },
+        Some(Command::Lock {
+            platform,
+            upgrade,
+            dry_run,
+        }) => render(
+            &mut renderer,
+            "lock",
+            sync::lock(&ctx, &platform, upgrade.as_deref(), dry_run),
+        ),
+        Some(Command::HookEnv { shell }) => {
+            render(&mut renderer, "hook-env", activate::hook_env(&ctx, &shell))
+        }
+        Some(Command::Ide(IdeCommand::Sync {
+            dry_run,
+            maven_only,
+            gradle_only,
+        })) => render(
+            &mut renderer,
+            "ide sync",
+            ide::sync(
+                &ctx,
+                ide::IdeOptions {
+                    dry_run,
+                    maven: !gradle_only,
+                    gradle: !maven_only,
+                },
+            ),
+        ),
+        Some(Command::SelfCmd(SelfCommand::Setup { dry_run, no_hook })) => render(
+            &mut renderer,
+            "self setup",
+            setup::setup(&ctx, setup::SetupOptions { dry_run, no_hook }),
+        ),
+        Some(Command::SelfCmd(SelfCommand::Uninstall { dry_run, purge })) => render(
+            &mut renderer,
+            "self uninstall",
+            uninstall::uninstall(&ctx, uninstall::UninstallOptions { dry_run, purge }),
+        ),
         Some(Command::Trust(cmd)) => {
             let name = trust::command_name(&cmd);
             let _ = match trust::run(&ctx, cmd) {

@@ -25,6 +25,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
+      # The shell integration tests run in every shell that is installed. PowerShell and
+      # bash come with every runner, and zsh with macOS.
+      - name: Install zsh and fish
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh fish
+      - name: Install fish
+        if: runner.os == 'macOS'
+        run: brew install fish
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

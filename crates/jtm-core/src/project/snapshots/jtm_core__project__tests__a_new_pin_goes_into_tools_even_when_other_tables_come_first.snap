@@ -1,0 +1,9 @@
+---
+source: crates/jtm-core/src/project/tests.rs
+expression: file.render()
+---
+[settings.index]
+ttl_hours = 1
+
+[tools]
+gradle = "8.10.2"

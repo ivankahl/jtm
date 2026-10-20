@@ -19,6 +19,7 @@ tempfile.workspace = true
 toml.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+toml_edit.workspace = true
 
 [dev-dependencies]
 jtm-archive = { workspace = true, features = ["testing"] }
@@ -28,3 +29,6 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target."cfg(windows)".dependencies]
+junction.workspace = true

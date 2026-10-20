@@ -57,3 +57,7 @@ parser = "single-line"
 
 [hooks]
 post_extract = "fix_permissions"
+
+[ide]
+maven_toolchain = "jdk"
+gradle_installations = true

@@ -105,8 +105,9 @@ The CLI uses nvm-style verbs with a `<tool>@<spec>` argument; every command supp
 | `jtm doctor` | Diagnose PATH, current links, shell hook, proxy, TLS and trust store |  |
 | `jtm describe` | Print a JSON description of every command, flag and output schema | `--format json, markdown` |
 | `jtm mcp` | Run the MCP server over stdio |  |
-| `jtm self setup` | Add current-link bin dirs to `PATH` and set `[env]` variables in the user environment (section 5) | `--dry-run` |
+| `jtm self setup` | Add current-link bin dirs to `PATH` and set `[env]` variables in the user environment, and load the shell hook (section 5) | `--dry-run`, `--no-hook` |
 | `jtm self update` | Update jtm from a signed release | `--check` |
+| `jtm self uninstall` | Take jtm out of the user environment: undo `self setup`, remove the current links and defaults (section 5) | `--dry-run`, `--purge` |
 
 ### Global flags
 
@@ -149,11 +150,12 @@ The active version of a tool comes from the first layer that sets it, in a fixed
 
 jtm activates versions with environment variables and directory links only. There are no shims or launcher binaries, so `java` on `PATH` is always the real executable.
 
-**Defaults: current links.** `jtm default` points `<data>/current/<tool>` at the chosen install dir: a directory junction on Windows (no admin rights or Developer Mode needed) and a symlink on macOS and Linux. `jtm self setup` adds `current/<tool>/<bin_dir>` for each tool to the user `PATH` once, and sets each plugin's `[env]` variables to the link path, for example `JAVA_HOME=<data>/current/java`. Changing the default only retargets the link, so new processes, IDEs and services pick it up with no environment change.
+**Defaults: current links.** `jtm default` points `<data>/current/<tool>` at the chosen install's tool home: a directory junction on Windows (no admin rights or Developer Mode needed) and a symlink on macOS and Linux. The tool home is the install dir plus the `home` the receipt records (section 10), which differs only when the manifest sets `home_subdir`: for a macOS JDK the link points at `…/temurin-21.0.5+11/Contents/Home`, not the bundle root. So `{home}` in `[env]` is the link itself on every OS, and anything registered against `current/<tool>` sees a usable home. The cost is that the link never reaches a bundle's root, such as its `Info.plist`, and finding the install a link belongs to means checking which install dir contains the link's target. `jtm self setup` adds `current/<tool>/<bin_dir>` for each tool to the user `PATH` once, and sets each plugin's `[env]` variables to the link path, for example `JAVA_HOME=<data>/current/java`. Changing the default only retargets the link, so new processes, IDEs and services pick it up with no environment change.
 
 - On Unix, retargeting is atomic: a new symlink is created beside the old one and renamed over it.
 - On Windows, a junction cannot be renamed over an existing one, so jtm creates the new junction under a temporary name, removes the old one, then renames, retrying while a scanner holds it. The gap is milliseconds; a process started in that window may not find `java`.
 - On Windows, `jtm self setup` writes `PATH` and the `[env]` variables to `HKCU\Environment` and broadcasts `WM_SETTINGCHANGE`, with no admin rights. On Unix it shows the rc-file lines and writes them after confirmation or with `--yes`.
+- `jtm self setup` also loads the shell hook (below) by adding a `jtm shell-init` line to the same marked rc-file block, or on Windows to the PowerShell profile (`$PROFILE.CurrentUserCurrentHost`, as PowerShell reports it), after the same confirmation. `--no-hook` leaves the line out; running it again with or without the flag rewrites the block to match. A login shell jtm has no hook for gets the environment only, with a `W_SHELL_HOOK_SKIPPED` warning.
 - A tool's `PATH` entry is added the first time a default is set for it, so `PATH` only grows by the tools actually used.
 
 **Session and project versions: the shell hook.** `jtm shell-init <shell>` prints a hook for bash, zsh, fish and PowerShell. `jtm use` changes the current shell only: it sets the tool's `[env]` variables to the real install dir and puts its `bin` directory ahead of the `current/` entries on `PATH`. On every directory change, the hook also applies project pins, so entering a pinned project switches `JAVA_HOME` and `PATH`, and leaving it restores the defaults. The hook only touches variables jtm set, recording them in `JTM_SESSION_*` and `JTM_PROJECT_*` so it can undo them.
@@ -188,7 +190,7 @@ acme-flyway = { source = "https://github.com/acme/jtm-flyway", rev = "3f9c2e1" }
 ```
 
 - Parsed and edited with `toml_edit`, so comments and ordering survive `jtm pin`.
-- Unknown keys in `[tools]` are an error naming the missing plugin, with the `jtm plugin add` command to fix it.
+- Unknown keys in `[tools]` are an error naming the missing plugin, with the `jtm plugin add` command to fix it. In a `.jtm.toml` further up than the nearest one, such as `~/.jtm.toml`, an unknown key is skipped with a `W_PIN_IGNORED` warning instead, so one stale file does not break every project below it.
 - A `[plugins]` entry is never installed silently. `jtm sync` installs it only after a human confirms at the prompt, with `--trust-project-plugins`, or with a matching entry in the user's trust config (section 9). `--yes` does not count as confirmation.
 
 ### Interop files
@@ -207,8 +209,8 @@ Interop support lives in each plugin's manifest, not in the core. The core finds
 1. **Read order within one directory:** `.jtm.toml`, then `.sdkmanrc`, then `.tool-versions`, then `.java-version`. The first file that sets a given tool wins for that tool. Wrapper files come after all of these (rule 5).
 2. **Conflicts are reported, never silent.** If two files in the same directory set different versions, `jtm current`, `jtm sync` and `--json` output include a `conflict` warning naming both files and the winner.
 3. **Write target:** `jtm pin --format sdkmanrc` writes to that file instead of `.jtm.toml`. The user config key `pin.default_format` changes the default per user.
-4. **Unparseable values:** an interop value the plugin cannot map (for example an unknown SDKMAN vendor suffix) is an error, not a guess. The message suggests the equivalent `.jtm.toml` line.
-5. **Wrapper files are lowest-precedence, read-only pins.** `.mvn/wrapper/maven-wrapper.properties` and `gradle/wrapper/gradle-wrapper.properties` set the Maven or Gradle version only when no pin file in that directory or any parent sets the tool. The version is parsed from the `distributionUrl` file name (for example `gradle-8.10.2-bin.zip`). jtm never writes these files, and still downloads from its own signed index rather than the wrapper's URL. If the wrapper declares `distributionSha256Sum` for the same archive and it differs from the index, jtm warns. `./mvnw` and `./gradlew` keep working unchanged.
+4. **Unparseable values:** an interop value the plugin cannot map (for example an unknown SDKMAN vendor suffix) is an error, not a guess. The message suggests the equivalent `.jtm.toml` line. A file further up is only read for tools no nearer directory decides, so its values cannot fail a project that pins those tools itself.
+5. **Wrapper files are lowest-precedence, read-only pins.** `.mvn/wrapper/maven-wrapper.properties` and `gradle/wrapper/gradle-wrapper.properties` set the Maven or Gradle version only when no pin file in that directory or any parent sets the tool. The version is parsed from the `distributionUrl` file name (for example `gradle-8.10.2-bin.zip`). jtm never writes these files, and still downloads from its own signed index rather than the wrapper's URL. If the wrapper declares `distributionSha256Sum` (the property the `[[interop]]` entry names in `sha256_key`) for the same archive and it differs from the index, jtm warns. `./mvnw` and `./gradlew` keep working unchanged.
 
 ## 7. Plugin architecture
 
@@ -236,8 +238,9 @@ jtm-plugin-maven/
 | `[executables]` | Yes | Executables the tool provides, per OS, used by which and doctor checks (`mvn` and `mvn.cmd`) |
 | `[env]` | No | Variables to set when active, using `{home}` and `{bin}` placeholders, for example `JAVA_HOME = "{home}"` |
 | `[requires]` | No | Runtime dependencies, for example Maven requires `java >= 8`; used for warnings, never auto-installs |
-| `[[interop]]` | No | Pin files this plugin reads or writes, the parser (`keyvalue`, `tool-versions`, `single-line`), the key, and a mapping table or script function |
+| `[[interop]]` | No | Pin files this plugin reads or writes, the parser (`keyvalue`, `tool-versions`, `single-line`, or the read-only `wrapper` with a `pattern` such as `gradle-{version}-*.zip` and an optional `sha256_key` naming the checksum property), the key, and a mapping table or script function. `keyvalue` maps a version suffix (`21.0.5-tem`); `tool-versions` and `single-line` take an optional variant prefix (`temurin-21`) |
 | `[hooks]` | No | Names of `plugin.lua` functions for `resolve_alias`, `parse_interop`, `format_interop`, `compare_versions`, `post_extract` |
+| `[ide]` | No | `maven_toolchain` (the `toolchains.xml` `<type>`, such as `jdk`) and `gradle_installations`, which tell `jtm ide sync` to offer this tool's installs to Maven and Gradle |
 
 ### Example: Maven
 
@@ -555,13 +558,14 @@ sha256 = "<hex>"
 ### Semantics
 
 - **Written by** `jtm lock` and `jtm sync`. Never by `use`, `default` or `exec`.
+- **Where it lives:** in the project root, the nearest directory from the working directory with a `jtm.lock`, a `.jtm.toml` or any pin file. It locks the pins set in the project root and its parents up to the repository root (the nearest directory with `.git`), or in the project root alone outside a repository, so a per-user file such as `~/.tool-versions` never reaches it.
 - **Multi-platform by default.** Artifacts are locked for every v1 platform where the version exists, so Windows, macOS and Linux teammates share one file. `[lock] platforms = [...]` in `.jtm.toml` narrows this.
 - **Locked wins over newer.** While a lock entry still satisfies the pin, `jtm sync` installs the locked version even if a newer one matches. `jtm lock --upgrade [tool]` moves it forward.
 - **Pin changed:** if the pin no longer matches the locked version, `sync` re-resolves that tool and rewrites its entry.
 - **`--frozen`:** fail with `E_LOCK_OUTDATED` instead of rewriting. Intended for CI.
 - **Removed from index:** a locked version no longer in the index still installs from the locked URL and hash, with a warning.
 - **Hash disagreement** with the index for the same version is `E_LOCK_INDEX_MISMATCH` (section 9).
-- **Third-party plugins** are fetched at the locked `rev` and rejected if the manifest hash differs.
+- **Third-party plugins** are fetched at the locked `rev` and rejected if the manifest hash differs, with `E_LOCK_INDEX_MISMATCH`, until `jtm lock --upgrade <tool>` accepts the change. Until `jtm plugin add` (T9.3) records a plugin's source URL, a third-party plugin is locked with `source = "external"` and the `rev` taken from its `<name>@<rev>` directory; the manifest hash check applies either way.
 - Output is deterministic (sorted by tool, then platform) so diffs stay small.
 - **Mirrors apply to locked URLs.** `[mirrors]` rewrites apply to URLs read from `jtm.lock` as well as to index URLs, so a committed lockfile still works behind a corporate proxy. The locked hash is checked as usual.
 
@@ -609,7 +613,7 @@ Success and no-op both exit 0 so `set -e` scripts keep working; the difference i
 
 Stable string codes, never renamed once released: `E_USAGE`, `E_TOOL_UNKNOWN`, `E_VERSION_NOT_FOUND`, `E_ALIAS_UNKNOWN`, `E_PLATFORM_UNSUPPORTED`, `E_NETWORK`, `E_OFFLINE`, `E_SIGNATURE_INVALID`, `E_KEY_UNTRUSTED`, `E_INDEX_EXPIRED`, `E_INDEX_ROLLBACK`, `E_INDEX_BINDING`, `E_INDEX_INVALID`, `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED`, `E_ARCHIVE_UNSAFE`, `E_LOCK_OUTDATED`, `E_LOCK_INDEX_MISMATCH`, `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_INPUT_REQUIRED`, `E_PLUGIN_SCRIPT_LIMIT`, `E_PLUGIN_INVALID`, `E_IN_USE`, `E_PERMISSION`, `E_IO`, `E_INTERNAL`.
 
-Warning codes use the same stable form and travel in `warnings`; they never change the exit code: `W_INDEX_EXPIRED` (an expired index was accepted from a source where expiry is only a warning), `W_INDEX_COPY_REJECTED` (a copy that failed verification was ignored while a valid copy was used), `W_KEYS_FILE_UNAVAILABLE` (no usable keys file, so only the anchors verify), `W_INDEX_REFRESH_FAILED` (a refresh failed and a local copy was used), `W_KEY_NOT_TRUSTED` (a `jtm trust remove` matched nothing) and `W_DEFAULT_CLEARED` (an uninstall removed the version the user default pointed at).
+Warning codes use the same stable form and travel in `warnings`; they never change the exit code: `W_INDEX_EXPIRED` (an expired index was accepted from a source where expiry is only a warning), `W_INDEX_COPY_REJECTED` (a copy that failed verification was ignored while a valid copy was used), `W_KEYS_FILE_UNAVAILABLE` (no usable keys file, so only the anchors verify), `W_INDEX_REFRESH_FAILED` (a refresh failed and a local copy was used), `W_KEY_NOT_TRUSTED` (a `jtm trust remove` matched nothing), `W_DEFAULT_CLEARED` (an uninstall removed the version the user default pointed at), `W_PIN_CONFLICT` (two pin files in one directory set different versions; `details` names the tool, the winner and the other files), `W_PIN_IGNORED` (a `.jtm.toml` above the nearest one names a tool with no plugin), `W_SESSION_INVALID` (a `JTM_SESSION_<TOOL>` value is not a version and is ignored; the shell hook clears it), `W_NOT_INSTALLED` (a session or project version is not installed, so it does not apply), `W_LOCK_NOT_IN_INDEX` (a locked version the index no longer lists installs from the locked URL and hash), `W_LOCK_NO_ARTIFACTS` (no locked platform publishes a locked version), `W_WRAPPER_HASH_MISMATCH` (a wrapper file declares a different SHA-256 for the archive jtm installs) and `W_SHELL_HOOK_SKIPPED` (`jtm self setup` could not add the shell hook, because the login shell has none or no PowerShell was found).
 
 Four codes exit with 7, and they tell an agent whether a flag can help:
 
@@ -685,7 +689,7 @@ All state lives in per-user directories following each OS's conventions, and set
 
 ```text
 <data>/
-  current/<tool>          # junction or symlink to the default install; bin dir on PATH
+  current/<tool>          # junction or symlink to the default install's tool home; bin dir on PATH
   tools/
     java/temurin-21.0.5+11/   # install dir with .jtm-receipt.json
     maven/default-3.9.9/
@@ -732,8 +736,9 @@ Project files can never set `security.*`, `network.*`, `[mirrors]`, `extract.*`,
 ### PATH and shell setup
 
 - The installer (`install.ps1`, `install.sh`) and `jtm self setup` add the `current/<tool>` bin directories and `[env]` variables (section 5) to the user environment. On Windows this edits `HKCU\Environment` and broadcasts `WM_SETTINGCHANGE`; no admin needed.
-- On Unix, `jtm self setup` shows the line it will add to the shell rc file and adds it after confirmation at the prompt, or straight away with `--yes`.
-- `jtm shell-init <shell>` is recommended: it is needed for automatic project pins and for `jtm use`.
+- On Unix, `jtm self setup` shows the lines it will add to the shell rc file and adds them after confirmation at the prompt, or straight away with `--yes`.
+- `jtm self uninstall` undoes this. It removes jtm's marked block from every rc file it could have written (`.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, fish's `conf.d/jtm.fish`) and from the PowerShell profile, deletes `env.sh` and `env.fish`, removes the `HKCU\Environment` values `self setup` recorded (a variable only while it still holds jtm's value), and removes the current links and the defaults. It lists all of this and asks first, or proceeds with `--yes`; without a terminal and without `--yes` it fails with exit 7. Installed versions, plugins, trust and the cache stay unless `--purge` is given, which deletes the entries jtm makes in its data and cache directories and then each directory once empty. `--purge` refuses a data or cache directory that is the file system root or holds the home directory. The user config file and the jtm binary are never deleted; the output names both.
+- `jtm shell-init <shell>` is needed for automatic project pins and for `jtm use`. `jtm self setup` adds it for bash, zsh, fish and PowerShell unless `--no-hook` is given; it can also be added to an rc file by hand.
 
 ## 15. First-party plugins
 

@@ -24,7 +24,7 @@ pub(crate) struct Failure {
 }
 
 impl Failure {
-    fn new(spec: String, err: &JtmError) -> Failure {
+    pub(crate) fn new(spec: String, err: &JtmError) -> Failure {
         Failure {
             spec,
             code: err.code(),
@@ -39,6 +39,16 @@ impl Failure {
 pub(crate) struct InstallFailure {
     pub(crate) error: JtmError,
     pub(crate) failed: Vec<Failure>,
+}
+
+impl Failure {
+    pub(crate) fn render_human(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(
+            out,
+            "failed {}: [{}] {}",
+            self.spec, self.code, self.message
+        )
+    }
 }
 
 impl From<JtmError> for InstallFailure {
@@ -87,11 +97,7 @@ impl Human for InstallData {
             }
         }
         for failure in &self.failed {
-            writeln!(
-                out,
-                "failed {}: [{}] {}",
-                failure.spec, failure.code, failure.message
-            )?;
+            failure.render_human(out)?;
         }
         Ok(())
     }
@@ -270,7 +276,26 @@ impl Reporter {
     }
 }
 
-fn warnings(found: Vec<jtm_security::Warning>) -> Vec<Warning> {
+/// [`warnings`], with each pin conflict's files and winner in its `details`.
+pub(crate) fn warnings_with(
+    found: Vec<jtm_security::Warning>,
+    conflicts: &[jtm_core::pins::Conflict],
+) -> Vec<Warning> {
+    let mut out = warnings(found);
+    for warning in &mut out {
+        if warning.code != jtm_core::pins::W_PIN_CONFLICT {
+            continue;
+        }
+        if let Some(conflict) = conflicts.iter().find(|c| c.message() == warning.message)
+            && let Ok(Value::Object(details)) = serde_json::to_value(conflict)
+        {
+            warning.details = details;
+        }
+    }
+    out
+}
+
+pub(crate) fn warnings(found: Vec<jtm_security::Warning>) -> Vec<Warning> {
     let mut out: Vec<Warning> = Vec::new();
     for w in found {
         if !out
@@ -364,6 +389,14 @@ pub(crate) fn uninstall(
     let spec = ToolSpec::parse(spec)?;
     let session = Session::open(ctx)?;
     let (removed, found_warnings) = session.uninstall(&spec, options)?;
+    // A cleared default must also leave the user environment `jtm self setup` set up, or new
+    // shells keep pointing at the removed current link.
+    if found_warnings
+        .iter()
+        .any(|w| w.code == jtm_core::session::W_DEFAULT_CLEARED)
+    {
+        crate::setup::refresh(&session)?;
+    }
     Ok(Outcome {
         command: "uninstall",
         changed: !options.dry_run && !removed.is_empty(),
