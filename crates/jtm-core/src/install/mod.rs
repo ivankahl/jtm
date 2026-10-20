@@ -100,16 +100,12 @@ pub enum Status {
     Installed,
     AlreadyInstalled,
     WouldInstall,
-    /// Downloaded and verified into the cache for another platform, never extracted.
-    Downloaded,
-    AlreadyDownloaded,
-    WouldDownload,
 }
 
 impl Status {
     /// Whether this outcome changed anything on disk.
     pub const fn changed(self) -> bool {
-        matches!(self, Status::Installed | Status::Downloaded)
+        matches!(self, Status::Installed)
     }
 }
 

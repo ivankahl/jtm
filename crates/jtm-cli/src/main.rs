@@ -85,17 +85,11 @@ fn main() -> ExitCode {
             dry_run,
             force,
             latest,
-            platform,
         }) => {
-            let platform = match platform.as_deref().map(str::parse).transpose() {
-                Ok(platform) => platform,
-                Err(err) => return fail(&mut renderer, "install", &err),
-            };
             let options = jtm_core::session::InstallOptions {
                 force,
                 dry_run,
                 latest,
-                platform,
             };
             match tools::install(&ctx, &specs, options) {
                 Ok((outcome, code)) => {

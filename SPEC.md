@@ -80,7 +80,7 @@ The CLI uses nvm-style verbs with a `<tool>@<spec>` argument; every command supp
 
 | Command | Purpose | Notable flags |
 | --- | --- | --- |
-| `jtm install <spec>...` | Resolve, download, verify and extract one or more versions; never changes the default | `--dry-run`, `--force` (reinstall), `--latest`, `--platform <os-arch>` (download and verify another platform's archive into the cache without extracting it) |
+| `jtm install <spec>...` | Resolve, download, verify and extract one or more versions; never changes the default | `--dry-run`, `--force` (reinstall), `--latest` |
 | `jtm uninstall <tool>@<version>` | Remove an install dir and clear any current link pointing at it | `--all-variants`, `--dry-run` |
 | `jtm use <spec>` | Activate a version in the current shell only | `--install` (install if missing), `--latest`, `--unset` |
 | `jtm default <spec>` | Set the persistent user-wide version; the only command that changes it | `--install`, `--latest` |

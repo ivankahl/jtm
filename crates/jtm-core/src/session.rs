@@ -51,7 +51,7 @@ pub struct Session<'a> {
 pub struct VersionItem {
     #[serde(flatten)]
     pub id: VersionId,
-    /// The install dir, or for an archive downloaded for another platform, the cached archive.
+    /// The install dir.
     pub path: String,
 }
 
@@ -60,7 +60,6 @@ pub struct VersionItem {
 pub struct InstallItem {
     #[serde(flatten)]
     pub version: VersionItem,
-    pub platform: String,
     pub status: Status,
     pub url: String,
     pub sha256: String,
@@ -104,9 +103,6 @@ pub struct InstallOptions {
     pub dry_run: bool,
     /// Refresh the index first, so the newest versions are seen.
     pub latest: bool,
-    /// Resolve against another platform's index. Its archive is downloaded and verified into
-    /// the cache but never extracted, since it cannot run here.
-    pub platform: Option<Platform>,
 }
 
 /// Options for [`Session::uninstall`].
@@ -131,7 +127,6 @@ pub struct AvailableOptions {
 pub struct Planned {
     plugin: Plugin,
     entry: IndexEntry,
-    platform: Platform,
     index_sequence: u64,
     warnings: Vec<Warning>,
 }
@@ -292,12 +287,10 @@ impl<'a> Session<'a> {
     /// Resolves `spec` for installing.
     pub fn plan(&self, spec: &ToolSpec, options: InstallOptions) -> Result<Planned> {
         let plugin = self.plugin(&spec.tool)?;
-        let platform = options.platform.unwrap_or(self.platform);
-        let (entry, index) = self.resolve(spec, &plugin, platform, options.latest)?;
+        let (entry, index) = self.resolve(spec, &plugin, self.platform, options.latest)?;
         Ok(Planned {
             plugin,
             entry,
-            platform,
             index_sequence: index.index.sequence,
             warnings: index.warnings,
         })
@@ -313,7 +306,6 @@ impl<'a> Session<'a> {
         let Planned {
             plugin,
             entry,
-            platform,
             index_sequence,
             warnings,
         } = planned;
@@ -324,7 +316,6 @@ impl<'a> Session<'a> {
                 id: id.clone(),
                 path: path.display().to_string(),
             },
-            platform: platform.as_str().to_owned(),
             status,
             url: url.to_owned(),
             sha256: entry.sha256.clone(),
@@ -336,27 +327,6 @@ impl<'a> Session<'a> {
             client: self.client.as_ref(),
             mirrors: &self.settings.mirrors,
         };
-
-        // Another platform's archive cannot become a usable install dir here, so it is only
-        // downloaded and verified into the cache.
-        if platform != self.platform {
-            let path = self.cache.path(&entry.sha256)?;
-            if options.dry_run {
-                let status = if cached {
-                    Status::AlreadyDownloaded
-                } else {
-                    Status::WouldDownload
-                };
-                return Ok((item(status, &path, &entry.url), warnings));
-            }
-            let got = archives.get(&entry, progress)?;
-            progress(Progress::Verified);
-            let status = match got.origin {
-                jtm_fetch::Origin::Network => Status::Downloaded,
-                jtm_fetch::Origin::Cache => Status::AlreadyDownloaded,
-            };
-            return Ok((item(status, &got.path, &got.url), warnings));
-        }
 
         let dest = id.install_dir(&self.dirs)?;
         if options.dry_run {
@@ -373,7 +343,7 @@ impl<'a> Session<'a> {
             manifest: &plugin.manifest,
             manifest_sha256: &plugin.sha256,
             entry: &entry,
-            platform,
+            platform: self.platform,
             index_sequence,
             force: options.force,
         };

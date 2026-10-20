@@ -84,19 +84,6 @@ impl Human for InstallData {
                     "would install {id} from {} ({} bytes{cached})",
                     item.url, item.size
                 )?,
-                Status::Downloaded => {
-                    writeln!(out, "downloaded {id} for {} to {path}", item.platform)?;
-                }
-                Status::AlreadyDownloaded => writeln!(
-                    out,
-                    "{id} for {} is already downloaded to {path}",
-                    item.platform
-                )?,
-                Status::WouldDownload => writeln!(
-                    out,
-                    "would download {id} for {} from {} ({} bytes)",
-                    item.platform, item.url, item.size
-                )?,
             }
         }
         for failure in &self.failed {
