@@ -28,6 +28,7 @@ use crate::links;
 use crate::pins::{ProjectPins, W_PIN_CONFLICT};
 use crate::platform::Platform;
 use crate::plugins::{BUILTIN, Plugin, Registry};
+use crate::project::PROJECT_FILE;
 use crate::spec::{Selector, ToolSpec};
 
 /// Warning code when uninstalling the version the user default pointed at.
@@ -181,7 +182,8 @@ impl<'a> Session<'a> {
     /// Opens a session from the process environment.
     pub fn open(ctx: &'a Context) -> Result<Session<'a>> {
         let dirs = Dirs::for_context(ctx)?;
-        let config = load_config(&dirs, &|key| std::env::var_os(key))?;
+        let cwd = std::env::current_dir().ok();
+        let config = load_config(&dirs, cwd.as_deref(), &|key| std::env::var_os(key))?;
         Session::new(ctx, dirs, config.settings, Platform::detect()?)
     }
 
@@ -902,19 +904,35 @@ fn clear_link(link: &Path) -> bool {
     removed.is_ok()
 }
 
-/// Loads the user config file, if any, and `JTM__*` variables.
-pub fn load_config(dirs: &Dirs, env: &dyn Fn(&str) -> Option<OsString>) -> Result<Config> {
-    let text = match fs::read_to_string(&dirs.config_file) {
-        Ok(text) => Some(text),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => return Err(JtmError::io(&dirs.config_file, e)),
+/// Loads the user config file, the `[settings]` of the nearest `.jtm.toml` at or above `cwd`,
+/// and `JTM__*` variables.
+pub fn load_config(
+    dirs: &Dirs,
+    cwd: Option<&Path>,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<Config> {
+    let read = |path: &Path| match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(JtmError::io(path, e)),
     };
+    let user = read(&dirs.config_file)?;
+    let mut project = None;
+    for dir in cwd.into_iter().flat_map(Path::ancestors) {
+        let path = dir.join(PROJECT_FILE);
+        if let Some(text) = read(&path)? {
+            project = Some((path, text));
+            break;
+        }
+    }
     Config::load(&ConfigInputs {
-        user: text.as_deref().map(|text| FileSource {
+        user: user.as_deref().map(|text| FileSource {
             path: &dirs.config_file,
             text,
         }),
-        project: None,
+        project: project
+            .as_ref()
+            .map(|(path, text)| FileSource { path, text }),
         env,
         flags: &[],
     })

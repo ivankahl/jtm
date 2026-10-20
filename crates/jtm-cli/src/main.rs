@@ -4,6 +4,7 @@ mod activate;
 mod cli;
 mod logging;
 mod output;
+mod project;
 mod prompt;
 mod shell;
 mod tools;
@@ -176,6 +177,45 @@ fn main() -> ExitCode {
         Some(Command::ShellInit { shell }) => {
             render(&mut renderer, "shell-init", activate::shell_init(&shell))
         }
+        Some(Command::Pin {
+            spec,
+            format,
+            exact,
+            dry_run,
+        }) => render(
+            &mut renderer,
+            "pin",
+            project::pin(&ctx, &spec, format.as_deref(), exact, dry_run),
+        ),
+        Some(Command::Unpin { tool, format }) => render(
+            &mut renderer,
+            "unpin",
+            project::unpin(&ctx, &tool, format.as_deref()),
+        ),
+        Some(Command::Current { tool }) => render(
+            &mut renderer,
+            "current",
+            project::current(&ctx, tool.as_deref()),
+        ),
+        Some(Command::Which { command }) => {
+            render(&mut renderer, "which", project::which(&ctx, &command))
+        }
+        Some(Command::Exec {
+            specs,
+            install,
+            latest,
+            command,
+        }) => match project::exec(&ctx, &specs, &command, install, latest) {
+            Ok((outcome, code)) => {
+                if ctx.json {
+                    let _ = renderer.success(&outcome);
+                    JtmExitCode::Success.into()
+                } else {
+                    ExitCode::from(u8::try_from(code).unwrap_or(1))
+                }
+            }
+            Err(err) => fail(&mut renderer, "exec", &err),
+        },
         Some(Command::Trust(cmd)) => {
             let name = trust::command_name(&cmd);
             let _ = match trust::run(&ctx, cmd) {

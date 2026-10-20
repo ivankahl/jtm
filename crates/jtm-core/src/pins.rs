@@ -296,5 +296,163 @@ fn interop_error(tool: &str, path: &Path, err: &InteropError) -> JtmError {
     }
 }
 
+/// The formats `plugin` can be pinned in: `native` and its writable interop files.
+pub fn formats(plugin: &Plugin) -> Vec<&str> {
+    std::iter::once(NATIVE)
+        .chain(
+            plugin
+                .manifest
+                .interop
+                .iter()
+                .filter(|i| i.parser != InteropParser::Wrapper)
+                .map(format_name),
+        )
+        .collect()
+}
+
+/// The format name of `.jtm.toml`.
+pub const NATIVE: &str = "native";
+
+/// What [`write_pin`] wrote, or with `dry_run` would write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PinWrite {
+    pub tool: String,
+    pub file: PathBuf,
+    pub format: String,
+    /// The value as the file holds it, such as `temurin:21` or `21-tem`.
+    pub value: String,
+    pub changed: bool,
+}
+
+/// Pins `selector` for `plugin` in `dir`, in `format`, keeping the rest of the file.
+pub fn write_pin(
+    dir: &Path,
+    plugin: &Plugin,
+    format: &str,
+    selector: &Selector,
+    dry_run: bool,
+) -> Result<PinWrite> {
+    let tool = plugin.manifest.name.clone();
+    if let Some(variant) = &selector.variant
+        && !plugin.manifest.has_variant(variant)
+    {
+        return Err(JtmError::VersionNotFound {
+            tool,
+            spec: format!("{selector} (no variant `{variant}`)"),
+        });
+    }
+    if format == NATIVE {
+        let path = dir.join(PROJECT_FILE);
+        let mut file = ProjectFile::read(dir)?.unwrap_or_else(|| ProjectFile::empty(&path));
+        let changed = file.set_tool(&tool, selector);
+        if changed && !dry_run {
+            file.write()?;
+        }
+        return Ok(PinWrite {
+            tool,
+            file: path,
+            format: NATIVE.to_owned(),
+            value: selector.to_string(),
+            changed,
+        });
+    }
+    let interop = find_interop(plugin, format)?;
+    let path = dir.join(&interop.file);
+    let raw = interop::format(
+        &plugin.manifest,
+        interop,
+        selector.variant.as_deref(),
+        &selector.value,
+    )
+    .map_err(|e| interop_error(&tool, &path, &e))?;
+    let existing = read_optional(&path)?;
+    let text = interop::write(interop, existing.as_deref(), &raw)
+        .map_err(|e| interop_error(&tool, &path, &e))?;
+    let changed = existing.as_deref() != Some(text.as_str());
+    if changed && !dry_run {
+        crate::project::write_atomic(&path, text.as_bytes())?;
+    }
+    Ok(PinWrite {
+        tool,
+        file: path,
+        format: format.to_owned(),
+        value: raw,
+        changed,
+    })
+}
+
+/// Removes `plugin`'s pins from every file in the directory of its winning pin in `pins`,
+/// only from files in `format` when given. Returns the files changed, or with `dry_run` the
+/// files that would change. A single-line file left empty is deleted.
+pub fn remove_pins(
+    pins: &ProjectPins,
+    plugin: &Plugin,
+    format: Option<&str>,
+    dry_run: bool,
+) -> Result<Vec<PathBuf>> {
+    let tool = &plugin.manifest.name;
+    let Some(pin) = pins.pins.get(tool) else {
+        return Ok(Vec::new());
+    };
+    if pin.kind == PinKind::Wrapper {
+        return Err(JtmError::usage(format!(
+            "`{tool}` is pinned by the wrapper file {}, which jtm never edits",
+            pin.file.display()
+        )));
+    }
+    let Some(dir) = pin.file.parent() else {
+        return Ok(Vec::new());
+    };
+    let mut removed = Vec::new();
+    if format.is_none_or(|f| f == NATIVE)
+        && let Some(mut file) = ProjectFile::read(dir)?
+        && file.remove_tool(tool)
+    {
+        if !dry_run {
+            file.write()?;
+        }
+        removed.push(file.path().to_path_buf());
+    }
+    for interop in plugin.manifest.interop.iter().filter(|i| {
+        i.parser != InteropParser::Wrapper && format.is_none_or(|f| f == format_name(i))
+    }) {
+        let path = dir.join(&interop.file);
+        let Some(text) = read_optional(&path)? else {
+            continue;
+        };
+        let Some(rest) = interop::remove(interop, &text) else {
+            continue;
+        };
+        if !dry_run {
+            if rest.trim().is_empty() && interop.parser == InteropParser::SingleLine {
+                fs::remove_file(&path).map_err(|e| JtmError::io(&path, e))?;
+            } else {
+                crate::project::write_atomic(&path, rest.as_bytes())?;
+            }
+        }
+        removed.push(path);
+    }
+    Ok(removed)
+}
+
+fn find_interop<'p>(plugin: &'p Plugin, format: &str) -> Result<&'p Interop> {
+    plugin
+        .manifest
+        .interop
+        .iter()
+        .find(|i| i.parser != InteropParser::Wrapper && format_name(i) == format)
+        .ok_or_else(|| {
+            JtmError::usage(format!(
+                "`{}` cannot be pinned in format `{format}`; it supports {}",
+                plugin.manifest.name,
+                formats(plugin)
+                    .iter()
+                    .map(|f| format!("`{f}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })
+}
+
 #[cfg(test)]
 mod tests;

@@ -1,12 +1,10 @@
 //! `jtm default`, `use`, `env` and `shell-init`.
 
-use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use jtm_core::activate::{Change, plan_env, session_from_env};
-use jtm_core::pins::{ProjectPins, discover};
-use jtm_core::plugins::Plugin;
+use jtm_core::activate::Change;
+use jtm_core::here::Here;
 use jtm_core::session::{DefaultItem, EnsureOptions, PATH_SEPARATOR, Session, VersionItem};
 use jtm_core::{Context, JtmError, Result, Selector, ToolSpec};
 use serde::Serialize;
@@ -58,7 +56,7 @@ pub(crate) fn default(
 
 /// Runs `op`, and when it needs a missing version installed, asks and runs it again with
 /// `install` set.
-fn with_install_prompt<T>(
+pub(crate) fn with_install_prompt<T>(
     ctx: &Context,
     spec: &ToolSpec,
     options: EnsureOptions,
@@ -121,58 +119,32 @@ impl Human for ShellInitData {
     }
 }
 
-/// Everything activation reads from the process: plugins, pins and session versions.
-struct Here<'s, 'c> {
-    session: &'s Session<'c>,
-    plugins: Vec<Plugin>,
-    tools: Vec<String>,
-    pins: ProjectPins,
-    selected: BTreeMap<String, Selector>,
+/// The changes that make this shell match the session and project choices in `here`,
+/// rendered for `shell`, and any warnings.
+pub(crate) fn env_data(
+    here: &Here<'_, '_>,
+    shell: Option<Shell>,
+) -> Result<(EnvData, Vec<jtm_security::Warning>)> {
+    let (overrides, found) = here.overrides(&[])?;
+    let changes = here.plan(&|key| std::env::var(key).ok(), &overrides);
+    let script = match shell {
+        Some(shell) => shell::render(shell, &changes, PATH_SEPARATOR)?,
+        None => String::new(),
+    };
+    Ok((
+        EnvData {
+            shell: shell.map(Shell::name),
+            changes,
+            script,
+        },
+        found,
+    ))
 }
 
-impl<'s, 'c> Here<'s, 'c> {
-    fn read(session: &'s Session<'c>) -> Result<Here<'s, 'c>> {
-        let plugins = session.plugins()?;
-        let tools: Vec<String> = plugins.iter().map(|p| p.manifest.name.clone()).collect();
-        let cwd = std::env::current_dir().map_err(|e| JtmError::io(".", e))?;
-        let pins = discover(&cwd, &plugins)?;
-        let selected = session_from_env(&tools, &|key| std::env::var_os(key))?;
-        Ok(Here {
-            session,
-            plugins,
-            tools,
-            pins,
-            selected,
-        })
-    }
-
-    /// The changes that make the shell match the session and project choices, rendered for
-    /// `shell`, and any warnings.
-    fn env(&self, shell: Option<Shell>) -> Result<(EnvData, Vec<jtm_security::Warning>)> {
-        let (overrides, found) =
-            self.session
-                .overrides(&self.selected, &self.pins, &self.plugins)?;
-        let tools_dir = self.session.dirs().tools();
-        let changes = plan_env(
-            &|key| std::env::var(key).ok(),
-            &overrides,
-            &self.tools,
-            &tools_dir,
-            PATH_SEPARATOR,
-        );
-        let script = match shell {
-            Some(shell) => shell::render(shell, &changes, PATH_SEPARATOR)?,
-            None => String::new(),
-        };
-        Ok((
-            EnvData {
-                shell: shell.map(Shell::name),
-                changes,
-                script,
-            },
-            found,
-        ))
-    }
+/// Reads the activation context for the working directory and process environment.
+pub(crate) fn here<'s, 'c>(session: &'s Session<'c>) -> Result<Here<'s, 'c>> {
+    let cwd = std::env::current_dir().map_err(|e| JtmError::io(".", e))?;
+    Here::read(session, &cwd, &|key| std::env::var_os(key))
 }
 
 pub(crate) fn env(ctx: &Context, shell: Option<&str>) -> Result<Outcome<EnvData>> {
@@ -182,8 +154,8 @@ pub(crate) fn env(ctx: &Context, shell: Option<&str>) -> Result<Outcome<EnvData>
         None => Some(Shell::host_default()),
     };
     let session = Session::open(ctx)?;
-    let here = Here::read(&session)?;
-    let (data, found) = here.env(shell)?;
+    let here = here(&session)?;
+    let (data, found) = env_data(&here, shell)?;
     Ok(Outcome {
         command: "env",
         changed: false,
@@ -216,7 +188,7 @@ pub(crate) fn use_version(
     }
     let spec = ToolSpec::parse(spec)?;
     let session = Session::open(ctx)?;
-    let mut here = Here::read(&session)?;
+    let mut here = here(&session)?;
     let version = if options.unset {
         if spec.selector.is_some() {
             return Err(JtmError::usage(format!(
@@ -251,7 +223,7 @@ pub(crate) fn use_version(
             path: found.dir.display().to_string(),
         })
     };
-    let (env, found) = here.env(shell)?;
+    let (env, found) = env_data(&here, shell)?;
     Ok(Outcome {
         command: "use",
         changed: !env.changes.is_empty(),

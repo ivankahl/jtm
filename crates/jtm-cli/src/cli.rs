@@ -112,6 +112,48 @@ pub(crate) enum Command {
         #[arg(value_name = "SHELL")]
         shell: String,
     },
+    /// Pin a version for the current project, in `.jtm.toml` or an interop file.
+    Pin {
+        /// The version to pin, such as `java@temurin:21` or `maven@3.9`.
+        #[arg(value_name = "SPEC")]
+        spec: String,
+        /// The file to write: native (.jtm.toml) or an interop format such as sdkmanrc,
+        /// tool-versions or java-version. The default is `pin.default_format`.
+        #[arg(long)]
+        format: Option<String>,
+        /// Pin the exact version the spec resolves to.
+        #[arg(long)]
+        exact: bool,
+        /// Show what would be written without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove a tool's project pin.
+    Unpin {
+        tool: String,
+        /// Only remove it from files in this format.
+        #[arg(long)]
+        format: Option<String>,
+    },
+    /// Show the active version of each tool and the layer that set it.
+    Current { tool: Option<String> },
+    /// Show the executable a command runs here, and which layer chose it.
+    Which { command: String },
+    /// Run a command with specific versions, without changing any state.
+    Exec {
+        /// Versions to use, such as `java@17`.
+        #[arg(value_name = "SPEC")]
+        specs: Vec<String>,
+        /// Install missing versions first.
+        #[arg(long)]
+        install: bool,
+        /// Refresh the index and use the newest matches.
+        #[arg(long)]
+        latest: bool,
+        /// The command to run, after `--`.
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
     /// Manage keys trusted to sign version indices.
     #[command(subcommand)]
     Trust(TrustCommand),
