@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 21e806353b50ec9aec6d9bd9a2bd3c3333b10c46dabec1e247b9fb009e0a9344 # shrinks to entries = [File("a", [100, 97, 116, 97], 420)], copy = false
+cc 7cf2e8e2ae1ba47190dd397eb40c3d9a0916b91aebdfdc54a647d027f6209651 # shrinks to entries = [File("a", [100, 97, 116, 97], 420)], copy = false
+cc 355e9b4f537e89fcb6523c137a37721dc700f64e4afa7acb1127c75cddba4abb # shrinks to entries = [File("a", [100, 97, 116, 97], 420), File("a", [100, 97, 116, 97], 420)], copy = false

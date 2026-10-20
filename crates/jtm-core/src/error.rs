@@ -656,6 +656,29 @@ impl From<jtm_security::Error> for JtmError {
     }
 }
 
+impl From<jtm_archive::Error> for JtmError {
+    fn from(err: jtm_archive::Error) -> Self {
+        use jtm_archive::Error as A;
+        match err {
+            A::Unsafe { entry, reason } => JtmError::ArchiveUnsafe { entry, reason },
+            A::Malformed { message } => JtmError::ArchiveUnsafe {
+                entry: String::new(),
+                reason: message,
+            },
+            A::Io { path, source } if source.kind() == std::io::ErrorKind::PermissionDenied => {
+                JtmError::Permission {
+                    path,
+                    source: Some(source),
+                }
+            }
+            A::Io { path, source } => {
+                JtmError::internal(format!("cannot access {}: {source}", path.display()))
+            }
+            other => JtmError::internal(other.to_string()),
+        }
+    }
+}
+
 impl From<jtm_fetch::Error> for JtmError {
     fn from(err: jtm_fetch::Error) -> Self {
         use jtm_fetch::Error as F;
@@ -1020,6 +1043,20 @@ mod tests {
         });
         assert_eq!(mismatch.code(), "E_HASH_MISMATCH");
         assert_eq!(mismatch.details()["url"], "https://a");
+    }
+
+    #[test]
+    fn archive_errors_are_unsafe_archives() {
+        let unsafe_entry = JtmError::from(jtm_archive::Error::Unsafe {
+            entry: "../x".into(),
+            reason: "contains a `..` component".into(),
+        });
+        assert_eq!(unsafe_entry.code(), "E_ARCHIVE_UNSAFE");
+        assert_eq!(unsafe_entry.details()["entry"], "../x");
+        let malformed = JtmError::from(jtm_archive::Error::Malformed {
+            message: "bad header".into(),
+        });
+        assert_eq!(malformed.code(), "E_ARCHIVE_UNSAFE");
     }
 
     #[test]

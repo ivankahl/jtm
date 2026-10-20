@@ -9,6 +9,15 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+flate2.workspace = true
+tar.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
