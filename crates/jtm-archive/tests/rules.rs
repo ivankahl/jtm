@@ -7,8 +7,8 @@ mod common;
 use std::fs;
 
 use common::{E, Scratch, dir, exe, file, hard, symlink, tar_gz, walk, zip};
+use jtm_archive::testing::TarEntryType as EntryType;
 use jtm_archive::{Error, Format, Limits, LinkMode, Options};
-use tar::EntryType;
 
 /// Both formats, for entries a zip can hold.
 fn both(entries: &[E]) -> [(Format, Vec<u8>); 2] {

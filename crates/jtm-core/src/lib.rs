@@ -5,6 +5,7 @@ pub mod context;
 pub mod dirs;
 pub mod error;
 pub mod indices;
+pub mod install;
 pub mod platform;
 pub mod spec;
 pub mod trust;

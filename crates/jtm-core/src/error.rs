@@ -230,6 +230,11 @@ pub enum JtmError {
     #[error("plugin `{plugin}` signing keys are not valid: {message}")]
     PluginSigningKeys { plugin: String, message: String },
 
+    /// An extracted archive does not have the layout the plugin's manifest describes, such as
+    /// a missing `home_subdir` or a declared executable that is not there.
+    #[error("the `{plugin}` archive does not match its manifest: {message}")]
+    LayoutMismatch { plugin: String, message: String },
+
     /// A configuration value that is invalid or not allowed where it was set. `key` is the
     /// dotted key, or empty when the whole file is at fault.
     #[error("{origin}: {}{message}", key_prefix(.key))]
@@ -371,9 +376,9 @@ impl JtmError {
             JtmError::Usage { .. } | JtmError::InvalidSpec { .. } | JtmError::Config { .. } => {
                 ErrorCode::Usage
             }
-            JtmError::InvalidManifest { .. } | JtmError::PluginSigningKeys { .. } => {
-                ErrorCode::PluginInvalid
-            }
+            JtmError::InvalidManifest { .. }
+            | JtmError::PluginSigningKeys { .. }
+            | JtmError::LayoutMismatch { .. } => ErrorCode::PluginInvalid,
             JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
@@ -451,6 +456,10 @@ impl JtmError {
                         .collect::<Vec<_>>()
                         .into(),
                 ),
+            ]),
+            JtmError::LayoutMismatch { plugin, message } => obj([
+                ("plugin", plugin.as_str().into()),
+                ("message", message.as_str().into()),
             ]),
             JtmError::PluginSigningKeys { plugin, message } => obj([
                 ("plugin", plugin.as_str().into()),

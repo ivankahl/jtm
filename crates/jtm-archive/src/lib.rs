@@ -16,6 +16,9 @@ mod name;
 mod tar_gz;
 mod zip_file;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 use std::path::Path;
 
 pub use error::{Error, Result};

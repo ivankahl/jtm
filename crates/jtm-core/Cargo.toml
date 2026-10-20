@@ -18,6 +18,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+jtm-archive = { workspace = true, features = ["testing"] }
 insta.workspace = true
 jtm-security = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

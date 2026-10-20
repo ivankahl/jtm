@@ -990,6 +990,7 @@ name = "jtm-archive"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "jtm-archive",
  "proptest",
  "tar",
  "tempfile",
