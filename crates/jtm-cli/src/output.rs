@@ -119,8 +119,20 @@ impl<O: Write, E: Write> Renderer<O, E> {
     }
 
     pub(crate) fn failure(&mut self, command: &str, error: &JtmError) -> io::Result<()> {
+        self.failure_with(command, error, Map::new())
+    }
+
+    /// A failure whose `details` also carry `extra`.
+    pub(crate) fn failure_with(
+        &mut self,
+        command: &str,
+        error: &JtmError,
+        extra: Map<String, Value>,
+    ) -> io::Result<()> {
         match self.format {
             Format::Json => {
+                let mut details = error.details();
+                details.extend(extra);
                 let envelope = ErrorEnvelope {
                     ok: false,
                     command,
@@ -128,7 +140,7 @@ impl<O: Write, E: Write> Renderer<O, E> {
                         code: error.code(),
                         message: error.to_string(),
                         retryable: error.retryable(),
-                        details: error.details(),
+                        details,
                     },
                     jtm_version: JTM_VERSION,
                 };

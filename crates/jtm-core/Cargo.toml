@@ -9,13 +9,19 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+jtm-archive.workspace = true
+jtm-fetch.workspace = true
 jtm-plugin.workspace = true
 jtm-security.workspace = true
-toml.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+tracing.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+jtm-archive = { workspace = true, features = ["testing"] }
 insta.workspace = true
 jtm-security = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

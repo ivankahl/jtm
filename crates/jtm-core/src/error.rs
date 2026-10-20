@@ -91,6 +91,7 @@ pub enum ErrorCode {
     PluginInvalid,
     InUse,
     Permission,
+    Io,
     Internal,
 }
 
@@ -122,6 +123,7 @@ impl ErrorCode {
         ErrorCode::PluginInvalid,
         ErrorCode::InUse,
         ErrorCode::Permission,
+        ErrorCode::Io,
         ErrorCode::Internal,
     ];
 
@@ -153,6 +155,7 @@ impl ErrorCode {
             ErrorCode::PluginInvalid => "E_PLUGIN_INVALID",
             ErrorCode::InUse => "E_IN_USE",
             ErrorCode::Permission => "E_PERMISSION",
+            ErrorCode::Io => "E_IO",
             ErrorCode::Internal => "E_INTERNAL",
         }
     }
@@ -165,9 +168,11 @@ impl ErrorCode {
             | ErrorCode::VersionNotFound
             | ErrorCode::AliasUnknown
             | ErrorCode::PlatformUnsupported => ExitCode::NotFound,
-            ErrorCode::Network | ErrorCode::Offline | ErrorCode::InUse | ErrorCode::Permission => {
-                ExitCode::Io
-            }
+            ErrorCode::Network
+            | ErrorCode::Offline
+            | ErrorCode::InUse
+            | ErrorCode::Permission
+            | ErrorCode::Io => ExitCode::Io,
             ErrorCode::SignatureInvalid
             | ErrorCode::IndexExpired
             | ErrorCode::IndexRollback
@@ -229,6 +234,11 @@ pub enum JtmError {
     /// A plugin manifest whose `[index] signing_keys` are not usable public keys.
     #[error("plugin `{plugin}` signing keys are not valid: {message}")]
     PluginSigningKeys { plugin: String, message: String },
+
+    /// An extracted archive does not have the layout the plugin's manifest describes, such as
+    /// a missing `home_subdir` or a declared executable that is not there.
+    #[error("the `{plugin}` archive does not match its manifest: {message}")]
+    LayoutMismatch { plugin: String, message: String },
 
     /// A configuration value that is invalid or not allowed where it was set. `key` is the
     /// dotted key, or empty when the whole file is at fault.
@@ -360,6 +370,15 @@ pub enum JtmError {
         source: Option<std::io::Error>,
     },
 
+    /// Reading or writing a file failed for a reason other than permissions, such as a full
+    /// disk.
+    #[error("cannot access {}: {source}", path.display())]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("internal error: {message}")]
     Internal { message: String },
 }
@@ -371,9 +390,9 @@ impl JtmError {
             JtmError::Usage { .. } | JtmError::InvalidSpec { .. } | JtmError::Config { .. } => {
                 ErrorCode::Usage
             }
-            JtmError::InvalidManifest { .. } | JtmError::PluginSigningKeys { .. } => {
-                ErrorCode::PluginInvalid
-            }
+            JtmError::InvalidManifest { .. }
+            | JtmError::PluginSigningKeys { .. }
+            | JtmError::LayoutMismatch { .. } => ErrorCode::PluginInvalid,
             JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
@@ -399,6 +418,7 @@ impl JtmError {
             JtmError::PluginScriptLimit { .. } => ErrorCode::PluginScriptLimit,
             JtmError::InUse { .. } => ErrorCode::InUse,
             JtmError::Permission { .. } => ErrorCode::Permission,
+            JtmError::Io { .. } => ErrorCode::Io,
             // SPEC-QUESTION: section 12 has no code for corrupt local state. It is not a
             // verification failure of anything downloaded, so it is reported as internal.
             JtmError::TrustStateCorrupt { .. } | JtmError::Internal { .. } => ErrorCode::Internal,
@@ -451,6 +471,10 @@ impl JtmError {
                         .collect::<Vec<_>>()
                         .into(),
                 ),
+            ]),
+            JtmError::LayoutMismatch { plugin, message } => obj([
+                ("plugin", plugin.as_str().into()),
+                ("message", message.as_str().into()),
             ]),
             JtmError::PluginSigningKeys { plugin, message } => obj([
                 ("plugin", plugin.as_str().into()),
@@ -549,9 +573,9 @@ impl JtmError {
                 ("plugin", plugin.as_str().into()),
                 ("limit", limit.as_str().into()),
             ]),
-            JtmError::InUse { path: p } | JtmError::Permission { path: p, .. } => {
-                obj([("path", path(p))])
-            }
+            JtmError::InUse { path: p }
+            | JtmError::Permission { path: p, .. }
+            | JtmError::Io { path: p, .. } => obj([("path", path(p))]),
         }
     }
 
@@ -559,6 +583,20 @@ impl JtmError {
     pub fn usage(message: impl Into<String>) -> Self {
         JtmError::Usage {
             message: message.into(),
+        }
+    }
+
+    /// A failed file operation on `path`: `E_PERMISSION` when access was denied, otherwise
+    /// `E_IO`.
+    pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+        let path = path.into();
+        if source.kind() == std::io::ErrorKind::PermissionDenied {
+            JtmError::Permission {
+                path,
+                source: Some(source),
+            }
+        } else {
+            JtmError::Io { path, source }
         }
     }
 
@@ -642,15 +680,60 @@ impl From<jtm_security::Error> for JtmError {
                 expires,
             },
             S::State { path, message } => JtmError::TrustStateCorrupt { path, message },
-            S::Io { path, source } if source.kind() == std::io::ErrorKind::PermissionDenied => {
-                JtmError::Permission {
-                    path,
-                    source: Some(source),
-                }
+            S::Io { path, source } => JtmError::io(path, source),
+            other => JtmError::internal(other.to_string()),
+        }
+    }
+}
+
+impl From<jtm_archive::Error> for JtmError {
+    fn from(err: jtm_archive::Error) -> Self {
+        use jtm_archive::Error as A;
+        match err {
+            A::Unsafe { entry, reason } => JtmError::ArchiveUnsafe { entry, reason },
+            A::Malformed { message } => JtmError::ArchiveUnsafe {
+                entry: String::new(),
+                reason: message,
+            },
+            A::Io { path, source } => JtmError::io(path, source),
+            other => JtmError::internal(other.to_string()),
+        }
+    }
+}
+
+impl From<jtm_fetch::Error> for JtmError {
+    fn from(err: jtm_fetch::Error) -> Self {
+        use jtm_fetch::Error as F;
+        match err {
+            F::Scheme { url, reason } => {
+                JtmError::usage(format!("refusing to fetch {url}: {reason}"))
             }
-            S::Io { path, source } => {
-                JtmError::internal(format!("cannot access {}: {source}", path.display()))
-            }
+            F::Network {
+                url,
+                message,
+                source,
+                ..
+            } => JtmError::Network {
+                url,
+                message,
+                source,
+            },
+            F::Status { url, status } => JtmError::Network {
+                message: format!("the server answered HTTP {status}"),
+                url,
+                source: None,
+            },
+            F::TooLarge { url, limit } => JtmError::SizeExceeded { what: url, limit },
+            F::HashMismatch {
+                url,
+                expected,
+                actual,
+            } => JtmError::HashMismatch {
+                url,
+                expected,
+                actual,
+            },
+            F::Io { path, source } => JtmError::io(path, source),
             other => JtmError::internal(other.to_string()),
         }
     }
@@ -736,6 +819,7 @@ mod tests {
             (E::KeyChanged, 7),
             (E::InputRequired, 7),
             (E::PluginScriptLimit, 1),
+            (E::Io, 4),
             (E::PluginInvalid, 5),
             (E::InUse, 4),
             (E::Permission, 4),
@@ -940,6 +1024,73 @@ mod tests {
             source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
         });
         assert_eq!(denied.code(), "E_PERMISSION");
+    }
+
+    #[test]
+    fn fetch_errors_map_to_stable_codes() {
+        use jtm_fetch::Error as F;
+        let code = |err: F| JtmError::from(err).code();
+        assert_eq!(
+            code(F::Scheme {
+                url: "http://a".into(),
+                reason: "no".into()
+            }),
+            "E_USAGE"
+        );
+        assert_eq!(
+            code(F::Status {
+                url: "https://a".into(),
+                status: 503
+            }),
+            "E_NETWORK"
+        );
+        assert_eq!(
+            code(F::TooLarge {
+                url: "https://a".into(),
+                limit: 1
+            }),
+            "E_SIZE_EXCEEDED"
+        );
+        let mismatch = JtmError::from(F::HashMismatch {
+            url: "https://a".into(),
+            expected: "aa".into(),
+            actual: "bb".into(),
+        });
+        assert_eq!(mismatch.code(), "E_HASH_MISMATCH");
+        assert_eq!(mismatch.details()["url"], "https://a");
+    }
+
+    #[test]
+    fn archive_errors_are_unsafe_archives() {
+        let unsafe_entry = JtmError::from(jtm_archive::Error::Unsafe {
+            entry: "../x".into(),
+            reason: "contains a `..` component".into(),
+        });
+        assert_eq!(unsafe_entry.code(), "E_ARCHIVE_UNSAFE");
+        assert_eq!(unsafe_entry.details()["entry"], "../x");
+        let malformed = JtmError::from(jtm_archive::Error::Malformed {
+            message: "bad header".into(),
+        });
+        assert_eq!(malformed.code(), "E_ARCHIVE_UNSAFE");
+    }
+
+    #[test]
+    fn io_failures_are_e_io_unless_access_was_denied() {
+        let full = JtmError::io("tools", std::io::Error::other("no space left on device"));
+        assert_eq!(full.code(), "E_IO");
+        assert_eq!(full.exit_code(), ExitCode::Io);
+        assert!(!full.retryable());
+        assert_eq!(full.details()["path"], "tools");
+        let denied = JtmError::io(
+            "tools",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(denied.code(), "E_PERMISSION");
+        let from_fetch = JtmError::from(jtm_fetch::Error::Io {
+            path: "cache".into(),
+            source: std::io::Error::other("disk full"),
+        });
+        assert_eq!(from_fetch.code(), "E_IO");
     }
 
     #[test]
