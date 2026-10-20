@@ -26,6 +26,8 @@ pub const RESERVED_NAMES: &[&str] = &["marketplace"];
 pub const ENV_PLACEHOLDERS: &[&str] = &["home", "bin"];
 /// OS names allowed as keys in per-OS tables.
 pub const OS_NAMES: &[&str] = &["windows", "macos", "linux"];
+/// The platform of an index whose artifacts run on every platform.
+pub const ANY_PLATFORM: &str = "any";
 
 /// A validated plugin manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -129,6 +131,22 @@ impl Index {
     /// The number of `signing_keys` that must sign, 1 unless the manifest says otherwise.
     pub fn threshold(&self) -> u32 {
         self.threshold.unwrap_or(1)
+    }
+
+    /// Whether the plugin publishes one index for every platform: its URL has neither `{os}`
+    /// nor `{arch}`, so it can only name one file. Such an index says `"platform": "any"`.
+    pub fn platform_independent(&self) -> bool {
+        !self.url.contains("{os}") && !self.url.contains("{arch}")
+    }
+
+    /// The platform to request this plugin's index for on `platform`: [`ANY_PLATFORM`] for a
+    /// platform-independent plugin, else `platform` itself.
+    pub fn index_platform<'a>(&self, platform: &'a str) -> &'a str {
+        if self.platform_independent() {
+            ANY_PLATFORM
+        } else {
+            platform
+        }
     }
 }
 

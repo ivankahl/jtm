@@ -19,6 +19,10 @@ use crate::session::{PATH_SEPARATOR, Session, pin_warnings};
 use crate::spec::Selector;
 use crate::sync::apply_lock;
 
+/// Warning code when an active tool's `[requires]` entry is not met by the active version of
+/// the tool it needs, such as a build tool that needs a newer Java than the one active.
+pub const W_REQUIRES_UNMET: &str = "W_REQUIRES_UNMET";
+
 /// The plugins, pins, session versions and defaults that apply in one directory.
 #[derive(Debug)]
 pub struct Here<'s, 'c> {
@@ -200,6 +204,47 @@ impl<'s, 'c> Here<'s, 'c> {
         Ok((overrides, warnings))
     }
 
+    /// A [`W_REQUIRES_UNMET`] warning for each `[requires]` entry of an active tool that the
+    /// active version of the required tool does not meet, with `exec` versions taking
+    /// precedence. A required tool jtm does not manage here is not checked, since whatever is
+    /// on `PATH` may meet it. Requirements are only ever warnings; nothing is installed.
+    pub fn requirement_warnings(&self, exec: &[(String, Installed)]) -> Result<Vec<Warning>> {
+        let mut active: BTreeMap<String, (String, String)> = BTreeMap::new();
+        for item in self.current(None)? {
+            if let Some(version) = item.version {
+                let origin = item.origin.unwrap_or_default();
+                active.insert(item.tool, (version, origin));
+            }
+        }
+        for (tool, found) in exec {
+            active.insert(tool.clone(), (found.version.clone(), "jtm exec".to_owned()));
+        }
+        let mut warnings = Vec::new();
+        for plugin in &self.plugins {
+            let tool = plugin.manifest.name.as_str();
+            let Some((version, _)) = active.get(tool) else {
+                continue;
+            };
+            for (needed, requirement) in &plugin.manifest.requires {
+                let (Some((have, origin)), Ok(needed_plugin)) =
+                    (active.get(needed), self.plugin(needed))
+                else {
+                    continue;
+                };
+                if meets(&needed_plugin.manifest, have, requirement) == Some(false) {
+                    warnings.push(Warning {
+                        code: W_REQUIRES_UNMET,
+                        message: format!(
+                            "`{tool}` {version} needs `{needed}` {requirement}, but the active \
+                             `{needed}` is {have} (set by {origin})"
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(warnings)
+    }
+
     /// The changes that make `env` match the overrides.
     pub fn plan(
         &self,
@@ -276,6 +321,30 @@ impl<'s, 'c> Here<'s, 'c> {
             path: found.display().to_string(),
         })
     }
+}
+
+/// Whether `version` meets every clause of `requirement` under `manifest`'s scheme; `None`
+/// when that cannot be decided, such as for a version the scheme cannot parse.
+fn meets(manifest: &jtm_plugin::Manifest, version: &str, requirement: &str) -> Option<bool> {
+    use jtm_plugin::manifest::{Comparator, parse_requirement};
+    use std::cmp::Ordering;
+
+    let scheme = manifest.versions.scheme.builtin()?;
+    let have = scheme.parse(version).ok()?;
+    for (op, wanted) in parse_requirement(requirement).ok()? {
+        let order = have.cmp_precedence(&scheme.parse(&wanted).ok()?);
+        let ok = match op {
+            Comparator::Eq => order == Ordering::Equal,
+            Comparator::Gt => order == Ordering::Greater,
+            Comparator::Ge => order != Ordering::Less,
+            Comparator::Lt => order == Ordering::Less,
+            Comparator::Le => order != Ordering::Greater,
+        };
+        if !ok {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 fn file_stem(name: &str) -> &str {

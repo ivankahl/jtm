@@ -156,7 +156,8 @@ pub(crate) fn env(ctx: &Context, shell: Option<&str>) -> Result<Outcome<EnvData>
     };
     let session = Session::open(ctx)?;
     let here = here(&session)?;
-    let (data, found) = env_data(&here, shell)?;
+    let (data, mut found) = env_data(&here, shell)?;
+    found.extend(here.requirement_warnings(&[])?);
     Ok(Outcome {
         command: "env",
         changed: false,
@@ -224,7 +225,8 @@ pub(crate) fn use_version(
             path: found.dir.display().to_string(),
         })
     };
-    let (env, found) = env_data(&here, shell)?;
+    let (env, mut found) = env_data(&here, shell)?;
+    found.extend(here.requirement_warnings(&[])?);
     Ok(Outcome {
         command: "use",
         changed: !env.changes.is_empty(),
@@ -293,6 +295,8 @@ pub(crate) fn hook_env(ctx: &Context, shell: &str) -> Result<Outcome<EnvData>> {
         },
         // Shown once per directory, not at every prompt.
         warnings: if moved {
+            let mut found = found;
+            found.extend(here.requirement_warnings(&[])?);
             warnings_with(found, &here.pins.conflicts)
         } else {
             Vec::new()

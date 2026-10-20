@@ -546,3 +546,379 @@ fn the_java_layout_finds_each_os_home_on_any_host() {
             .unwrap_or_else(|e| panic!("{os}: {e}"));
     }
 }
+
+// --- maven, gradle, kotlin, spring-boot-cli (T5.3) ---
+
+/// The platform-independent first-party plugins, with the top directory and a version of
+/// their archives.
+const ANY_PLATFORM: &[(&str, &str)] = &[
+    ("maven", "apache-maven-{v}"),
+    ("gradle", "gradle-{v}"),
+    ("kotlin", "kotlinc"),
+    ("spring-boot-cli", "spring-{v}"),
+];
+
+fn any_archive(name: &str, os: &str, version: &str) -> Archive {
+    let top = ANY_PLATFORM
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, top)| top.replace("{v}", version))
+        .unwrap();
+    tool_archive(
+        name,
+        os,
+        &top,
+        "",
+        vec![file(&format!("{top}/VERSION"), version.as_bytes())],
+    )
+}
+
+/// Adds `name` with an `any` index of `versions` (version, tags).
+fn with_any(h: &mut Home, name: &str, versions: &[(&str, &[&str])]) {
+    let os = h.os;
+    let versions: Vec<Version<'_>> = versions
+        .iter()
+        .map(|(version, tags)| Version {
+            variant: "default",
+            version,
+            tags,
+            archive: any_archive(name, os, version),
+        })
+        .collect();
+    h.add(name, true, &versions);
+}
+
+#[test]
+fn the_build_tool_manifests_are_platform_independent_and_require_java() {
+    for (name, java) in [
+        ("maven", ">=8"),
+        ("gradle", ">=8"),
+        ("kotlin", ">=8"),
+        ("spring-boot-cli", ">=17"),
+    ] {
+        let m = jtm_plugin::Manifest::parse(&shipped(name)).unwrap();
+        assert_eq!(m.name, name);
+        assert!(m.index.platform_independent(), "{name}");
+        assert_eq!(m.index.index_platform("linux-x64"), "any");
+        assert_eq!(m.requires["java"], java, "{name}");
+        assert!(m.versions.variants.is_empty(), "{name}");
+        assert!(m.aliases.contains_key("latest"), "{name}");
+    }
+    let java = jtm_plugin::Manifest::parse(&shipped("java")).unwrap();
+    assert!(!java.index.platform_independent());
+}
+
+#[test]
+fn each_build_tool_installs_from_an_any_index() {
+    let mut h = Home::new();
+    for (name, _) in ANY_PLATFORM {
+        with_any(&mut h, name, &[("1.2.0", &["ga"])]);
+    }
+    let home = h.home.path().to_path_buf();
+    for (name, env) in [
+        ("maven", Some("MAVEN_HOME")),
+        ("gradle", Some("GRADLE_HOME")),
+        ("kotlin", Some("KOTLIN_HOME")),
+        ("spring-boot-cli", None),
+    ] {
+        let spec = format!("{}@1.2.0", test_name(name));
+        let value = h.ok(&["install", &spec]);
+        assert_eq!(
+            value["data"]["installed"][0]["status"], "installed",
+            "{value}"
+        );
+        let dir = h.install_dir(name, "default", "1.2.0");
+        assert_eq!(fs::read(dir.join("VERSION")).unwrap(), b"1.2.0");
+        for exe_name in executables(name, h.os) {
+            assert!(
+                dir.join("bin").join(&exe_name).is_file(),
+                "{name}: {exe_name}"
+            );
+        }
+        assert_eq!(h.receipt(name, "default", "1.2.0")["platform"], h.platform);
+        if let Some(env) = env {
+            assert_eq!(
+                PathBuf::from(exec_env(&h, &home, &[&spec], env)),
+                dir,
+                "{name}"
+            );
+        }
+    }
+    let maven = h.install_dir("maven", "default", "1.2.0");
+    assert_eq!(
+        PathBuf::from(exec_env(&h, &home, &["fp-maven@1.2.0"], "M2_HOME")),
+        maven
+    );
+}
+
+#[test]
+fn maven_and_gradle_aliases_pick_the_right_line() {
+    let mut h = Home::new();
+    with_any(
+        &mut h,
+        "maven",
+        &[("3.9.9", &[]), ("3.8.8", &[]), ("4.0.0-rc-2", &[])],
+    );
+    with_any(
+        &mut h,
+        "gradle",
+        &[("8.10.2", &[]), ("8.11-rc-1", &["rc"]), ("7.6.4", &[])],
+    );
+    for (spec, version) in [
+        ("fp-maven", "3.9.9"),
+        ("fp-maven@3", "3.9.9"),
+        ("fp-maven@3.8", "3.8.8"),
+        ("fp-gradle", "8.10.2"),
+        ("fp-gradle@rc", "8.11-rc-1"),
+        ("fp-gradle@7", "7.6.4"),
+    ] {
+        let value = h.ok(&["install", spec, "--dry-run"]);
+        assert_eq!(value["data"]["installed"][0]["version"], version, "{spec}");
+    }
+    // Maven 4 has no release yet, only a release candidate.
+    let (code, value) = h.json(h.home.path(), &["install", "fp-maven@4", "--dry-run"]);
+    assert_eq!(code, 3, "{value}");
+}
+
+#[test]
+fn wrapper_files_pin_maven_and_gradle() {
+    let mut h = Home::new();
+    with_any(&mut h, "maven", &[("3.9.9", &[]), ("3.8.8", &[])]);
+    with_any(&mut h, "gradle", &[("8.10.2", &[]), ("7.6.4", &[])]);
+    h.ok(&["install", "fp-maven@3.8.8", "fp-gradle@7.6.4"]);
+    let project = h.project(&[
+        (
+            ".mvn/wrapper/maven-wrapper.properties",
+            "distributionUrl=https\\://repo.maven.apache.org/maven2/org/apache/maven/\
+             apache-maven/3.8.8/apache-maven-3.8.8-bin.zip\n",
+        ),
+        (
+            "gradle/wrapper/gradle-wrapper.properties",
+            "distributionUrl=https\\://services.gradle.org/distributions/gradle-7.6.4-bin.zip\n",
+        ),
+    ]);
+    let (code, value) = h.json(&project, &["current"]);
+    assert_eq!(code, 0, "{value}");
+    for tool in ["fp-maven", "fp-gradle"] {
+        let item = value["data"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["tool"] == tool)
+            .unwrap();
+        assert_eq!(item["layer"], "project", "{value}");
+        assert!(
+            item["origin"].as_str().unwrap().contains("wrapper"),
+            "{value}"
+        );
+    }
+    assert_eq!(
+        PathBuf::from(exec_env(&h, &project, &[], "MAVEN_HOME")),
+        h.install_dir("maven", "default", "3.8.8")
+    );
+    assert_eq!(
+        PathBuf::from(exec_env(&h, &project, &[], "GRADLE_HOME")),
+        h.install_dir("gradle", "default", "7.6.4")
+    );
+}
+
+#[test]
+fn an_unmet_java_requirement_is_a_warning() {
+    let mut h = Home::new();
+    with_java(&mut h);
+    with_any(&mut h, "spring-boot-cli", &[("3.3.5", &[])]);
+    with_any(&mut h, "maven", &[("3.9.9", &[])]);
+    h.ok(&[
+        "install",
+        "fp-java@zulu:11",
+        "fp-java@temurin:21",
+        "fp-spring-boot-cli@3.3.5",
+        "fp-maven@3.9.9",
+    ]);
+    let codes = |value: &Value| -> Vec<String> {
+        value["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["code"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // Spring Boot CLI 3 needs Java 17, and the project pins Java 11. Maven is fine with 11.
+    let project = h.project(&[(
+        ".sdkmanrc",
+        "java=11.0.25-zulu\nspringboot=3.3.5\nmaven=3.9.9\n",
+    )]);
+    let (code, value) = h.json(&project, &["current"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(codes(&value), ["W_REQUIRES_UNMET"], "{value}");
+    let message = value["warnings"][0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("fp-spring-boot-cli") && message.contains(">=17"),
+        "{message}"
+    );
+
+    // `jtm exec` with a newer Java meets it, and still warns for an older one.
+    let mut base = vec!["exec", "fp-java@temurin:21", "--"];
+    let print = if cfg!(windows) {
+        vec!["cmd", "/c", "echo"]
+    } else {
+        vec!["sh", "-c", "true"]
+    };
+    base.extend(&print);
+    let (code, value) = h.json(&project, &base);
+    assert_eq!(code, 0, "{value}");
+    assert!(codes(&value).is_empty(), "{value}");
+    let mut old = vec!["exec", "fp-java@zulu:11", "--"];
+    old.extend(&print);
+    let (_, value) = h.json(&project, &old);
+    assert_eq!(codes(&value), ["W_REQUIRES_UNMET"], "{value}");
+
+    // Without a jtm-managed Java, jtm cannot tell, so it says nothing.
+    let project = h.project(&[(".sdkmanrc", "springboot=3.3.5\n")]);
+    let (_, value) = h.json(&project, &["current"]);
+    assert!(codes(&value).is_empty(), "{value}");
+}
+
+// --- real tools ---
+
+/// The JDK and Maven installed on this machine: `JAVA_HOME`, and `MAVEN_HOME`, `M2_HOME` or
+/// the `mvn` on `PATH`.
+fn real_tools() -> Option<(PathBuf, PathBuf)> {
+    let java_home = PathBuf::from(std::env::var_os("JAVA_HOME")?);
+    let java = if cfg!(windows) { "java.exe" } else { "java" };
+    if !java_home.join("bin").join(java).is_file() {
+        return None;
+    }
+    let from_env = ["MAVEN_HOME", "M2_HOME"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .find(|home| home.join("boot").is_dir());
+    let maven_home = match from_env {
+        Some(home) => home,
+        None => {
+            let os = jtm_core::Platform::detect().ok()?.os();
+            let path = std::env::var("PATH").ok();
+            let mvn = jtm_core::here::find_on_path("mvn", path.as_deref(), os)?;
+            fs::canonicalize(mvn)
+                .ok()?
+                .parent()?
+                .parent()?
+                .to_path_buf()
+        }
+    };
+    maven_home
+        .join("boot")
+        .is_dir()
+        .then_some((fs::canonicalize(java_home).ok()?, maven_home))
+}
+
+/// A tar.gz of `source` under `top/`. Links to files are stored as copies, and links to
+/// directories are left out, so a system JDK whose links point elsewhere packs cleanly. A
+/// JDK's `jmods` and `src.zip` are left out too; nothing needs them to run.
+fn pack(source: &Path, top: &str) -> Archive {
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    let mut builder = tar::Builder::new(encoder);
+    builder.follow_symlinks(false);
+    let mut pending = vec![(source.to_path_buf(), PathBuf::from(top))];
+    while let Some((dir, name)) = pending.pop() {
+        builder.append_dir(&name, &dir).unwrap();
+        for entry in fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let inside = name.join(entry.file_name());
+            if matches!(entry.file_name().to_str(), Some("jmods" | "src.zip")) {
+                continue;
+            }
+            match fs::metadata(&path) {
+                Ok(meta) if meta.is_dir() && !entry.file_type().unwrap().is_symlink() => {
+                    pending.push((path, inside));
+                }
+                Ok(meta) if meta.is_file() => {
+                    let mut file = fs::File::open(&path).unwrap();
+                    builder.append_file(&inside, &mut file).unwrap();
+                }
+                _ => {}
+            }
+        }
+    }
+    Archive {
+        kind: "tar.gz",
+        bytes: builder.into_inner().unwrap().finish().unwrap(),
+    }
+}
+
+/// SPEC.md section 18, T5.3: `mvn -v` runs on the Java a project pins. Uses the JDK and Maven
+/// already on this machine, packed into fixture archives; skipped where there are none,
+/// unless `JTM_REQUIRE_REAL_TOOLS` is set to a non-empty value, as one CI job sets it.
+#[test]
+fn mvn_runs_with_the_pinned_java() {
+    let Some((java_home, maven_home)) = real_tools() else {
+        assert!(
+            std::env::var("JTM_REQUIRE_REAL_TOOLS").is_ok_and(|v| v.is_empty())
+                || std::env::var_os("JTM_REQUIRE_REAL_TOOLS").is_none(),
+            "JTM_REQUIRE_REAL_TOOLS is set, but no JAVA_HOME and `mvn` were found"
+        );
+        return;
+    };
+    let mut h = Home::new();
+    // A macOS JDK is packed as the app bundle around its home, as vendors ship it.
+    let bundle = java_home
+        .ends_with("Contents/Home")
+        .then(|| java_home.parent().and_then(Path::parent))
+        .flatten();
+    let jdk = pack(bundle.unwrap_or(&java_home), "jdk-real");
+    h.add(
+        "java",
+        false,
+        &[Version {
+            variant: "temurin",
+            version: "21.0.0+1",
+            tags: &["lts"],
+            archive: jdk,
+        }],
+    );
+    let maven = pack(&maven_home, "apache-maven-real");
+    h.add(
+        "maven",
+        true,
+        &[Version {
+            variant: "default",
+            version: "3.9.0",
+            tags: &[],
+            archive: maven,
+        }],
+    );
+    let project = h.project(&[(
+        ".jtm.toml",
+        &format!(
+            "[tools]\nfp-java = \"temurin:21.0.0+1\"\nfp-maven = \"3.9.0\"\n\n[lock]\n\
+             platforms = [\"{}\"]\n",
+            h.platform
+        ),
+    )]);
+    let (code, value) = h.json(&project, &["sync"]);
+    assert_eq!(code, 0, "{value}");
+
+    let (code, value) = h.json(&project, &["exec", "--", "mvn", "-v"]);
+    assert_eq!(code, 0, "{value}");
+    let stdout = value["data"]["stdout"].as_str().unwrap();
+    assert_eq!(value["data"]["exit_code"], 0, "{value}");
+    assert!(stdout.contains("Apache Maven"), "{stdout}");
+    let java_line = stdout
+        .lines()
+        .find(|l| l.contains("Java home") || l.contains("runtime:"))
+        .unwrap_or_else(|| panic!("no Java home in {stdout}"));
+    let expected = Path::new("tools")
+        .join("fp-java")
+        .join("temurin-21.0.0+1")
+        .display()
+        .to_string();
+    assert!(
+        java_line.contains(&expected),
+        "{java_line} should name {expected}"
+    );
+    let maven_line = stdout.lines().find(|l| l.contains("Maven home")).unwrap();
+    assert!(maven_line.contains("default-3.9.0"), "{maven_line}");
+}

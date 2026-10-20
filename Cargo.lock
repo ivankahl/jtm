@@ -1082,6 +1082,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "flate2",
  "indicatif",
  "insta",
  "jtm-archive",
@@ -1090,6 +1091,7 @@ dependencies = [
  "jtm-security",
  "serde",
  "serde_json",
+ "tar",
  "tempfile",
  "tokio",
  "toml",

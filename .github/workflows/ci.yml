@@ -66,6 +66,9 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             platform: linux-x64
+            # The runner's JDK and Maven must be found, so `mvn -v` with a pinned Java is
+            # tested at least here.
+            require_real_tools: "1"
           - name: linux-arm64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
@@ -93,3 +96,4 @@ jobs:
       - run: cargo test --workspace --locked --target ${{ matrix.target }}
         env:
           JTM_EXPECTED_PLATFORM: ${{ matrix.platform }}
+          JTM_REQUIRE_REAL_TOOLS: ${{ matrix.require_real_tools }}

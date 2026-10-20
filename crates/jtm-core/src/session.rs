@@ -281,7 +281,7 @@ impl<'a> Session<'a> {
         let mut index = loader.load(
             &IndexSources {
                 plugin: name,
-                platform: platform.as_str(),
+                platform: manifest.index.index_platform(platform.as_str()),
                 remote_url: &remote_url,
                 override_url,
             },
@@ -296,7 +296,7 @@ impl<'a> Session<'a> {
     /// Whether a spec that local data cannot resolve may refresh the index (SPEC.md section
     /// 8): never offline, in JSON mode or under CI, and otherwise per `index.auto_refresh`,
     /// once the cached copy is older than `index.ttl_hours`.
-    fn may_auto_refresh(&self, plugin: &str, platform: Platform) -> bool {
+    fn may_auto_refresh(&self, plugin: &Plugin, platform: Platform) -> bool {
         if self.ctx.offline || self.ctx.json || self.ctx.ci {
             return false;
         }
@@ -306,7 +306,13 @@ impl<'a> Session<'a> {
             AutoRefresh::Tty => self.ctx.interactive,
         };
         let ttl = Duration::from_secs(u64::from(self.settings.index.ttl_hours) * 3600);
-        let stale = fs::metadata(cache_path(&self.dirs, plugin, platform.as_str()))
+        let index = &plugin.manifest.index;
+        let cached = cache_path(
+            &self.dirs,
+            &plugin.manifest.name,
+            index.index_platform(platform.as_str()),
+        );
+        let stale = fs::metadata(cached)
             .and_then(|m| m.modified())
             .map_or(true, |at| {
                 SystemTime::now().duration_since(at).unwrap_or_default() >= ttl
@@ -327,9 +333,7 @@ impl<'a> Session<'a> {
         match select(spec, plugin, &index.index.entries) {
             Ok(entry) => Ok((entry.clone(), index)),
             Err(err)
-                if !refresh
-                    && is_not_found(&err)
-                    && self.may_auto_refresh(&spec.tool, platform) =>
+                if !refresh && is_not_found(&err) && self.may_auto_refresh(plugin, platform) =>
             {
                 tracing::info!(tool = %spec.tool, "refreshing the index to resolve the spec");
                 let index = self.index(plugin, platform, true)?;

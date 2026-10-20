@@ -71,3 +71,15 @@ undocumented_unsafe_blocks = "warn"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Hashing and (de)compression are slow unoptimised, and tests install real JDKs through them.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.zlib-rs]
+opt-level = 3
