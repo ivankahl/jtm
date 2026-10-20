@@ -78,6 +78,7 @@ pub enum ErrorCode {
     IndexExpired,
     IndexRollback,
     IndexBinding,
+    IndexInvalid,
     HashMismatch,
     SizeExceeded,
     ArchiveUnsafe,
@@ -108,6 +109,7 @@ impl ErrorCode {
         ErrorCode::IndexExpired,
         ErrorCode::IndexRollback,
         ErrorCode::IndexBinding,
+        ErrorCode::IndexInvalid,
         ErrorCode::HashMismatch,
         ErrorCode::SizeExceeded,
         ErrorCode::ArchiveUnsafe,
@@ -138,6 +140,7 @@ impl ErrorCode {
             ErrorCode::IndexExpired => "E_INDEX_EXPIRED",
             ErrorCode::IndexRollback => "E_INDEX_ROLLBACK",
             ErrorCode::IndexBinding => "E_INDEX_BINDING",
+            ErrorCode::IndexInvalid => "E_INDEX_INVALID",
             ErrorCode::HashMismatch => "E_HASH_MISMATCH",
             ErrorCode::SizeExceeded => "E_SIZE_EXCEEDED",
             ErrorCode::ArchiveUnsafe => "E_ARCHIVE_UNSAFE",
@@ -169,6 +172,7 @@ impl ErrorCode {
             | ErrorCode::IndexExpired
             | ErrorCode::IndexRollback
             | ErrorCode::IndexBinding
+            | ErrorCode::IndexInvalid
             | ErrorCode::HashMismatch
             | ErrorCode::SizeExceeded
             | ErrorCode::ArchiveUnsafe
@@ -222,6 +226,10 @@ pub enum JtmError {
         error: jtm_plugin::manifest::ManifestError,
     },
 
+    /// A plugin manifest whose `[index] signing_keys` are not usable public keys.
+    #[error("plugin `{plugin}` signing keys are not valid: {message}")]
+    PluginSigningKeys { plugin: String, message: String },
+
     /// A configuration value that is invalid or not allowed where it was set. `key` is the
     /// dotted key, or empty when the whole file is at fault.
     #[error("{origin}: {}{message}", key_prefix(.key))]
@@ -261,17 +269,44 @@ pub enum JtmError {
     #[error("invalid signature on {file}: {message}")]
     SignatureInvalid { file: String, message: String },
 
-    #[error("key `{key_id}` is not trusted; to trust it, run {resolve}")]
-    KeyUntrusted { key_id: String, resolve: String },
+    #[error("{file} is signed by key `{key_id}`, which is not trusted; to trust it, run {resolve}")]
+    KeyUntrusted {
+        file: String,
+        key_id: String,
+        resolve: String,
+    },
 
-    #[error("index {index} expired at {expires}")]
+    #[error("index {index} expired at {expires}; run `jtm update` to fetch a current copy")]
     IndexExpired { index: String, expires: String },
 
-    #[error("index {index} has sequence {got}, older than the {seen} already seen")]
-    IndexRollback { index: String, seen: u64, got: u64 },
+    /// An index older than one already seen, or the same sequence with different content.
+    #[error("index {index} has sequence {got}, {reason} (sequence {seen})")]
+    IndexRollback {
+        index: String,
+        seen: u64,
+        got: u64,
+        reason: String,
+    },
 
-    #[error("index {index} is not bound to {expected}")]
-    IndexBinding { index: String, expected: String },
+    #[error("index {index} is signed for {got}, not {expected}")]
+    IndexBinding {
+        index: String,
+        expected: String,
+        got: String,
+    },
+
+    /// `state/trust.json` cannot be read as jtm wrote it.
+    #[error(
+        "{}: {message}; fix or remove the file (removing it forgets trusted keys and \
+         rollback history)",
+        path.display()
+    )]
+    TrustStateCorrupt { path: PathBuf, message: String },
+
+    /// A correctly signed index or `keys.json` that is malformed, in an unsupported format, or
+    /// fails validation. Maps to `E_INDEX_INVALID`.
+    #[error("{file} is signed but not valid: {message}")]
+    SignedFileInvalid { file: String, message: String },
 
     #[error("hash mismatch for {url}: expected {expected}, got {actual}")]
     HashMismatch {
@@ -336,7 +371,9 @@ impl JtmError {
             JtmError::Usage { .. } | JtmError::InvalidSpec { .. } | JtmError::Config { .. } => {
                 ErrorCode::Usage
             }
-            JtmError::InvalidManifest { .. } => ErrorCode::PluginInvalid,
+            JtmError::InvalidManifest { .. } | JtmError::PluginSigningKeys { .. } => {
+                ErrorCode::PluginInvalid
+            }
             JtmError::ToolUnknown { .. } => ErrorCode::ToolUnknown,
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
@@ -350,6 +387,7 @@ impl JtmError {
             JtmError::IndexExpired { .. } => ErrorCode::IndexExpired,
             JtmError::IndexRollback { .. } => ErrorCode::IndexRollback,
             JtmError::IndexBinding { .. } => ErrorCode::IndexBinding,
+            JtmError::SignedFileInvalid { .. } => ErrorCode::IndexInvalid,
             JtmError::HashMismatch { .. } => ErrorCode::HashMismatch,
             JtmError::SizeExceeded { .. } => ErrorCode::SizeExceeded,
             JtmError::ArchiveUnsafe { .. } => ErrorCode::ArchiveUnsafe,
@@ -361,7 +399,9 @@ impl JtmError {
             JtmError::PluginScriptLimit { .. } => ErrorCode::PluginScriptLimit,
             JtmError::InUse { .. } => ErrorCode::InUse,
             JtmError::Permission { .. } => ErrorCode::Permission,
-            JtmError::Internal { .. } => ErrorCode::Internal,
+            // SPEC-QUESTION: section 12 has no code for corrupt local state. It is not a
+            // verification failure of anything downloaded, so it is reported as internal.
+            JtmError::TrustStateCorrupt { .. } | JtmError::Internal { .. } => ErrorCode::Internal,
         }
     }
 
@@ -412,6 +452,10 @@ impl JtmError {
                         .into(),
                 ),
             ]),
+            JtmError::PluginSigningKeys { plugin, message } => obj([
+                ("plugin", plugin.as_str().into()),
+                ("message", message.as_str().into()),
+            ]),
             JtmError::Config { origin, key, .. } => obj([
                 ("origin", origin.as_str().into()),
                 ("key", key.as_str().into()),
@@ -432,8 +476,15 @@ impl JtmError {
             JtmError::HostUnsupported { host } => obj([("host", host.as_str().into())]),
             JtmError::Network { url, .. } => obj([("url", url.as_str().into())]),
             JtmError::Offline { action } => obj([("action", action.as_str().into())]),
-            JtmError::SignatureInvalid { file, .. } => obj([("file", file.as_str().into())]),
-            JtmError::KeyUntrusted { key_id, resolve } => obj([
+            JtmError::SignatureInvalid { file, .. } | JtmError::SignedFileInvalid { file, .. } => {
+                obj([("file", file.as_str().into())])
+            }
+            JtmError::KeyUntrusted {
+                file,
+                key_id,
+                resolve,
+            } => obj([
+                ("file", file.as_str().into()),
                 ("key_id", key_id.as_str().into()),
                 ("resolve", resolve.as_str().into()),
             ]),
@@ -441,15 +492,23 @@ impl JtmError {
                 ("index", index.as_str().into()),
                 ("expires", expires.as_str().into()),
             ]),
-            JtmError::IndexRollback { index, seen, got } => obj([
+            JtmError::IndexRollback {
+                index, seen, got, ..
+            } => obj([
                 ("index", index.as_str().into()),
                 ("seen", (*seen).into()),
                 ("got", (*got).into()),
             ]),
-            JtmError::IndexBinding { index, expected } => obj([
+            JtmError::IndexBinding {
+                index,
+                expected,
+                got,
+            } => obj([
                 ("index", index.as_str().into()),
                 ("expected", expected.as_str().into()),
+                ("got", got.as_str().into()),
             ]),
+            JtmError::TrustStateCorrupt { path: p, .. } => obj([("path", path(p))]),
             JtmError::HashMismatch {
                 url,
                 expected,
@@ -542,6 +601,61 @@ impl From<jtm_plugin::ResolveError> for JtmError {
     }
 }
 
+impl From<jtm_security::Error> for JtmError {
+    fn from(err: jtm_security::Error) -> Self {
+        use jtm_security::Error as S;
+        match err {
+            S::SignatureInvalid { file, message } => JtmError::SignatureInvalid { file, message },
+            S::KeyUntrusted {
+                file,
+                key_id,
+                resolve,
+            } => JtmError::KeyUntrusted {
+                file,
+                key_id,
+                resolve,
+            },
+            S::Invalid { file, message } => JtmError::SignedFileInvalid { file, message },
+            S::SigningKeys { plugin, message } => JtmError::PluginSigningKeys { plugin, message },
+            S::IndexBinding {
+                file,
+                expected,
+                got,
+            } => JtmError::IndexBinding {
+                index: file,
+                expected,
+                got,
+            },
+            S::IndexRollback {
+                file,
+                seen,
+                got,
+                reason,
+            } => JtmError::IndexRollback {
+                index: file,
+                seen,
+                got,
+                reason,
+            },
+            S::IndexExpired { file, expires } => JtmError::IndexExpired {
+                index: file,
+                expires,
+            },
+            S::State { path, message } => JtmError::TrustStateCorrupt { path, message },
+            S::Io { path, source } if source.kind() == std::io::ErrorKind::PermissionDenied => {
+                JtmError::Permission {
+                    path,
+                    source: Some(source),
+                }
+            }
+            S::Io { path, source } => {
+                JtmError::internal(format!("cannot access {}: {source}", path.display()))
+            }
+            other => JtmError::internal(other.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,6 +726,7 @@ mod tests {
             (E::IndexExpired, 5),
             (E::IndexRollback, 5),
             (E::IndexBinding, 5),
+            (E::IndexInvalid, 5),
             (E::HashMismatch, 5),
             (E::SizeExceeded, 5),
             (E::ArchiveUnsafe, 5),
@@ -753,6 +868,78 @@ mod tests {
             spec: "custom".into(),
         });
         assert_eq!(script.code(), "E_INTERNAL");
+    }
+
+    #[test]
+    fn security_errors_map_to_verification_and_trust_codes() {
+        let invalid = JtmError::from(jtm_security::Error::SignatureInvalid {
+            file: "demo-linux-x64.json".into(),
+            message: "bad".into(),
+        });
+        assert_eq!(invalid.code(), "E_SIGNATURE_INVALID");
+        assert_eq!(invalid.exit_code(), ExitCode::Verification);
+        let untrusted = JtmError::from(jtm_security::Error::KeyUntrusted {
+            file: "demo-linux-x64.json".into(),
+            key_id: "0123456789ABCDEF".into(),
+            resolve: "jtm trust add <public key> --scope demo".into(),
+        });
+        assert_eq!(untrusted.code(), "E_KEY_UNTRUSTED");
+        assert_eq!(untrusted.exit_code(), ExitCode::TrustRequired);
+        assert_eq!(
+            untrusted.details()["resolve"],
+            "jtm trust add <public key> --scope demo"
+        );
+        assert_eq!(untrusted.details()["file"], "demo-linux-x64.json");
+        assert!(
+            untrusted.to_string().starts_with("demo-linux-x64.json"),
+            "{untrusted}"
+        );
+        let invalid = JtmError::from(jtm_security::Error::Invalid {
+            file: "keys.json".into(),
+            message: "lists no keys".into(),
+        });
+        assert_eq!(invalid.code(), "E_INDEX_INVALID");
+        assert_eq!(invalid.exit_code(), ExitCode::Verification);
+        assert_eq!(invalid.details()["file"], "keys.json");
+        let signing_keys = JtmError::from(jtm_security::Error::SigningKeys {
+            plugin: "demo".into(),
+            message: "not a public key".into(),
+        });
+        assert_eq!(signing_keys.code(), "E_PLUGIN_INVALID");
+        assert_eq!(signing_keys.exit_code(), ExitCode::Verification);
+        assert_eq!(signing_keys.details()["plugin"], "demo");
+        assert_eq!(signing_keys.details()["message"], "not a public key");
+
+        let binding = JtmError::from(jtm_security::Error::IndexBinding {
+            file: "demo-linux-x64.json".into(),
+            expected: "plugin `demo` on `linux-x64`".into(),
+            got: "plugin `other` on `linux-x64`".into(),
+        });
+        assert_eq!(binding.code(), "E_INDEX_BINDING");
+        assert_eq!(binding.details()["got"], "plugin `other` on `linux-x64`");
+        let rollback = JtmError::from(jtm_security::Error::IndexRollback {
+            file: "demo-linux-x64.json".into(),
+            seen: 10,
+            got: 9,
+            reason: "older than the newest copy already seen".into(),
+        });
+        assert_eq!(rollback.code(), "E_INDEX_ROLLBACK");
+        assert_eq!(rollback.details()["seen"], 10);
+        let expired = JtmError::from(jtm_security::Error::IndexExpired {
+            file: "demo-linux-x64.json".into(),
+            expires: "2026-11-18T03:00:00Z".into(),
+        });
+        assert_eq!(expired.code(), "E_INDEX_EXPIRED");
+        let corrupt = JtmError::from(jtm_security::Error::State {
+            path: PathBuf::from("state/trust.json"),
+            message: "bad".into(),
+        });
+        assert_eq!(corrupt.code(), "E_INTERNAL");
+        let denied = JtmError::from(jtm_security::Error::Io {
+            path: PathBuf::from("state/trust.json"),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        });
+        assert_eq!(denied.code(), "E_PERMISSION");
     }
 
     #[test]

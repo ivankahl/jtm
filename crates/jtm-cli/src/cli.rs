@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use jtm_core::{ColorChoice, GlobalFlags};
 
 /// Runtime manager for the JVM ecosystem.
@@ -19,6 +19,38 @@ pub(crate) struct Cli {
 
     #[command(flatten)]
     pub(crate) global: GlobalArgs,
+
+    #[command(subcommand)]
+    pub(crate) command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum Command {
+    /// Manage keys trusted to sign version indices.
+    #[command(subcommand)]
+    Trust(TrustCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum TrustCommand {
+    /// Trust a minisign public key to sign the indices of the named plugins.
+    Add {
+        /// The public key: the base64 line of a minisign.pub file, starting with `RW`.
+        key: String,
+        /// A plugin the key may sign indices for. Repeat for several plugins.
+        #[arg(long, value_name = "PLUGIN", required = true)]
+        scope: Vec<String>,
+    },
+    /// Stop trusting a key, for the named plugins or entirely.
+    Remove {
+        /// The public key, or its 16-digit key id.
+        key: String,
+        /// Only stop trusting it for this plugin. Repeatable; without it the key is removed.
+        #[arg(long, value_name = "PLUGIN")]
+        scope: Vec<String>,
+    },
+    /// List the keys you trust and their scopes.
+    List,
 }
 
 /// Flags accepted by every command.
@@ -137,6 +169,22 @@ mod tests {
                 no_lock: true,
             }
         );
+    }
+
+    #[test]
+    fn trust_add_requires_a_scope() {
+        assert!(Cli::try_parse_from(["jtm", "trust", "add", "RWkey"]).is_err());
+        let cli = Cli::try_parse_from([
+            "jtm", "trust", "add", "RWkey", "--scope", "a", "--scope", "b",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Trust(TrustCommand::Add { key, scope })) => {
+                assert_eq!(key, "RWkey");
+                assert_eq!(scope, ["a", "b"]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

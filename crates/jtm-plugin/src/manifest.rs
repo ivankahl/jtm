@@ -20,6 +20,8 @@ pub const INDEX_FORMAT: i64 = 1;
 
 /// Placeholders allowed in `[index] url`.
 pub const INDEX_URL_PLACEHOLDERS: &[&str] = &["index_version", "os", "arch"];
+/// Names no plugin may use. `marketplace` is the scope of the key that signs the marketplace.
+pub const RESERVED_NAMES: &[&str] = &["marketplace"];
 /// Placeholders allowed in `[env]` values.
 pub const ENV_PLACEHOLDERS: &[&str] = &["home", "bin"];
 /// OS names allowed as keys in per-OS tables.
@@ -111,9 +113,21 @@ pub enum Alias {
 pub struct Index {
     /// An `https` URL template using the placeholders in [`INDEX_URL_PLACEHOLDERS`].
     pub url: String,
-    /// Minisign public keys allowed to sign this plugin's indices.
+    /// The plugin's trust anchors: minisign public keys that sign its indices directly, or
+    /// sign the keys file at `keys_url` that delegates to short-lived index keys.
     pub signing_keys: Vec<String>,
+    /// How many distinct `signing_keys` must sign an index or the keys file. Defaults to 1.
+    pub threshold: Option<u32>,
+    /// An `https` URL of a keys file signed by `signing_keys`, listing delegated index keys.
+    pub keys_url: Option<String>,
     pub format: i64,
+}
+
+impl Index {
+    /// The number of `signing_keys` that must sign, 1 unless the manifest says otherwise.
+    pub fn threshold(&self) -> u32 {
+        self.threshold.unwrap_or(1)
+    }
 }
 
 /// `[layout]`.
@@ -311,6 +325,12 @@ impl Manifest {
         if let Err((_, message)) = check_plugin_name(&self.name) {
             p.push("name", message);
         }
+        if RESERVED_NAMES.contains(&self.name.as_str()) {
+            p.push(
+                "name",
+                format!("`{}` is reserved and cannot name a plugin", self.name),
+            );
+        }
         check_text(p, "display_name", Some(&self.display_name), 100);
         check_text(p, "description", self.description.as_deref(), 1000);
         check_text(p, "license", self.license.as_deref(), 100);
@@ -433,6 +453,20 @@ impl Manifest {
             } else if !seen.insert(key) {
                 p.push(path, "this key is listed twice");
             }
+        }
+        if let Some(threshold) = index.threshold {
+            let keys = index.signing_keys.len();
+            if threshold == 0 || usize::try_from(threshold).map_or(true, |t| t > keys) {
+                p.push(
+                    "index.threshold",
+                    format!("must be between 1 and the {keys} signing keys listed"),
+                );
+            }
+        }
+        if let Some(url) = &index.keys_url
+            && check_https_url(p, "index.keys_url", url)
+        {
+            check_placeholders(p, "index.keys_url", url, &[]);
         }
     }
 

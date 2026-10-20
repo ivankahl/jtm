@@ -30,6 +30,15 @@ pub enum ExpiryPolicy {
     Enforce,
 }
 
+impl From<ExpiryPolicy> for jtm_security::ExpiryPolicy {
+    fn from(policy: ExpiryPolicy) -> Self {
+        match policy {
+            ExpiryPolicy::RemoteOnly => jtm_security::ExpiryPolicy::RemoteOnly,
+            ExpiryPolicy::Enforce => jtm_security::ExpiryPolicy::Enforce,
+        }
+    }
+}
+
 /// The merged, validated configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {

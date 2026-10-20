@@ -48,6 +48,8 @@ fn spec_maven_example_parses() {
     assert_eq!(m.aliases["latest"], Alias::Highest {});
     assert_eq!(m.aliases["3"], Alias::Fixed { target: "3".into() });
     assert_eq!(m.index.format, 1);
+    assert_eq!(m.index.threshold(), 1);
+    assert_eq!(m.index.keys_url, None);
     assert_eq!(m.layout.strip_components, StripComponents::Count(1));
     assert_eq!(m.layout.bin_dirs, ["bin"]);
     assert_eq!(m.executables.for_os("linux"), ["mvn", "mvnDebug"]);
@@ -75,6 +77,11 @@ fn java_style_manifest_uses_variants_and_per_os_layout() {
     assert_eq!(m.interop[0].mapping["tem"], "temurin");
     assert_eq!(m.interop[2].parser, InteropParser::SingleLine);
     assert_eq!(m.hooks.post_extract.as_deref(), Some("fix_permissions"));
+    assert_eq!(m.index.threshold(), 2);
+    assert_eq!(
+        m.index.keys_url.as_deref(),
+        Some("https://github.com/jtm-dev/index/releases/latest/download/keys.json")
+    );
 }
 
 /// Each invalid fixture starts with `# expect: <field path>` and has exactly one problem.

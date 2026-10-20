@@ -3,6 +3,7 @@
 mod cli;
 mod logging;
 mod output;
+mod trust;
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
@@ -13,8 +14,9 @@ use clap::error::ErrorKind;
 use jtm_core::{Context, ExitCode as JtmExitCode, GlobalFlags, JtmError, Terminal};
 use serde::Serialize;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, Command};
 use crate::output::{Format, Human, JTM_VERSION, Outcome, Renderer};
+use crate::trust::TrustOutcome;
 
 #[derive(Debug, Serialize)]
 struct VersionData {
@@ -76,11 +78,23 @@ fn main() -> ExitCode {
         let _ = renderer.success(&outcome);
         return JtmExitCode::Success.into();
     }
-    fail(
-        &mut renderer,
-        "jtm",
-        &JtmError::usage("no command given; see `jtm --help`"),
-    )
+    match cli.command {
+        Some(Command::Trust(cmd)) => {
+            let name = trust::command_name(&cmd);
+            let _ = match trust::run(&ctx, cmd) {
+                Ok(TrustOutcome::Add(outcome)) => renderer.success(&outcome),
+                Ok(TrustOutcome::Remove(outcome)) => renderer.success(&outcome),
+                Ok(TrustOutcome::List(outcome)) => renderer.success(&outcome),
+                Err(err) => return fail(&mut renderer, name, &err),
+            };
+            JtmExitCode::Success.into()
+        }
+        None => fail(
+            &mut renderer,
+            "jtm",
+            &JtmError::usage("no command given; see `jtm --help`"),
+        ),
+    }
 }
 
 fn fail<O: Write, E: Write>(

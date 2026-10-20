@@ -8,7 +8,23 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Key generation and signing for tests in this and other crates. Never enabled in a release.
+testing = ["dep:minisign"]
+
 [dependencies]
+base64.workspace = true
+jtm-plugin.workspace = true
+minisign = { workspace = true, optional = true }
+minisign-verify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+minisign.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
