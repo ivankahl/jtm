@@ -41,6 +41,10 @@ pub enum Error {
         actual: String,
     },
 
+    /// A SHA-256 that is not 64 lowercase hex digits, so it cannot name a cache entry.
+    #[error("`{value}` is not a SHA-256 digest")]
+    InvalidDigest { value: String },
+
     /// Reading or writing the download cache failed.
     #[error("cannot access {}: {source}", path.display())]
     Io {
@@ -58,6 +62,13 @@ impl Error {
             Error::Network { transient, .. } => *transient,
             Error::Status { status, .. } => *status >= 500 || *status == 429,
             _ => false,
+        }
+    }
+
+    pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Error {
+        Error::Io {
+            path: path.into(),
+            source,
         }
     }
 }
