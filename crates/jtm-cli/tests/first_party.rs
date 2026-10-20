@@ -735,12 +735,14 @@ fn an_unmet_java_requirement_is_a_warning() {
         "fp-spring-boot-cli@3.3.5",
         "fp-maven@3.9.9",
     ]);
+    // The builtin plugins read the same pin files, so only requirement warnings count here.
     let codes = |value: &Value| -> Vec<String> {
         value["warnings"]
             .as_array()
             .unwrap()
             .iter()
             .map(|w| w["code"].as_str().unwrap().to_owned())
+            .filter(|code| code == "W_REQUIRES_UNMET")
             .collect()
     };
 
@@ -752,7 +754,14 @@ fn an_unmet_java_requirement_is_a_warning() {
     let (code, value) = h.json(&project, &["current"]);
     assert_eq!(code, 0, "{value}");
     assert_eq!(codes(&value), ["W_REQUIRES_UNMET"], "{value}");
-    let message = value["warnings"][0]["message"].as_str().unwrap();
+    let message = value["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["code"] == "W_REQUIRES_UNMET")
+        .unwrap()["message"]
+        .as_str()
+        .unwrap();
     assert!(
         message.contains("fp-spring-boot-cli") && message.contains(">=17"),
         "{message}"

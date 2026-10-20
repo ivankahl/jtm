@@ -18,18 +18,117 @@ use crate::error::{JtmError, Result};
 use crate::indices::ManifestOrigin;
 use crate::platform::Platform;
 
+/// The working copy files of one builtin plugin, as `(file name, bytes)`.
+fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> {
+    let mut files = vec![("plugin.toml", found.text.as_bytes())];
+    if let Some(script) = found.script {
+        files.push(("plugin.lua", script.as_bytes()));
+    }
+    files
+}
+
+/// Makes the `<data>/plugins/builtin` working copy match `builtin` byte for byte (SPEC.md
+/// sections 9 and 14): one directory per plugin holding its `plugin.toml` and any
+/// `plugin.lua`. A file that differs, or is a link or a directory, is replaced; anything else
+/// in the working copy is removed, and links are removed, never followed. Returns the paths it
+/// repaired, so `jtm doctor` can report them.
+///
+/// The working copy is for people and tools to read. jtm never reads it, so a modified copy
+/// cannot change a trust decision; [`Registry`] reads only the compiled-in manifests.
+pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec<PathBuf>> {
+    let root = dirs.builtin_plugins();
+    let mut repaired = Vec::new();
+    ensure_dir(&root, &mut repaired)?;
+    let wanted: Vec<(String, &BuiltinManifest)> =
+        builtin.iter().map(|b| (dir_name(b.name), b)).collect();
+    for entry in read_entries(&root)? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !wanted.iter().any(|(dir, _)| *dir == name) {
+            remove_entry(&entry.path())?;
+            repaired.push(entry.path());
+        }
+    }
+    for (dir, found) in &wanted {
+        let dir = root.join(dir);
+        ensure_dir(&dir, &mut repaired)?;
+        let files = working_files(found);
+        for entry in read_entries(&dir)? {
+            let name = entry.file_name();
+            if !files.iter().any(|(file, _)| name == *file) {
+                remove_entry(&entry.path())?;
+                repaired.push(entry.path());
+            }
+        }
+        for (file, bytes) in files {
+            let path = dir.join(file);
+            let current = match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_file() => fs::read(&path).ok(),
+                Ok(_) => {
+                    remove_entry(&path)?;
+                    None
+                }
+                Err(_) => None,
+            };
+            if current.as_deref() != Some(bytes) {
+                crate::project::write_atomic(&path, bytes)?;
+                repaired.push(path);
+            }
+        }
+    }
+    if !repaired.is_empty() {
+        tracing::debug!(
+            count = repaired.len(),
+            "repaired the builtin plugin working copy"
+        );
+    }
+    Ok(repaired)
+}
+
+/// Makes `dir` a real directory, replacing a file or link in its place.
+fn ensure_dir(dir: &Path, repaired: &mut Vec<PathBuf>) -> Result<()> {
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => return Ok(()),
+        Ok(_) => {
+            remove_entry(dir)?;
+            repaired.push(dir.to_path_buf());
+        }
+        Err(_) => {}
+    }
+    fs::create_dir_all(dir).map_err(|e| JtmError::io(dir, e))
+}
+
+fn read_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
+    fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<io::Result<Vec<_>>>())
+        .map_err(|e| JtmError::io(dir, e))
+}
+
+/// Removes a file, a link (not its target) or a whole directory.
+fn remove_entry(path: &Path) -> Result<()> {
+    let removed = match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path).or_else(|e| {
+            // A Windows link to a directory is removed as a directory.
+            if cfg!(windows) {
+                fs::remove_dir(path)
+            } else {
+                Err(e)
+            }
+        }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    };
+    removed.map_err(|e| JtmError::io(path, e))
+}
+
 /// A manifest compiled into jtm.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinManifest {
     pub name: &'static str,
     pub text: &'static str,
     /// The plugin's `plugin.lua`, if it has one.
     pub script: Option<&'static str>,
 }
-
-/// The first-party manifests compiled into this build.
-// The first-party manifests are embedded by T5.4; until then every plugin is external.
-pub const BUILTIN: &[BuiltinManifest] = &[];
 
 /// A parsed plugin manifest and where it came from.
 #[derive(Debug, Clone)]

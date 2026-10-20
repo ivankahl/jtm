@@ -7,6 +7,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::error::{JtmError, Result};
+use crate::plugins::BuiltinManifest;
 
 /// The global flags as typed on the command line, before any environment is consulted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,6 +74,9 @@ pub struct Context {
     pub use_lockfile: bool,
     /// Running under CI, from the `CI` variable.
     pub ci: bool,
+    /// The plugin manifests compiled into this binary. Only these have pre-approved anchors;
+    /// [`Context::resolve`] leaves it empty, and the binary sets it.
+    pub builtin: &'static [BuiltinManifest],
 }
 
 const DEFAULT_LOG_FILTER: &str = "warn";
@@ -135,6 +139,7 @@ impl Context {
             home: non_empty(env("JTM_HOME")).map(PathBuf::from),
             use_lockfile: !flags.no_lock,
             ci,
+            builtin: &[],
         })
     }
 }

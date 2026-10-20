@@ -27,7 +27,7 @@ use crate::install::{self, Archives, InstallRequest, Progress, Receipt, Status, 
 use crate::links;
 use crate::pins::{ProjectPins, W_PIN_CONFLICT};
 use crate::platform::Platform;
-use crate::plugins::{BUILTIN, Plugin, Registry};
+use crate::plugins::{Plugin, Registry};
 use crate::project::PROJECT_FILE;
 use crate::spec::{Selector, ToolSpec};
 
@@ -185,6 +185,10 @@ impl<'a> Session<'a> {
         let dirs = Dirs::for_context(ctx)?;
         let cwd = std::env::current_dir().ok();
         let config = load_config(&dirs, cwd.as_deref(), &|key| std::env::var_os(key))?;
+        // The working copy is only for reading, so failing to repair it never fails a command.
+        if let Err(err) = crate::plugins::sync_working_copy(&dirs, ctx.builtin) {
+            tracing::debug!(%err, "cannot update the builtin plugin working copy");
+        }
         Session::new(ctx, dirs, config.settings, Platform::detect()?)
     }
 
@@ -237,7 +241,7 @@ impl<'a> Session<'a> {
     pub fn registry(&self) -> Registry<'_> {
         Registry {
             dirs: &self.dirs,
-            builtin: BUILTIN,
+            builtin: self.ctx.builtin,
         }
     }
 

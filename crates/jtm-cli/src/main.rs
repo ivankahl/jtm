@@ -1,6 +1,7 @@
 //! The `jtm` command-line interface.
 
 mod activate;
+mod builtin;
 mod cli;
 mod ide;
 mod logging;
@@ -69,7 +70,10 @@ fn main() -> ExitCode {
         stderr: io::stderr().is_terminal(),
     };
     let ctx = match Context::resolve(&flags, |key| std::env::var_os(key), terminal) {
-        Ok(ctx) => ctx,
+        Ok(ctx) => Context {
+            builtin: builtin::MANIFESTS,
+            ..ctx
+        },
         Err(err) => return fail(&mut renderer, "jtm", &err),
     };
     logging::init(&ctx);

@@ -555,7 +555,7 @@ impl Manifest {
                         format!("executables.{os}[{i}]"),
                         format!(
                             "`{name}` must be a plain file name not starting with `-`, such as \
-                             `mvn` or `mvn.cmd`"
+                             `tool` or `tool.cmd`"
                         ),
                     );
                 }
