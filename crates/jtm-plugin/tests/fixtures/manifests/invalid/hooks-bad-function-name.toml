@@ -31,3 +31,4 @@ DEMO_HOME = "{home}"
 
 [hooks]
 post_extract = "os.execute"
+script_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

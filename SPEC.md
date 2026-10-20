@@ -239,7 +239,7 @@ jtm-plugin-maven/
 | `[env]` | No | Variables to set when active, using `{home}` and `{bin}` placeholders, for example `JAVA_HOME = "{home}"` |
 | `[requires]` | No | Runtime dependencies, for example Maven requires `java >= 8`; used for `W_REQUIRES_UNMET` warnings by `current`, `exec`, `env`, `use` and the shell hook, never auto-installs |
 | `[[interop]]` | No | Pin files this plugin reads or writes, the parser (`keyvalue`, `tool-versions`, `single-line`, or the read-only `wrapper` with a `pattern` such as `gradle-{version}-*.zip` and an optional `sha256_key` naming the checksum property), the key, and a mapping table or script function. `keyvalue` maps a version suffix (`21.0.5-tem`); `tool-versions` and `single-line` take an optional variant prefix (`temurin-21`) |
-| `[hooks]` | No | Names of `plugin.lua` functions for `resolve_alias`, `parse_interop`, `format_interop`, `compare_versions`, `post_extract` |
+| `[hooks]` | No | Names of `plugin.lua` functions for `resolve_alias`, `parse_interop`, `format_interop`, `compare_versions`, `post_extract`, and `script_sha256`, the SHA-256 of `plugin.lua`, required whenever a hook is named. A script that does not match is refused (`E_PLUGIN_INVALID`), and a `plugin.lua` no hook names is never loaded |
 | `[ide]` | No | `maven_toolchain` (the `toolchains.xml` `<type>`, such as `jdk`) and `gradle_installations`, which tell `jtm ide sync` to offer this tool's installs to Maven and Gradle |
 
 ### Example: Maven
@@ -304,7 +304,7 @@ Plugin hooks are written in Lua, run by the Luau dialect through the `mlua` crat
 ### Plugin identity and trust
 
 - A plugin's identity is its source URL plus a commit SHA or tag. Branch names are rejected.
-- The installed plugin's manifest hash is recorded in user state and in `jtm.lock`, so a changed manifest is detected.
+- The installed plugin's manifest hash is recorded in user state and in `jtm.lock`, so a changed manifest is detected. The manifest pins `plugin.lua` through `[hooks] script_sha256`, so the same hash covers the script.
 - First-party and third-party plugins use one trust model (section 9). A plugin's `signing_keys` are its trust anchors: they sign its indices, or sign a keys file that delegates to short-lived index keys. Only how the anchors become trusted differs.
 - A first-party plugin's signing keys are trusted because its manifest is compiled into jtm; installing jtm is that decision. Pre-approval is provenance: a manifest that is not compiled in is external even when its name is bare, and its keys need confirmation like any other.
 - Any other plugin's signing keys are trusted only after an explicit decision: a human answering the prompt, `--trust-key`, or `jtm trust add`. Being listed in the signed marketplace is evidence shown in that prompt, never trust on its own, and `--yes` never answers it. Without a terminal, an install that needs an untrusted key fails with exit 7 (`E_KEY_UNTRUSTED`) and names the command that would trust it.

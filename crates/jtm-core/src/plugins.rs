@@ -154,10 +154,8 @@ pub struct Plugin {
     pub location: String,
     /// The manifest text, which hooks see as `jtm.manifest`.
     pub text: String,
-    /// The `plugin.lua` source, when the plugin has one.
-    // SPEC-QUESTION: section 7 records only the manifest hash, so a changed `plugin.lua` at
-    // the same plugin revision is not detected. The revision pins both files until T9.3
-    // decides whether the script hash is recorded too.
+    /// The `plugin.lua` source, when a hook needs it. It always matches the manifest's
+    /// `hooks.script_sha256`, so the manifest hash covers it too.
     pub script: Option<String>,
 }
 
@@ -339,13 +337,26 @@ fn parse(
             manifest.name
         )));
     }
-    if script.is_none()
-        && let Some(hook) = first_hook(&manifest)
-    {
-        return Err(invalid(format!(
-            "names the hook `{hook}`, but the plugin has no plugin.lua"
-        )));
-    }
+    // Validation guarantees `script_sha256` exactly when a hook is named. A script no hook
+    // uses is never loaded.
+    let script = match (&manifest.hooks.script_sha256, script) {
+        (None, _) => None,
+        (Some(_), None) => {
+            let hook = first_hook(&manifest).unwrap_or("a hook");
+            return Err(invalid(format!(
+                "names the hook `{hook}`, but the plugin has no plugin.lua"
+            )));
+        }
+        (Some(expected), Some(source)) => {
+            let actual = jtm_security::sha256_hex(source.as_bytes());
+            if actual != *expected {
+                return Err(invalid(format!(
+                    "plugin.lua has SHA-256 {actual}, but `hooks.script_sha256` is {expected}"
+                )));
+            }
+            Some(source)
+        }
+    };
     Ok(Plugin {
         manifest,
         sha256: jtm_security::sha256_hex(bytes),

@@ -57,6 +57,7 @@ parser = "single-line"
 
 [hooks]
 post_extract = "fix_permissions"
+script_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [ide]
 maven_toolchain = "jdk"

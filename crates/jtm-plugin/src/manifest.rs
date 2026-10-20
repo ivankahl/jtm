@@ -250,7 +250,7 @@ pub enum InteropParser {
     Wrapper,
 }
 
-/// `[hooks]`: names of `plugin.lua` functions.
+/// `[hooks]`: names of `plugin.lua` functions, and the script's hash.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Hooks {
@@ -259,6 +259,9 @@ pub struct Hooks {
     pub format_interop: Option<String>,
     pub compare_versions: Option<String>,
     pub post_extract: Option<String>,
+    /// Lowercase hex SHA-256 of `plugin.lua`, required when any hook is named. The manifest's
+    /// own hash is what receipts and `jtm.lock` record, so this pins the script too.
+    pub script_sha256: Option<String>,
 }
 
 impl Hooks {
@@ -709,6 +712,21 @@ impl Manifest {
     }
 
     fn validate_hooks(&self, p: &mut Problems) {
+        let named = self.hooks.named().iter().any(|(_, f)| f.is_some());
+        match (&self.hooks.script_sha256, named) {
+            (None, true) => p.push(
+                "hooks.script_sha256",
+                "hooks need the SHA-256 of plugin.lua, so a changed script is detected",
+            ),
+            (Some(_), false) => p.push(
+                "hooks.script_sha256",
+                "names no hooks, so there is no plugin.lua to check",
+            ),
+            (Some(hash), true) if !is_sha256_hex(hash) => {
+                p.push("hooks.script_sha256", "must be 64 lowercase hex characters")
+            }
+            _ => {}
+        }
         for (name, function) in self.hooks.named() {
             if let Some(function) = function
                 && !is_lua_identifier(function)
@@ -1006,6 +1024,10 @@ fn reserved_env(name: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn is_sha256_hex(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn is_lua_identifier(name: &str) -> bool {

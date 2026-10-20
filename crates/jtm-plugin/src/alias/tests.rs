@@ -59,6 +59,7 @@ unix = ["demo"]
 
 [hooks]
 resolve_alias = "resolve"
+script_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 "#
     );
     Manifest::parse(&text).unwrap_or_else(|e| panic!("{e}"))
@@ -277,6 +278,7 @@ bin_dirs = ["bin"]
 unix = ["demo"]
 [hooks]
 compare_versions = "compare"
+script_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 "#;
     let m = Manifest::parse(text).unwrap();
     let index = [entry("default", "1", &[])];
@@ -391,6 +393,7 @@ bin_dirs = ["bin"]
 unix = ["demo"]
 [hooks]
 compare_versions = "compare"
+script_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 "#;
     let m = Manifest::parse(text).unwrap();
     let index = [

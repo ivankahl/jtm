@@ -248,25 +248,23 @@ fn a_failed_install_leaves_no_install_dir_but_keeps_the_download() {
 /// A fixture whose manifest runs `body` as its `post_extract` hook, with a short time limit.
 fn hooked(body: &str) -> (Fixture, Script) {
     let mut f = Fixture::new();
-    let text = manifest_text("[hooks]\npost_extract = \"post\"");
+    let source = format!("function post(ctx)\n{body}\nend");
+    let text = manifest_text(&format!(
+        "[hooks]\npost_extract = \"post\"\nscript_sha256 = \"{}\"",
+        jtm_security::sha256_hex(source.as_bytes())
+    ));
     f.manifest = Manifest::parse(&text).unwrap();
     let host = jtm_plugin::script::Host {
         platform: PLATFORM.as_str().into(),
         os: PLATFORM.os().as_str().into(),
         arch: PLATFORM.arch().as_str().into(),
     };
-    let script = Script::new(
-        "demo",
-        &format!("function post(ctx)\n{body}\nend"),
-        &text,
-        None,
-        host,
-    )
-    .unwrap()
-    .with_limits(jtm_plugin::script::Limits {
-        time: std::time::Duration::from_millis(200),
-        ..jtm_plugin::script::Limits::default()
-    });
+    let script = Script::new("demo", &source, &text, None, host)
+        .unwrap()
+        .with_limits(jtm_plugin::script::Limits {
+            time: std::time::Duration::from_millis(200),
+            ..jtm_plugin::script::Limits::default()
+        });
     (f, script)
 }
 
