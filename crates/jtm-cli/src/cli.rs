@@ -154,6 +154,18 @@ pub(crate) enum Command {
         #[arg(last = true, required = true, value_name = "COMMAND")]
         command: Vec<String>,
     },
+    /// Resolve the project's pins and write jtm.lock without installing.
+    Lock {
+        /// Lock only this platform, such as `linux-x64`. Repeatable.
+        #[arg(long, value_name = "PLATFORM")]
+        platform: Vec<String>,
+        /// Move locked versions forward: every tool, or only the one named.
+        #[arg(long, value_name = "TOOL", num_args = 0..=1, default_missing_value = "")]
+        upgrade: Option<String>,
+        /// Show what would be locked without writing jtm.lock.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Print the changes the shell hook applies at a prompt. Called by the hook itself.
     #[command(hide = true)]
     HookEnv {

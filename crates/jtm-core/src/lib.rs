@@ -9,12 +9,14 @@ pub mod here;
 pub mod indices;
 pub mod install;
 pub mod links;
+pub mod lockfile;
 pub mod pins;
 pub mod platform;
 pub mod plugins;
 pub mod project;
 pub mod session;
 pub mod spec;
+pub mod sync;
 pub mod trust;
 
 pub use config::{Config, ConfigInputs, Settings};

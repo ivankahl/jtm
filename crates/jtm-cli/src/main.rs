@@ -7,6 +7,7 @@ mod output;
 mod project;
 mod prompt;
 mod shell;
+mod sync;
 mod tools;
 mod trust;
 
@@ -216,6 +217,15 @@ fn main() -> ExitCode {
             }
             Err(err) => fail(&mut renderer, "exec", &err),
         },
+        Some(Command::Lock {
+            platform,
+            upgrade,
+            dry_run,
+        }) => render(
+            &mut renderer,
+            "lock",
+            sync::lock(&ctx, &platform, upgrade.as_deref(), dry_run),
+        ),
         Some(Command::HookEnv { shell }) => match activate::hook_env(&ctx, &shell) {
             Ok(script) => {
                 let mut stdout = io::stdout().lock();
