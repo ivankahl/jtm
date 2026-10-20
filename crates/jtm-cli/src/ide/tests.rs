@@ -107,3 +107,40 @@ fn gradle_values_are_escaped_as_properties() {
     // Reading it back gives the same path, so a re-run changes nothing.
     assert_eq!(update_gradle(Some(&text), &homes, tools), None);
 }
+
+#[test]
+fn entries_go_inside_a_root_element_on_one_line() {
+    let one_line = "<?xml version=\"1.0\"?>\n<toolchains></toolchains>\n";
+    let text = update_toolchains(Some(one_line), &toolchains())
+        .unwrap()
+        .unwrap();
+    let open = text.find("<toolchains>").unwrap();
+    let first = text.find("<toolchain>").unwrap();
+    let close = text.rfind("</toolchains>").unwrap();
+    assert!(open < first && first < close, "{text}");
+    // A second run finds jtm's block and changes nothing.
+    assert_eq!(update_toolchains(Some(&text), &toolchains()).unwrap(), None);
+}
+
+#[test]
+fn non_ascii_gradle_paths_are_written_as_unicode_escapes() {
+    let tools = Path::new("/home/josé/.jtm/tools");
+    let homes = [PathBuf::from("/home/josé/.jtm/tools/java/temurin-21")];
+    let text = update_gradle(None, &homes, tools).unwrap();
+    assert!(text.is_ascii(), "{text}");
+    assert!(text.contains("jos\\u00e9"), "{text}");
+    assert_eq!(update_gradle(Some(&text), &homes, tools), None);
+}
+
+#[test]
+fn a_continued_gradle_line_is_replaced_whole() {
+    let tools = Path::new("/data/tools");
+    let homes = [PathBuf::from("/data/tools/java/temurin-21")];
+    let existing =
+        "a=1\norg.gradle.java.installations.paths=/opt/jdk11,\\\n    /data/tools/java/old\nb=2\n";
+    let text = update_gradle(Some(existing), &homes, tools).unwrap();
+    assert_eq!(
+        text,
+        "a=1\norg.gradle.java.installations.paths=/opt/jdk11,/data/tools/java/temurin-21\nb=2\n"
+    );
+}

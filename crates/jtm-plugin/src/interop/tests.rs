@@ -203,6 +203,10 @@ fn wrapper_files_give_the_version_url_and_hash() {
         }))
     );
     assert_eq!(read_wrapper(w, "zipStoreBase=x\n"), Ok(None));
+    // Without a `sha256_key`, the wrapper's hash is not read.
+    let mut plain = w.clone();
+    plain.sha256_key = None;
+    assert_eq!(read_wrapper(&plain, text).unwrap().unwrap().sha256, None);
     assert!(matches!(
         read_wrapper(w, "distributionUrl=https://dl.example.test/other-1.0.zip\n"),
         Err(InteropError::Unmappable { .. })

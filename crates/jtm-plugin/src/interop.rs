@@ -16,10 +16,7 @@ use std::fmt;
 
 use crate::manifest::{Interop, InteropParser, Manifest};
 use crate::names::{check_name_segment, check_version_or_alias};
-
-/// The property a wrapper file uses for the distribution's SHA-256, in both Maven and Gradle
-/// wrappers.
-const WRAPPER_SHA256_KEY: &str = "distributionSha256Sum";
+use crate::properties;
 
 /// A value read from an interop file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +35,7 @@ pub struct WrapperPin {
     pub url: String,
     /// The last path segment of `url`.
     pub file_name: String,
-    /// `distributionSha256Sum`, when the wrapper declares one.
+    /// The value under the entry's `sha256_key`, when it declares one and the file sets it.
     pub sha256: Option<String>,
 }
 
@@ -275,12 +272,7 @@ pub fn read_wrapper(interop: &Interop, text: &str) -> Result<Option<WrapperPin>,
             message: "is not declared as a wrapper file".to_owned(),
         });
     };
-    let properties = properties(text);
-    let Some(url) = properties
-        .iter()
-        .find(|(k, _)| k == url_key)
-        .map(|(_, v)| v.clone())
-    else {
+    let Some(url) = properties::get(text, url_key) else {
         return Ok(None);
     };
     let file_name = url.rsplit('/').next().unwrap_or_default().to_owned();
@@ -291,10 +283,10 @@ pub fn read_wrapper(interop: &Interop, text: &str) -> Result<Option<WrapperPin>,
             message: format!("does not match `{pattern}`"),
         });
     };
-    let sha256 = properties
-        .iter()
-        .find(|(k, _)| k == WRAPPER_SHA256_KEY)
-        .map(|(_, v)| v.clone());
+    let sha256 = interop
+        .sha256_key
+        .as_ref()
+        .and_then(|key| properties::get(text, key));
     Ok(Some(WrapperPin {
         version,
         url,
@@ -372,36 +364,6 @@ fn known<'a>(names: impl IntoIterator<Item = &'a String>) -> String {
         .map(|n| format!("`{n}`"))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// Java properties: `key=value`, `key: value` or `key value` lines, `#` and `!` comments, and
-/// backslash escapes such as `https\://`.
-fn properties(text: &str) -> Vec<(String, String)> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with(['#', '!']))
-        .filter_map(|line| {
-            let at = line.find(['=', ':', ' ', '\t'])?;
-            let (key, rest) = line.split_at(at);
-            let value = rest[1..].trim_start_matches([' ', '\t', '=', ':']);
-            Some((unescape(key.trim()), unescape(value.trim())))
-        })
-        .collect()
-}
-
-fn unescape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(next) = chars.next() {
-                out.push(next);
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// The version `name` holds in `pattern`'s `{version}` place. When several split points match,

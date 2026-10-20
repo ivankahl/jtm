@@ -9,8 +9,9 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use jtm_core::session::{Session, home_dir};
+use jtm_core::session::{Session, install_home};
 use jtm_core::{Context, JtmError, Result};
+use jtm_plugin::properties;
 use serde::Serialize;
 
 const START: &str =
@@ -83,8 +84,18 @@ pub(crate) fn update_toolchains(
                      fix the file and run `jtm ide sync` again",
                 )
             })?;
-            let at = existing[..close].rfind('\n').map_or(0, |i| i + 1);
-            format!("{}{block}{}", &existing[..at], &existing[at..])
+            // Before the closing tag, on a line of its own; the closing tag may share a line
+            // with the opening one, as in `<toolchains></toolchains>`.
+            let line_start = existing[..close].rfind('\n').map_or(0, |i| i + 1);
+            if existing[line_start..close].trim().is_empty() {
+                format!(
+                    "{}{block}{}",
+                    &existing[..line_start],
+                    &existing[line_start..]
+                )
+            } else {
+                format!("{}\n{block}{}", &existing[..close], &existing[close..])
+            }
         }
     };
     Ok((updated != existing).then_some(updated))
@@ -99,30 +110,11 @@ pub(crate) fn update_gradle(
 ) -> Option<String> {
     let existing = existing.unwrap_or_default();
     let lines: Vec<&str> = existing.split_inclusive('\n').collect();
-    // The logical line holding the key: its first and last physical lines.
-    let mut span = None;
-    let mut i = 0;
-    while i < lines.len() {
-        let start = i;
-        let mut logical = String::new();
-        loop {
-            let line = lines[i].trim_end_matches(['\n', '\r']);
-            let trailing = line.len() - line.trim_end_matches('\\').len();
-            i += 1;
-            if trailing % 2 == 1 && i < lines.len() {
-                logical.push_str(line[..line.len() - 1].trim_start());
-            } else {
-                logical.push_str(line.trim_start());
-                break;
-            }
-        }
-        if let Some((key, value)) = split_property(&logical)
-            && key == GRADLE_KEY
-        {
-            span = Some((start, i, value.to_owned()));
-            break;
-        }
-    }
+    // The logical line holding the key: its first and last physical lines, and its value.
+    let span = properties::entries(existing)
+        .into_iter()
+        .find(|e| e.key == GRADLE_KEY)
+        .map(|e| (e.first, e.end, e.value));
     let mut ours: Vec<String> = homes.iter().map(|h| h.display().to_string()).collect();
     ours.sort();
     // Entries under `tools` are jtm's from an earlier run; an entry equal to one of jtm's
@@ -130,7 +122,7 @@ pub(crate) fn update_gradle(
     let user: Vec<String> = span
         .as_ref()
         .map(|(_, _, value)| {
-            unescape(value)
+            value
                 .split(',')
                 .map(str::trim)
                 .filter(|e| !e.is_empty() && !Path::new(e).starts_with(tools))
@@ -143,7 +135,10 @@ pub(crate) fn update_gradle(
     let line = if entries.is_empty() {
         String::new()
     } else {
-        format!("{GRADLE_KEY}={}\n", escape(&entries.join(",")))
+        format!(
+            "{GRADLE_KEY}={}\n",
+            properties::escape_value(&entries.join(","))
+        )
     };
     let updated = match span {
         Some((start, end, _)) => {
@@ -163,78 +158,6 @@ pub(crate) fn update_gradle(
         }
     };
     (updated != existing).then_some(updated)
-}
-
-/// Splits a `.properties` line into its key and raw value, skipping comments and blanks.
-fn split_property(line: &str) -> Option<(String, &str)> {
-    let line = line.trim_start();
-    if line.is_empty() || line.starts_with(['#', '!']) {
-        return None;
-    }
-    let mut key = String::new();
-    let mut chars = line.char_indices();
-    while let Some((i, c)) = chars.next() {
-        match c {
-            '\\' => {
-                if let Some((_, next)) = chars.next() {
-                    key.push(next);
-                }
-            }
-            '=' | ':' | ' ' | '\t' => {
-                let rest = line[i..].trim_start_matches([' ', '\t']);
-                let rest = rest
-                    .strip_prefix(['=', ':'])
-                    .unwrap_or(rest)
-                    .trim_start_matches([' ', '\t']);
-                return Some((key, rest));
-            }
-            c => key.push(c),
-        }
-    }
-    Some((key, ""))
-}
-
-fn unescape(value: &str) -> String {
-    let mut out = String::new();
-    let mut chars = value.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('r') => out.push('\r'),
-            Some('f') => out.push('\u{c}'),
-            Some('u') => {
-                let hex: String = chars.by_ref().take(4).collect();
-                if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                    out.push(c);
-                }
-            }
-            Some(other) => out.push(other),
-            None => {}
-        }
-    }
-    out
-}
-
-/// Escapes a `.properties` value.
-fn escape(value: &str) -> String {
-    let mut out = String::new();
-    for c in value.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            ':' => out.push_str("\\:"),
-            '=' => out.push_str("\\="),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 fn xml(text: &str) -> String {
@@ -298,9 +221,7 @@ pub(crate) fn sync(ctx: &Context, options: IdeOptions) -> Result<crate::output::
         };
         let ide = &plugin.manifest.ide;
         let dir = PathBuf::from(&item.version.path);
-        let jdk_home = jtm_core::install::Receipt::read(&dir)
-            .map(|r| home_dir(&dir, &r.home))
-            .unwrap_or(dir);
+        let jdk_home = install_home(&dir);
         if let Some(kind) = &ide.maven_toolchain {
             toolchains.push(Toolchain {
                 id: item.version.id.to_string(),

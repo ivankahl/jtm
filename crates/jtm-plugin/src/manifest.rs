@@ -211,6 +211,9 @@ pub struct Interop {
     /// For `wrapper`: the distribution file name, with `{version}` where the version is and
     /// `*` for any text, such as `gradle-{version}-*.zip`.
     pub pattern: Option<String>,
+    /// For `wrapper`: the property holding the distribution's SHA-256, such as
+    /// `distributionSha256Sum`. Without it the wrapper's hash is not compared.
+    pub sha256_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -631,6 +634,17 @@ impl Manifest {
                     "only parser `wrapper` takes a pattern",
                 ),
                 (_, None) => {}
+            }
+            match (interop.parser, &interop.sha256_key) {
+                (InteropParser::Wrapper, Some(key)) if !is_interop_text(key) => p.push(
+                    format!("{path}.sha256_key"),
+                    "keys use letters, digits, `.`, `-` and `_`",
+                ),
+                (InteropParser::Wrapper, _) | (_, None) => {}
+                (_, Some(_)) => p.push(
+                    format!("{path}.sha256_key"),
+                    "only parser `wrapper` takes a sha256_key",
+                ),
             }
             if interop.parser == InteropParser::Wrapper && !interop.mapping.is_empty() {
                 p.push(

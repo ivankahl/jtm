@@ -4,6 +4,7 @@ pub mod alias;
 pub mod interop;
 pub mod manifest;
 pub mod names;
+pub mod properties;
 pub mod version;
 
 pub use alias::{
