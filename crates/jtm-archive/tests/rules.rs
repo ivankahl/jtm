@@ -373,3 +373,22 @@ fn malformed_archives_are_reported() {
         Err(Error::Malformed { .. })
     ));
 }
+
+#[test]
+fn links_cannot_leave_a_single_top_level_directory() {
+    // With `strip_components = "auto"` the single top-level directory becomes the install
+    // dir, so a link to its parent would point at a sibling install after the rename.
+    for target in ["../other", "..", "../jdk2/bin"] {
+        for (format, bytes) in both(&[dir("jdk/"), file("jdk/a", b"x"), symlink("jdk/x", target)]) {
+            let s = Scratch::new();
+            assert_unsafe(
+                s.extract(&bytes, format, &Options::default()),
+                "top-level directory",
+            );
+        }
+    }
+    for (format, bytes) in both(&[file("jdk/a", b"x"), symlink("jdk/x", "a")]) {
+        let s = Scratch::new();
+        s.extract(&bytes, format, &Options::default()).unwrap();
+    }
+}

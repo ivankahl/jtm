@@ -286,6 +286,7 @@ impl<'o> Sink<'o> {
             self.summary.links += 1;
         }
 
+        let top = self.single_top_level();
         let mut resolved = Vec::new();
         for (parts, link) in &self.symlinks {
             if self.written.contains_key(parts) {
@@ -297,6 +298,16 @@ impl<'o> Sink<'o> {
             let target = self
                 .resolve(parts[..parts.len() - 1].to_vec(), &link.steps, 0)
                 .map_err(|reason| Error::unsafe_entry(&link.display, reason))?;
+            // A single top-level directory may become the install dir on its own (layout
+            // `"auto"`), so a link must also stay inside it.
+            if let Some(top) = &top
+                && target.first() != Some(top)
+            {
+                return Err(Error::unsafe_entry(
+                    &link.display,
+                    format!("links outside the top-level directory `{top}`"),
+                ));
+            }
             resolved.push((parts.clone(), target));
         }
         for (parts, target) in resolved {
@@ -317,6 +328,27 @@ impl<'o> Sink<'o> {
             }
         }
         Ok(self.summary)
+    }
+
+    /// The first component every entry shares, when the archive holds a single top-level
+    /// directory.
+    fn single_top_level(&self) -> Option<String> {
+        let mut firsts = self
+            .written
+            .keys()
+            .chain(self.symlinks.keys())
+            .chain(self.hardlinks.keys())
+            .map(|p| (p.first(), p.len()));
+        let (first, _) = firsts.next()?;
+        let first = first?;
+        let mut is_dir = self.written.get(std::slice::from_ref(first)) == Some(&Node::Dir);
+        for (other, len) in firsts {
+            if other != Some(first) {
+                return None;
+            }
+            is_dir |= len > 1;
+        }
+        is_dir.then(|| first.clone())
     }
 
     /// Refuses any entry whose path passes through a symbolic link, since writing it would

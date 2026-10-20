@@ -257,17 +257,21 @@ fn a_killed_install_leaves_no_partial_install_and_is_cleaned_up() {
     let entry = f.seed(&good_archive());
     // What an install killed mid-extraction leaves: a temporary directory, never the install
     // dir, since that only appears through the final rename.
-    let stale = f.dirs.tools_tmp().join("demo-default-1.0.0.killed");
+    let stale = f.dirs.tools_tmp().join("demo@default@1.0.0@killed");
     fs::create_dir_all(stale.join("demo-1.0.0/bin")).unwrap();
     fs::write(stale.join("demo-1.0.0/bin/demo"), b"partial").unwrap();
     assert!(!f.dest().exists());
     // Another version's temporary directory may belong to a running install.
-    let other = f.dirs.tools_tmp().join("demo-default-2.0.0.running");
+    let other = f.dirs.tools_tmp().join("demo@default@2.0.0@running");
     fs::create_dir_all(&other).unwrap();
+    // Including one whose version starts with this one's.
+    let longer = f.dirs.tools_tmp().join("demo@default@1.0.0.1@running");
+    fs::create_dir_all(&longer).unwrap();
 
     assert_eq!(f.install(&entry, false).unwrap().status, Status::Installed);
     assert!(!stale.exists());
     assert!(other.exists());
+    assert!(longer.exists());
     assert_eq!(fs::read(f.dest().join("bin/demo")).unwrap(), b"#!/bin/sh");
 }
 

@@ -212,7 +212,9 @@ fn already_installed(dest: &Path, entry: &IndexEntry) -> Option<Installed> {
 
 /// The name prefix of temporary directories for one version.
 fn tmp_prefix(plugin: &str, variant: &str, version: &str) -> String {
-    format!("{}-{variant}-{version}.", dir_name(plugin))
+    // `@` appears in no plugin dir name, variant or version, so no other version's prefix
+    // starts with this one.
+    format!("{}@{variant}@{version}@", dir_name(plugin))
 }
 
 /// Takes the exclusive lock for one version, waiting for any other holder.

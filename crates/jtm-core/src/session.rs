@@ -514,7 +514,14 @@ impl<'a> Session<'a> {
             if !dry_run {
                 let _lock = install::lock_version(&self.dirs, &v.tool, &v.variant, &v.version)?;
                 let path = PathBuf::from(&v.path);
-                if self.clear_current_link(&v.tool, &path) {
+                // Decided before the move, cleared only once it succeeded, so `E_IN_USE`
+                // leaves both the install and the default as they were.
+                let link = self.current_link_to(&v.tool, &path);
+                let trashed = install::move_to_trash(&self.dirs, &path)?;
+                install::remove_trash(&trashed);
+                if let Some(link) = link
+                    && clear_link(&link)
+                {
                     warnings.push(Warning {
                         code: W_DEFAULT_CLEARED,
                         message: format!(
@@ -523,30 +530,29 @@ impl<'a> Session<'a> {
                         ),
                     });
                 }
-                let trashed = install::move_to_trash(&self.dirs, &path)?;
-                install::remove_trash(&trashed);
             }
             removed.push(v);
         }
         Ok((removed, warnings))
     }
 
-    /// Removes `current/<tool>` when it points at `install_dir`. Returns whether it did.
-    fn clear_current_link(&self, tool: &str, install_dir: &Path) -> bool {
+    /// `current/<tool>`, when it points at `install_dir`.
+    fn current_link_to(&self, tool: &str, install_dir: &Path) -> Option<PathBuf> {
         let link = self.dirs.current().join(dir_name(tool));
-        let points_here = match (fs::canonicalize(&link), fs::canonicalize(install_dir)) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => false,
-        };
-        if !points_here {
-            return false;
+        match (fs::canonicalize(&link), fs::canonicalize(install_dir)) {
+            (Ok(a), Ok(b)) if a == b => Some(link),
+            _ => None,
         }
-        let removed = fs::remove_file(&link).or_else(|_| fs::remove_dir(&link));
-        if let Err(err) = &removed {
-            tracing::warn!(link = %link.display(), %err, "cannot clear the current link");
-        }
-        removed.is_ok()
     }
+}
+
+/// Removes a current link. Returns whether it did.
+fn clear_link(link: &Path) -> bool {
+    let removed = fs::remove_file(link).or_else(|_| fs::remove_dir(link));
+    if let Err(err) = &removed {
+        tracing::warn!(link = %link.display(), %err, "cannot clear the current link");
+    }
+    removed.is_ok()
 }
 
 /// Loads the user config file, if any, and `JTM__*` variables.
