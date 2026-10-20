@@ -165,6 +165,78 @@ fn a_new_terminal_runs_the_default_in_bash_zsh_and_fish() {
 }
 
 #[test]
+fn a_new_terminal_applies_project_pins_on_cd() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join(".jtm.toml"),
+        "[tools]\ndemo = \"1.0\"\n",
+    )
+    .unwrap();
+    let dir = project.path().display();
+    // bash runs the hook from PROMPT_COMMAND, which `-c` never reaches, so it is called here;
+    // zsh and fish run it on the directory change itself.
+    for (shell, path, script) in [
+        (
+            "bash",
+            "/bin/bash",
+            format!("cd '{dir}' && _jtm_hook && echo \"$DEMO_HOME\""),
+        ),
+        (
+            "zsh",
+            "/usr/bin/zsh",
+            format!("cd '{dir}' && echo \"$DEMO_HOME\""),
+        ),
+        (
+            "fish",
+            "/usr/bin/fish",
+            format!("cd '{dir}'; and echo $DEMO_HOME"),
+        ),
+    ] {
+        let (f, home) = ready();
+        let (code, value) = setup(&f, home.path(), path, &["--yes"]);
+        assert_eq!(code, 0, "{shell}: {value}");
+        assert_eq!(value["data"]["hook"], true, "{shell}: {value}");
+        let Some(out) = new_terminal(&f, home.path(), shell, &script) else {
+            continue;
+        };
+        assert_eq!(
+            Path::new(out.trim()),
+            f.install_dir("1.0.0"),
+            "{shell}: the pin applies, not the default link"
+        );
+    }
+}
+
+#[test]
+fn no_hook_leaves_the_shell_hook_out_and_a_rerun_adds_it_back() {
+    let (f, home) = ready();
+    let (code, value) = setup(&f, home.path(), "/bin/bash", &["--yes", "--no-hook"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["data"]["hook"], false);
+    let rc = fs::read_to_string(bash_rc(home.path())).unwrap();
+    assert!(!rc.contains("shell-init"), "{rc}");
+    assert!(rc.contains("env.sh"), "{rc}");
+
+    let (code, value) = setup(&f, home.path(), "/bin/bash", &["--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["changed"], true);
+    let rc = fs::read_to_string(bash_rc(home.path())).unwrap();
+    assert!(rc.contains("shell-init bash"), "{rc}");
+    assert_eq!(rc.matches("# >>> jtm >>>").count(), 1);
+}
+
+#[test]
+fn a_login_shell_without_a_hook_gets_the_environment_and_a_warning() {
+    let (f, home) = ready();
+    let (code, value) = setup(&f, home.path(), "/bin/tcsh", &["--yes"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["data"]["hook"], false);
+    assert_eq!(value["warnings"][0]["code"], "W_SHELL_HOOK_SKIPPED");
+    let profile = fs::read_to_string(home.path().join(".profile")).unwrap();
+    assert!(profile.contains("env.sh") && !profile.contains("shell-init"));
+}
+
+#[test]
 fn an_unreadable_rc_file_is_never_overwritten() {
     let (f, home) = ready();
     let original = b"# caf\xe9\nalias ll='ls -l'\n";

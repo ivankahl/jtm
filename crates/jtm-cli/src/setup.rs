@@ -6,6 +6,10 @@
 //! only rewrite jtm's files, so the rc file is edited once and `PATH` grows only by the tools
 //! actually used. On Windows the values go to `HKCU\Environment`, followed by a
 //! `WM_SETTINGCHANGE` broadcast so new processes see them.
+//!
+//! The block also loads the shell hook (`jtm shell-init`), so project pins apply on `cd`; on
+//! Windows that line goes to the PowerShell profile. `--no-hook` leaves it out, and re-running
+//! with or without it rewrites the block to match.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -16,12 +20,15 @@ use jtm_core::session::Session;
 use jtm_core::{Context, JtmError, Os, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::output::{Human, Outcome};
+use crate::output::{Human, Outcome, Warning};
 use crate::prompt::confirm;
-use crate::shell::{fish_quote, posix_quote};
+use crate::shell::{Shell, fish_quote, jtm_exe, posix_quote, pwsh_quote};
 
 #[cfg(windows)]
 mod windows;
+
+/// Warning code for a shell hook `self setup` could not add.
+pub(crate) const W_SHELL_HOOK_SKIPPED: &str = "W_SHELL_HOOK_SKIPPED";
 
 const START: &str = "# >>> jtm >>>";
 const END: &str = "# <<< jtm <<<";
@@ -86,18 +93,61 @@ pub(crate) fn env_fish(plan: &SetupPlan) -> String {
     out
 }
 
-/// The marked block that sources `env_file` from an rc file.
-pub(crate) fn rc_block(env_file: &Path, fish: bool) -> String {
-    let file = env_file.display().to_string();
-    let line = if fish {
-        let file = fish_quote(&file);
-        format!("test -f {file}; and source {file}")
-    } else {
-        let file = posix_quote(&file);
-        format!("[ -f {file} ] && . {file}")
+/// The marked block for an rc file of `shell` (`None` for a plain POSIX `.profile`): it sources
+/// `env_file` and, given `hook`, the path of jtm, loads the shell hook. For PowerShell, whose
+/// environment lives in the registry, `env_file` is `None` and only the hook is loaded.
+pub(crate) fn rc_block(
+    env_file: Option<&Path>,
+    shell: Option<Shell>,
+    hook: Option<&str>,
+) -> String {
+    let mut lines = Vec::new();
+    if let Some(env_file) = env_file {
+        let file = env_file.display().to_string();
+        lines.push(if shell == Some(Shell::Fish) {
+            let file = fish_quote(&file);
+            format!("test -f {file}; and source {file}")
+        } else {
+            let file = posix_quote(&file);
+            format!("[ -f {file} ] && . {file}")
+        });
+    }
+    if let Some(exe) = hook {
+        match shell {
+            Some(Shell::Bash | Shell::Zsh) => {
+                let name = shell.map_or("bash", Shell::name);
+                let exe = posix_quote(exe);
+                lines.push(format!(
+                    "[ -x {exe} ] && eval \"$({exe} shell-init {name})\""
+                ));
+            }
+            Some(Shell::Fish) => {
+                let exe = fish_quote(exe);
+                lines.push(format!(
+                    "status is-interactive; and test -x {exe}; and {exe} shell-init fish | source"
+                ));
+            }
+            Some(Shell::Pwsh) => {
+                let exe = pwsh_quote(exe);
+                lines.push(format!(
+                    "if (Test-Path -LiteralPath {exe}) {{ Invoke-Expression ((& {exe} shell-init \
+                     pwsh) -join \"`n\") }}"
+                ));
+            }
+            Some(Shell::Cmd) | None => {}
+        }
+    }
+    let what = match (
+        env_file.is_some(),
+        lines.len() > usize::from(env_file.is_some()),
+    ) {
+        (true, true) => "puts default tool versions on PATH and applies project pins on cd",
+        (true, false) => "puts default tool versions on PATH",
+        (false, _) => "applies project pins on cd",
     };
     format!(
-        "{START}\n# Added by `jtm self setup`: puts default tool versions on PATH.\n{line}\n{END}\n"
+        "{START}\n# Added by `jtm self setup`: {what}.\n{}\n{END}\n",
+        lines.join("\n")
     )
 }
 
@@ -130,12 +180,13 @@ pub(crate) fn update_rc(existing: Option<&str>, block: &str) -> Option<String> {
     (updated != existing).then_some(updated)
 }
 
-/// The rc file for the user's login shell, and whether it is fish.
+/// The rc file for the user's login shell, and the shell it is for: `None` for a shell jtm has
+/// no hook for, whose `.profile` gets the environment only.
 pub(crate) fn rc_file(
     home: &Path,
     os: Os,
     env: &dyn Fn(&str) -> Option<String>,
-) -> (PathBuf, bool) {
+) -> (PathBuf, Option<Shell>) {
     let shell = env("SHELL").unwrap_or_default();
     let name = shell.rsplit('/').next().unwrap_or_default();
     match name {
@@ -143,18 +194,41 @@ pub(crate) fn rc_file(
             let dir = env("ZDOTDIR")
                 .filter(|d| d.starts_with('/'))
                 .map_or_else(|| home.to_path_buf(), PathBuf::from);
-            (dir.join(".zshrc"), false)
+            (dir.join(".zshrc"), Some(Shell::Zsh))
         }
-        "bash" if os == Os::Macos => (home.join(".bash_profile"), false),
-        "bash" => (home.join(".bashrc"), false),
+        "bash" if os == Os::Macos => (home.join(".bash_profile"), Some(Shell::Bash)),
+        "bash" => (home.join(".bashrc"), Some(Shell::Bash)),
         "fish" => {
             let config = env("XDG_CONFIG_HOME")
                 .filter(|d| d.starts_with('/'))
                 .map_or_else(|| home.join(".config"), PathBuf::from);
-            (config.join("fish").join("conf.d").join("jtm.fish"), true)
+            (
+                config.join("fish").join("conf.d").join("jtm.fish"),
+                Some(Shell::Fish),
+            )
         }
-        _ => (home.join(".profile"), false),
+        _ => (home.join(".profile"), None),
     }
+}
+
+/// The PowerShell profile for the current user and host, as PowerShell itself reports it, so a
+/// Documents folder moved by OneDrive is honoured. Tries PowerShell 7, then Windows PowerShell.
+fn powershell_profile() -> Option<PathBuf> {
+    ["pwsh", "powershell"].iter().find_map(|shell| {
+        let output = std::process::Command::new(shell)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$PROFILE.CurrentUserCurrentHost",
+            ])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (!path.is_empty()).then(|| PathBuf::from(path))
+    })
 }
 
 /// Prepends the entries of `add` missing from the `;`-separated `existing`, comparing
@@ -201,6 +275,8 @@ pub(crate) struct Target {
 #[derive(Debug, Serialize)]
 pub(crate) struct SetupData {
     dry_run: bool,
+    /// Whether the block loads the shell hook.
+    hook: bool,
     path: Vec<String>,
     vars: std::collections::BTreeMap<String, String>,
     targets: Vec<Target>,
@@ -291,16 +367,52 @@ fn write_if_changed(path: &Path, text: &str, dry_run: bool) -> Result<bool> {
     Ok(true)
 }
 
-pub(crate) fn setup(ctx: &Context, dry_run: bool) -> Result<Outcome<SetupData>> {
+/// Options for [`setup`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SetupOptions {
+    pub(crate) dry_run: bool,
+    /// Leave the shell hook out of the rc block.
+    pub(crate) no_hook: bool,
+}
+
+pub(crate) fn setup(ctx: &Context, options: SetupOptions) -> Result<Outcome<SetupData>> {
+    let dry_run = options.dry_run;
     let session = Session::open(ctx)?;
     let plan = plan(&session)?;
+    let exe = (!options.no_hook).then(jtm_exe);
     let mut targets = Vec::new();
+    let mut warnings = Vec::new();
+    let mut hook = false;
     let os = session.platform().os();
     if os == Os::Windows {
         #[cfg(windows)]
         {
             let previous = applied(&session)?.unwrap_or_default();
             targets.extend(windows::apply(&plan, &previous, dry_run)?);
+        }
+        match (powershell_profile(), exe.as_deref()) {
+            (Some(profile), Some(exe)) => {
+                let block = rc_block(None, Some(Shell::Pwsh), Some(exe));
+                // Windows PowerShell reads a file without a byte order mark as the ANSI code
+                // page, so a new profile gets one for a non-ASCII jtm path.
+                targets.push(edit_rc(ctx, &profile, &block, "\u{feff}", dry_run)?);
+                hook = true;
+            }
+            // With --no-hook the profile holds nothing for jtm, so an earlier block goes.
+            (Some(profile), None) => {
+                if read_existing(&profile)?.is_some_and(|text| text.contains(START)) {
+                    targets.push(edit_rc(ctx, &profile, "", "", dry_run)?);
+                }
+            }
+            (None, Some(_)) => warnings.push(Warning {
+                code: W_SHELL_HOOK_SKIPPED,
+                message: "no PowerShell was found, so the shell hook was not added; add \
+                          `Invoke-Expression ((& jtm shell-init pwsh) -join \"`n\")` to your \
+                          profile"
+                    .to_owned(),
+                details: serde_json::Map::new(),
+            }),
+            (None, None) => {}
         }
     } else {
         for (name, text) in [("env.sh", env_sh(&plan)), ("env.fish", env_fish(&plan))] {
@@ -315,30 +427,26 @@ pub(crate) fn setup(ctx: &Context, dry_run: bool) -> Result<Outcome<SetupData>> 
             .ok()
             .filter(|h| h.starts_with('/'))
             .ok_or_else(|| JtmError::usage("HOME is not set, so jtm cannot find your rc file"))?;
-        let (rc, fish) = rc_file(Path::new(&home), os, &|key| std::env::var(key).ok());
-        let env_file = session
-            .dirs()
-            .data
-            .join(if fish { "env.fish" } else { "env.sh" });
-        let block = rc_block(&env_file, fish);
-        let existing = read_existing(&rc)?;
-        let update = update_rc(existing.as_deref(), &block);
-        if let Some(text) = &update
-            && !dry_run
-        {
-            let question = format!("Add these lines to {}?\n\n{block}", rc.display());
-            if !confirm(ctx, &question)? {
-                return Err(JtmError::InputRequired {
-                    action: format!("adding the jtm block to {}", rc.display()),
-                    resolve: "--yes".to_owned(),
-                });
-            }
-            write_if_changed(&rc, text, false)?;
-        }
-        targets.push(Target {
-            path: rc.display().to_string(),
-            changed: update.is_some(),
+        let (rc, shell) = rc_file(Path::new(&home), os, &|key| std::env::var(key).ok());
+        let env_file = session.dirs().data.join(if shell == Some(Shell::Fish) {
+            "env.fish"
+        } else {
+            "env.sh"
         });
+        if shell.is_none() && exe.is_some() {
+            warnings.push(Warning {
+                code: W_SHELL_HOOK_SKIPPED,
+                message: format!(
+                    "jtm has no shell hook for your login shell, so {} only puts default \
+                     versions on PATH; use bash, zsh, fish or pwsh for project pins on cd",
+                    rc.display()
+                ),
+                details: serde_json::Map::new(),
+            });
+        }
+        hook = exe.is_some() && shell.is_some();
+        let block = rc_block(Some(&env_file), shell, exe.as_deref());
+        targets.push(edit_rc(ctx, &rc, &block, "", dry_run)?);
     }
     if !dry_run {
         record(&session, &plan)?;
@@ -348,11 +456,42 @@ pub(crate) fn setup(ctx: &Context, dry_run: bool) -> Result<Outcome<SetupData>> 
         changed: !dry_run && targets.iter().any(|t| t.changed),
         data: SetupData {
             dry_run,
+            hook,
             path: plan.path.iter().map(|p| p.display().to_string()).collect(),
             vars: plan.vars.into_iter().collect(),
             targets,
         },
-        warnings: Vec::new(),
+        warnings,
+    })
+}
+
+/// Puts `block` into the rc file `rc` after confirmation or with `--yes`, keeping the rest of
+/// the file; an empty `block` removes jtm's. A new file starts with `prefix`.
+fn edit_rc(ctx: &Context, rc: &Path, block: &str, prefix: &str, dry_run: bool) -> Result<Target> {
+    let existing = read_existing(rc)?;
+    let update = match &existing {
+        Some(text) => update_rc(Some(text), block),
+        None => Some(format!("{prefix}{block}")),
+    };
+    if let Some(text) = &update
+        && !dry_run
+    {
+        let question = if block.is_empty() {
+            format!("Remove the jtm block from {}?", rc.display())
+        } else {
+            format!("Add these lines to {}?\n\n{block}", rc.display())
+        };
+        if !confirm(ctx, &question)? {
+            return Err(JtmError::InputRequired {
+                action: format!("adding the jtm block to {}", rc.display()),
+                resolve: "--yes".to_owned(),
+            });
+        }
+        write_if_changed(rc, text, false)?;
+    }
+    Ok(Target {
+        path: rc.display().to_string(),
+        changed: update.is_some(),
     })
 }
 

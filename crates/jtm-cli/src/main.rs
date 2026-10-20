@@ -259,9 +259,11 @@ fn main() -> ExitCode {
                 },
             ),
         ),
-        Some(Command::SelfCmd(SelfCommand::Setup { dry_run })) => {
-            render(&mut renderer, "self setup", setup::setup(&ctx, dry_run))
-        }
+        Some(Command::SelfCmd(SelfCommand::Setup { dry_run, no_hook })) => render(
+            &mut renderer,
+            "self setup",
+            setup::setup(&ctx, setup::SetupOptions { dry_run, no_hook }),
+        ),
         Some(Command::Trust(cmd)) => {
             let name = trust::command_name(&cmd);
             let _ = match trust::run(&ctx, cmd) {

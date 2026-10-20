@@ -1,7 +1,6 @@
 //! `jtm default`, `use`, `env` and `shell-init`.
 
 use std::io::{self, Write};
-use std::path::PathBuf;
 
 use jtm_core::activate::Change;
 use jtm_core::here::Here;
@@ -241,11 +240,7 @@ pub(crate) fn use_version(
 
 pub(crate) fn shell_init(shell: &str) -> Result<Outcome<ShellInitData>> {
     let shell = Shell::parse(shell)?;
-    let exe = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.canonicalize().ok())
-        .unwrap_or_else(|| PathBuf::from("jtm"));
-    let script = shell::init(shell, &exe.display().to_string())?;
+    let script = shell::init(shell, &shell::jtm_exe())?;
     Ok(Outcome {
         command: "shell-init",
         changed: false,

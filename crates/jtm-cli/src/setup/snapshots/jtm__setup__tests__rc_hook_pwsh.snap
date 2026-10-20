@@ -1,0 +1,8 @@
+---
+source: crates/jtm-cli/src/setup/tests.rs
+expression: "rc_block(None, Some(Shell::Pwsh), Some(r\"C:\\Users\\Zoë\\jtm\\jtm.exe\"))"
+---
+# >>> jtm >>>
+# Added by `jtm self setup`: applies project pins on cd.
+if (Test-Path -LiteralPath 'C:\Users\Zoë\jtm\jtm.exe') { Invoke-Expression ((& 'C:\Users\Zoë\jtm\jtm.exe' shell-init pwsh) -join "`n") }
+# <<< jtm <<<

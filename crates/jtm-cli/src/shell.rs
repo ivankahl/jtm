@@ -203,6 +203,19 @@ _jtm_hook
     })
 }
 
+/// The path of the running jtm, for shell code that calls it back. A Windows verbatim prefix
+/// (`\\?\`) from canonicalizing is dropped, since Windows PowerShell cannot run such a path.
+pub(crate) fn jtm_exe() -> String {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .map_or_else(|| "jtm".to_owned(), |p| p.display().to_string());
+    match exe.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_owned(),
+        _ => exe,
+    }
+}
+
 /// Single-quotes `text` for bash and zsh.
 pub(crate) fn posix_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))

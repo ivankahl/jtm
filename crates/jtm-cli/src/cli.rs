@@ -212,11 +212,16 @@ pub(crate) enum IdeCommand {
 #[derive(Debug, Subcommand)]
 pub(crate) enum SelfCommand {
     /// Put the default versions on the user PATH and set their variables, without admin
-    /// rights. Edits your shell's rc file on Unix after confirmation or with --yes.
+    /// rights, and load the shell hook so project pins apply on cd. Edits your shell's rc file
+    /// (your PowerShell profile on Windows) after confirmation or with --yes.
     Setup {
         /// Show what would change without changing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Leave out the shell hook (`jtm shell-init`), so only the default versions are set
+        /// up. Re-running without it adds the hook back.
+        #[arg(long)]
+        no_hook: bool,
     },
 }
 

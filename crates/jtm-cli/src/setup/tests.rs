@@ -17,7 +17,7 @@ fn env_files_put_bin_dirs_first_once_and_set_variables() {
 
 #[test]
 fn the_rc_block_is_appended_once_and_replaced_in_place() {
-    let block = rc_block(Path::new("/data/env.sh"), false);
+    let block = rc_block(Some(Path::new("/data/env.sh")), Some(Shell::Bash), None);
     let fresh = update_rc(None, &block).unwrap();
     assert_eq!(fresh, block);
     assert_eq!(
@@ -35,7 +35,11 @@ fn the_rc_block_is_appended_once_and_replaced_in_place() {
     assert_eq!(update_rc(Some(&added), &block), None);
 
     // A changed block replaces the old one where it stands.
-    let moved = rc_block(Path::new("/elsewhere/env.sh"), false);
+    let moved = rc_block(
+        Some(Path::new("/elsewhere/env.sh")),
+        Some(Shell::Bash),
+        None,
+    );
     let with_tail = format!("{added}echo after\n");
     let replaced = update_rc(Some(&with_tail), &moved).unwrap();
     assert!(replaced.contains("/elsewhere/env.sh"), "{replaced}");
@@ -51,11 +55,49 @@ fn the_rc_block_is_appended_once_and_replaced_in_place() {
 fn rc_blocks_quote_paths() {
     insta::assert_snapshot!(
         "rc_posix",
-        rc_block(Path::new("/home/o'neil/jtm/env.sh"), false)
+        rc_block(Some(Path::new("/home/o'neil/jtm/env.sh")), None, None)
     );
     insta::assert_snapshot!(
         "rc_fish",
-        rc_block(Path::new("/home/o'neil/jtm/env.fish"), true)
+        rc_block(
+            Some(Path::new("/home/o'neil/jtm/env.fish")),
+            Some(Shell::Fish),
+            None
+        )
+    );
+}
+
+#[test]
+fn rc_blocks_load_the_shell_hook_unless_left_out() {
+    let exe = Some("/opt/o'neil/bin/jtm");
+    for (shell, env) in [
+        (Shell::Bash, "/data/env.sh"),
+        (Shell::Zsh, "/data/env.sh"),
+        (Shell::Fish, "/data/env.fish"),
+    ] {
+        insta::assert_snapshot!(
+            format!("rc_hook_{}", shell.name()),
+            rc_block(Some(Path::new(env)), Some(shell), exe)
+        );
+    }
+    insta::assert_snapshot!(
+        "rc_hook_pwsh",
+        rc_block(None, Some(Shell::Pwsh), Some(r"C:\Users\Zoë\jtm\jtm.exe"))
+    );
+    // A plain .profile has no hook to load.
+    assert!(!rc_block(Some(Path::new("/data/env.sh")), None, exe).contains("shell-init"));
+
+    // Re-running without the hook rewrites the block in place, and with it puts it back.
+    let with = rc_block(Some(Path::new("/data/env.sh")), Some(Shell::Bash), exe);
+    let without = rc_block(Some(Path::new("/data/env.sh")), Some(Shell::Bash), None);
+    let rc = update_rc(Some("alias ll='ls -l'\n"), &with).unwrap();
+    let rc = update_rc(Some(&rc), &without).unwrap();
+    assert!(!rc.contains("shell-init"), "{rc}");
+    assert_eq!(rc.matches("# >>> jtm >>>").count(), 1);
+    assert!(
+        update_rc(Some(&rc), &with)
+            .unwrap()
+            .contains("shell-init bash")
     );
 }
 
@@ -107,22 +149,34 @@ fn the_rc_file_follows_the_login_shell() {
     };
     assert_eq!(
         rc_file(home, Os::Linux, &env("/bin/bash")),
-        (home.join(".bashrc"), false)
+        (home.join(".bashrc"), Some(Shell::Bash))
     );
     assert_eq!(
         rc_file(home, Os::Macos, &env("/bin/bash")),
-        (home.join(".bash_profile"), false)
+        (home.join(".bash_profile"), Some(Shell::Bash))
     );
     assert_eq!(
         rc_file(home, Os::Linux, &env("/usr/bin/zsh")),
-        (home.join(".zshrc"), false)
+        (home.join(".zshrc"), Some(Shell::Zsh))
     );
     assert_eq!(
         rc_file(home, Os::Linux, &env("/usr/bin/fish")),
-        (home.join(".config/fish/conf.d/jtm.fish"), true)
+        (home.join(".config/fish/conf.d/jtm.fish"), Some(Shell::Fish))
     );
     assert_eq!(
         rc_file(home, Os::Linux, &env("/bin/tcsh")),
-        (home.join(".profile"), false)
+        (home.join(".profile"), None)
+    );
+}
+
+#[test]
+fn an_empty_block_removes_jtms_lines_only() {
+    let block = rc_block(None, Some(Shell::Pwsh), Some(r"C:\jtm\jtm.exe"));
+    let profile = update_rc(Some("Set-Alias ll Get-ChildItem\n"), &block).unwrap();
+    let removed = update_rc(Some(&profile), "").unwrap();
+    assert!(!removed.contains("jtm"), "{removed}");
+    assert!(
+        removed.starts_with("Set-Alias ll Get-ChildItem\n"),
+        "{removed}"
     );
 }
