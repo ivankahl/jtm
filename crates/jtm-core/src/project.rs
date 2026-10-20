@@ -320,15 +320,17 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         Err(e) => return Err(JtmError::io(&target, e)),
     };
     let dir = target.parent().unwrap_or_else(|| Path::new("."));
-    let mut builder = tempfile::Builder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Subject to the umask, as a file created with `open` would be.
-        builder.permissions(std::fs::Permissions::from_mode(0o666));
-    }
-    let mut tmp = builder.tempfile_in(dir).map_err(|e| JtmError::io(dir, e))?;
-    io::Write::write_all(&mut tmp, bytes).map_err(|e| JtmError::io(tmp.path(), e))?;
+    // Created as `File::create` would create it, so a new file gets the umask's permissions
+    // rather than the owner-only ones `tempfile` uses by default.
+    let mut tmp = tempfile::Builder::new()
+        .make_in(dir, |p| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(p)
+        })
+        .map_err(|e| JtmError::io(dir, e))?;
+    io::Write::write_all(tmp.as_file_mut(), bytes).map_err(|e| JtmError::io(tmp.path(), e))?;
     if let Some(permissions) = existing {
         std::fs::set_permissions(tmp.path(), permissions)
             .map_err(|e| JtmError::io(tmp.path(), e))?;
