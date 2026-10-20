@@ -63,14 +63,15 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
             let path = dir.join(file);
             let current = match fs::symlink_metadata(&path) {
                 Ok(meta) if meta.is_file() => fs::read(&path).ok(),
-                Ok(_) => {
+                Ok(meta) if meta.is_dir() => {
                     remove_entry(&path)?;
                     None
                 }
-                Err(_) => None,
+                // A link is replaced by the rename below, never followed.
+                _ => None,
             };
             if current.as_deref() != Some(bytes) {
-                crate::project::write_atomic(&path, bytes)?;
+                write_replacing(&path, bytes)?;
                 repaired.push(path);
             }
         }
@@ -82,6 +83,18 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
         );
     }
     Ok(repaired)
+}
+
+/// Writes `bytes` to a new file beside `path` and renames it over `path`. A rename replaces a
+/// link rather than writing through it, so a link planted in the working copy is never
+/// followed.
+fn write_replacing(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path.parent().unwrap_or(path);
+    let mut file = tempfile::NamedTempFile::new_in(dir).map_err(|e| JtmError::io(dir, e))?;
+    io::Write::write_all(&mut file, bytes).map_err(|e| JtmError::io(file.path(), e))?;
+    file.persist(path)
+        .map_err(|e| JtmError::io(path, e.error))?;
+    Ok(())
 }
 
 /// Makes `dir` a real directory, replacing a file or link in its place.
@@ -266,27 +279,36 @@ impl Registry<'_> {
     }
 }
 
-/// The script at `path`, if there is one.
+/// The script at `path`, if there is one. One that is too large or not UTF-8 makes the plugin
+/// invalid.
 fn read_script(path: &Path) -> Result<Option<String>> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(JtmError::io(path, e)),
     };
-    let mut text = String::new();
-    let read = io::Read::take(file, MAX_SCRIPT_BYTES + 1)
-        .read_to_string(&mut text)
+    let mut bytes = Vec::new();
+    io::Read::take(file, MAX_SCRIPT_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| JtmError::io(path, e))?;
-    if read as u64 > MAX_SCRIPT_BYTES {
-        return Err(JtmError::io(
-            path,
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("plugin.lua is larger than {MAX_SCRIPT_BYTES} bytes"),
-            ),
-        ));
-    }
-    Ok(Some(text))
+    let problem = if bytes.len() as u64 > MAX_SCRIPT_BYTES {
+        format!("is larger than {MAX_SCRIPT_BYTES} bytes")
+    } else {
+        match String::from_utf8(bytes) {
+            Ok(text) => return Ok(Some(text)),
+            Err(_) => "is not UTF-8".to_owned(),
+        }
+    };
+    Err(JtmError::InvalidManifest {
+        origin: path.display().to_string(),
+        error: jtm_plugin::ManifestError {
+            problems: vec![jtm_plugin::manifest::Problem {
+                path: String::new(),
+                message: format!("plugin.lua {problem}"),
+                line: None,
+            }],
+        },
+    })
 }
 
 fn parse(
@@ -336,16 +358,11 @@ fn parse(
 
 /// The first `[hooks]` entry the manifest sets, by its key.
 fn first_hook(manifest: &Manifest) -> Option<&'static str> {
-    let hooks = &manifest.hooks;
-    [
-        ("resolve_alias", &hooks.resolve_alias),
-        ("parse_interop", &hooks.parse_interop),
-        ("format_interop", &hooks.format_interop),
-        ("compare_versions", &hooks.compare_versions),
-        ("post_extract", &hooks.post_extract),
-    ]
-    .into_iter()
-    .find_map(|(key, value)| value.is_some().then_some(key))
+    manifest
+        .hooks
+        .named()
+        .into_iter()
+        .find_map(|(key, function)| function.is_some().then_some(key))
 }
 
 #[cfg(test)]

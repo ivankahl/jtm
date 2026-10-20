@@ -13,16 +13,19 @@ fn main() {
     let plugins = Path::new(&manifest_dir).join("plugins");
     println!("cargo:rerun-if-changed=plugins");
 
-    let mut names: Vec<String> = fs::read_dir(&plugins)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| e.path().join("plugin.toml").is_file())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<String> = match fs::read_dir(&plugins) {
+        Ok(entries) => entries
+            .flatten()
+            .filter(|e| e.path().join("plugin.toml").is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(err) => fail(&format!("cannot read {}: {err}", plugins.display())),
+    };
     names.sort();
+    // A binary without its first-party plugins would build fine and be useless.
+    if names.is_empty() {
+        fail(&format!("no plugins found under {}", plugins.display()));
+    }
 
     let mut code = String::from("&[\n");
     for name in &names {
@@ -45,7 +48,11 @@ fn main() {
 
     let out = Path::new(&env::var("OUT_DIR").unwrap_or_default()).join("builtin.rs");
     if let Err(err) = fs::write(&out, code) {
-        println!("cargo:warning=cannot write {}: {err}", out.display());
-        std::process::exit(1);
+        fail(&format!("cannot write {}: {err}", out.display()));
     }
+}
+
+fn fail(message: &str) -> ! {
+    println!("cargo:error={message}");
+    std::process::exit(1)
 }

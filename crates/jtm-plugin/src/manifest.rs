@@ -261,6 +261,19 @@ pub struct Hooks {
     pub post_extract: Option<String>,
 }
 
+impl Hooks {
+    /// Every hook as `(key, function)`, in manifest order.
+    pub fn named(&self) -> [(&'static str, Option<&str>); 5] {
+        [
+            ("resolve_alias", self.resolve_alias.as_deref()),
+            ("parse_interop", self.parse_interop.as_deref()),
+            ("format_interop", self.format_interop.as_deref()),
+            ("compare_versions", self.compare_versions.as_deref()),
+            ("post_extract", self.post_extract.as_deref()),
+        ]
+    }
+}
+
 /// `[ide]`: how `jtm ide sync` offers this tool's installs to build tools (SPEC.md section 7).
 /// The plugin declares which installs are JDKs, so the core never names a tool.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -696,14 +709,7 @@ impl Manifest {
     }
 
     fn validate_hooks(&self, p: &mut Problems) {
-        let hooks = &self.hooks;
-        for (name, function) in [
-            ("resolve_alias", &hooks.resolve_alias),
-            ("parse_interop", &hooks.parse_interop),
-            ("format_interop", &hooks.format_interop),
-            ("compare_versions", &hooks.compare_versions),
-            ("post_extract", &hooks.post_extract),
-        ] {
+        for (name, function) in self.hooks.named() {
             if let Some(function) = function
                 && !is_lua_identifier(function)
             {
@@ -745,6 +751,20 @@ pub enum Comparator {
     Ge,
     Lt,
     Le,
+}
+
+impl Comparator {
+    /// Whether a version that compares as `order` against the requirement's version meets it.
+    pub fn holds(self, order: std::cmp::Ordering) -> bool {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        match self {
+            Comparator::Eq => order == Equal,
+            Comparator::Gt => order == Greater,
+            Comparator::Ge => order != Less,
+            Comparator::Lt => order == Less,
+            Comparator::Le => order != Greater,
+        }
+    }
 }
 
 /// Parses a requirement such as `>=8` or `>=17, <22` into comparisons that must all hold.

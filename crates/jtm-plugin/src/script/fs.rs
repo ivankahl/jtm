@@ -41,7 +41,7 @@ impl Root {
     /// The absolute path for `rel`, refusing anything that could leave the root.
     fn resolve(&self, rel: &str) -> mlua::Result<PathBuf> {
         if self.shared.cancelled() {
-            return Err(refuse(&self.shared, Limit::Time(super::TIME_LIMIT)));
+            return Err(refuse(&self.shared, Limit::Time(self.shared.limits.time)));
         }
         let escape = |reason: &str| {
             refuse(

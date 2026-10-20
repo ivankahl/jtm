@@ -638,3 +638,42 @@ fn a_link_that_escapes_through_another_link_fails_the_hook() {
         .unwrap_or_else(|e| panic!("{e}"));
     assert!(is_path_limit(post_extract(dir.path(), "")));
 }
+
+#[test]
+fn catching_a_memory_breach_does_not_help() {
+    for source in [
+        "function f() pcall(string.rep, 'x', 64 * 1024 * 1024) return '1' end",
+        "function f() pcall(function() local t = {} for i = 1, 1e9 do t[i] = string.rep('x', 4096) .. i end end) return '1' end",
+        "function f() xpcall(function() return string.rep('x', 64 * 1024 * 1024) end, function(e) return e end) return '1' end",
+    ] {
+        assert!(
+            matches!(
+                limit_of(tight(source).format_interop("f", "f", "v", "1")),
+                Limit::Memory(_)
+            ),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn pcall_and_xpcall_still_catch_ordinary_errors() {
+    assert_eq!(
+        ok(
+            "local okay, err = pcall(error, 'boom') return tostring(okay) .. ' ' .. tostring(err:find('boom') ~= nil)"
+        ),
+        "false true"
+    );
+    assert_eq!(
+        ok(
+            "local okay, v = pcall(function(a) return a .. '!' end, 'hi') return tostring(okay) .. ' ' .. v"
+        ),
+        "true hi!"
+    );
+    assert_eq!(
+        ok(
+            "local okay, v = xpcall(function() error('x') end, function(e) return 'handled' end) return tostring(okay) .. ' ' .. v"
+        ),
+        "false handled"
+    );
+}

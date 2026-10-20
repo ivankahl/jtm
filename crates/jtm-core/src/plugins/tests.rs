@@ -161,3 +161,19 @@ fn a_script_that_does_not_compile_is_an_invalid_plugin() {
         .unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
 }
+
+#[test]
+fn a_script_that_is_not_utf8_or_too_large_is_an_invalid_plugin() {
+    let (_home, dirs) = dirs();
+    add(&dirs, "acme--widget@abc123", &manifest("acme/widget"));
+    let script = dirs.plugins().join("acme--widget@abc123/plugin.lua");
+    let registry = Registry {
+        dirs: &dirs,
+        builtin: &[],
+    };
+    for bytes in [vec![0xff, 0xfe], vec![b'-'; 1024 * 1024 + 1]] {
+        fs::write(&script, bytes).unwrap();
+        let err = registry.find("acme/widget").unwrap_err();
+        assert_eq!(err.code(), "E_PLUGIN_INVALID", "{err}");
+    }
+}

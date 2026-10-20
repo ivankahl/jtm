@@ -326,21 +326,10 @@ impl<'s, 'c> Here<'s, 'c> {
 /// Whether `version` meets every clause of `requirement` under `manifest`'s scheme; `None`
 /// when that cannot be decided, such as for a version the scheme cannot parse.
 fn meets(manifest: &jtm_plugin::Manifest, version: &str, requirement: &str) -> Option<bool> {
-    use jtm_plugin::manifest::{Comparator, parse_requirement};
-    use std::cmp::Ordering;
-
     let scheme = manifest.versions.scheme.builtin()?;
     let have = scheme.parse(version).ok()?;
-    for (op, wanted) in parse_requirement(requirement).ok()? {
-        let order = have.cmp_precedence(&scheme.parse(&wanted).ok()?);
-        let ok = match op {
-            Comparator::Eq => order == Ordering::Equal,
-            Comparator::Gt => order == Ordering::Greater,
-            Comparator::Ge => order != Ordering::Less,
-            Comparator::Lt => order == Ordering::Less,
-            Comparator::Le => order != Ordering::Greater,
-        };
-        if !ok {
+    for (op, wanted) in jtm_plugin::manifest::parse_requirement(requirement).ok()? {
+        if !op.holds(have.cmp_precedence(&scheme.parse(&wanted).ok()?)) {
             return Some(false);
         }
     }

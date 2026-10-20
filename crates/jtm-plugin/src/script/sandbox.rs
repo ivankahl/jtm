@@ -99,10 +99,9 @@ pub(super) fn run(job: Job) -> Result<Json, Failure> {
 
     let deadline = Instant::now() + job.limits.time;
     let shared = Arc::clone(&job.shared);
-    let time = job.limits.time;
     lua.set_interrupt(move |_| {
         if shared.cancelled() || Instant::now() >= deadline {
-            shared.record(Limit::Time(time));
+            shared.record(Limit::Time(shared.limits.time));
             return Err(mlua::Error::external(Refused("the time limit".to_owned())));
         }
         Ok(VmState::Continue)
@@ -112,6 +111,7 @@ pub(super) fn run(job: Job) -> Result<Json, Failure> {
     for name in REMOVED_GLOBALS {
         globals.raw_set(*name, Value::Nil).map_err(runtime)?;
     }
+    install_protected_calls(&lua, &job.shared).map_err(runtime)?;
     let api = host_api(&lua, &job).map_err(runtime)?;
     globals.raw_set("jtm", api).map_err(runtime)?;
     lua.sandbox(true).map_err(runtime)?;
@@ -144,6 +144,58 @@ pub(super) fn run(job: Job) -> Result<Json, Failure> {
         .call(mlua::MultiValue::from_iter(args))
         .map_err(runtime)?;
     lua_to_json(&out).map_err(Failure::Invalid)
+}
+
+/// Replaces `pcall` and `xpcall` with versions that record a memory breach before the script
+/// sees the error, so catching it cannot hide it. Time and containment breaches are recorded
+/// where they are raised. The error a script catches is its message as a string.
+fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> {
+    let caught = |shared: &Shared, error: mlua::Error| -> mlua::Result<String> {
+        if matches!(classify(&error), Failure::Memory) {
+            shared.record(Limit::Memory(shared.limits.memory));
+            return Err(error);
+        }
+        Ok(message(&error))
+    };
+    let s = Arc::clone(shared);
+    let pcall =
+        lua.create_function(move |lua, (f, args): (mlua::Function, mlua::MultiValue)| {
+            match f.call::<mlua::MultiValue>(args) {
+                Ok(values) => {
+                    let mut out = mlua::MultiValue::from_iter(values);
+                    out.push_front(Value::Boolean(true));
+                    Ok(out)
+                }
+                Err(error) => {
+                    let text = caught(&s, error)?;
+                    Ok(mlua::MultiValue::from_iter([
+                        Value::Boolean(false),
+                        Value::String(lua.create_string(text)?),
+                    ]))
+                }
+            }
+        })?;
+    let s = Arc::clone(shared);
+    let xpcall = lua.create_function(
+        move |lua, (f, handler, args): (mlua::Function, mlua::Function, mlua::MultiValue)| {
+            match f.call::<mlua::MultiValue>(args) {
+                Ok(values) => {
+                    let mut out = mlua::MultiValue::from_iter(values);
+                    out.push_front(Value::Boolean(true));
+                    Ok(out)
+                }
+                Err(error) => {
+                    let text = caught(&s, error)?;
+                    let mut out: mlua::MultiValue = handler.call(lua.create_string(text)?)?;
+                    out.push_front(Value::Boolean(false));
+                    Ok(out)
+                }
+            }
+        },
+    )?;
+    let globals = lua.globals();
+    globals.raw_set("pcall", pcall)?;
+    globals.raw_set("xpcall", xpcall)
 }
 
 /// Builds the read-only `jtm` table.

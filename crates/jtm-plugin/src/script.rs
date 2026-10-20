@@ -12,7 +12,8 @@
 //! thread, so a call stuck inside a C function, such as a slow pattern match, is abandoned
 //! when the deadline passes. An abandoned hook is cancelled: its `jtm.fs` calls fail from then on.
 //! Any limit breach or path escape fails the hook with [`ScriptError::Limit`], even when the
-//! script catches the error with `pcall`.
+//! script catches the error with `pcall` or `xpcall`, which the sandbox replaces with versions
+//! that record a memory breach before handing the error to the script.
 
 mod convert;
 mod fs;
@@ -316,7 +317,7 @@ impl Script {
         args: Vec<Json>,
         fs_root: Option<PathBuf>,
     ) -> Result<Json, ScriptError> {
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared::new(self.limits));
         let job = sandbox::Job {
             plugin: self.plugin.clone(),
             source: Arc::clone(&self.source),
@@ -373,8 +374,9 @@ impl Script {
 }
 
 /// State shared between the host and a hook's thread.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Shared {
+    limits: Limits,
     /// Set when the host abandons the hook; its file operations fail from then on.
     cancelled: AtomicBool,
     /// The first limit the hook broke, kept even when the script catches the error.
@@ -382,6 +384,14 @@ struct Shared {
 }
 
 impl Shared {
+    fn new(limits: Limits) -> Shared {
+        Shared {
+            limits,
+            cancelled: AtomicBool::new(false),
+            violation: Mutex::new(None),
+        }
+    }
+
     fn record(&self, limit: Limit) {
         if let Ok(mut slot) = self.violation.lock() {
             slot.get_or_insert(limit);
