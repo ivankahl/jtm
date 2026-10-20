@@ -107,9 +107,6 @@ fn root_of(start: &Path, pins: &ProjectPins) -> Option<PathBuf> {
 /// those in `root` outside a repository. Pin files further up, such as a `~/.tool-versions`,
 /// belong to one machine and must not reach the committed lock (SPEC.md section 5, "Nothing
 /// machine-specific in tracked files").
-// SPEC-QUESTION: section 11 does not say how far up `jtm lock` reads pins. The repository
-// root is the nearest boundary that keeps a monorepo's shared `.jtm.toml` in each lock while
-// leaving per-user files out.
 pub fn project_pins(root: &Path, plugins: &[Plugin]) -> Result<ProjectPins> {
     let top = root
         .ancestors()
