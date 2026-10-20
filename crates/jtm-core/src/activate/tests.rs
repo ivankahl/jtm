@@ -219,3 +219,133 @@ fn a_tool_environment_fills_home_and_bin_placeholders() {
     assert_eq!(vars["JAVA_HOME"], home.display().to_string());
     assert_eq!(vars["JDK_BIN"], home.join("bin").display().to_string());
 }
+
+mod plan {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    use super::super::*;
+
+    const TOOLS: &str = "/data/tools";
+
+    fn over(tool: &str, layer: Layer, version: &str) -> Override {
+        let home = PathBuf::from(format!("{TOOLS}/{tool}/default-{version}"));
+        Override {
+            tool: tool.to_owned(),
+            layer,
+            selector: Selector::parse(&format!("default:{version}")).unwrap(),
+            env: ToolEnv {
+                vars: vec![(
+                    format!("{}_HOME", tool.to_uppercase()),
+                    home.display().to_string(),
+                )],
+                path: vec![home.join("bin")],
+            },
+        }
+    }
+
+    fn plan(env: &HashMap<String, String>, overrides: &[Override]) -> Vec<Change> {
+        let tools = ["demo".to_owned(), "other".to_owned()];
+        plan_env(
+            &|k| env.get(k).cloned(),
+            overrides,
+            &tools,
+            Path::new(TOOLS),
+            ':',
+        )
+    }
+
+    /// Applies changes to an environment, as a shell would.
+    fn apply(env: &mut HashMap<String, String>, changes: &[Change]) {
+        for change in changes {
+            match change {
+                Change::Set { name, value } => {
+                    env.insert(name.clone(), value.clone());
+                }
+                Change::Unset { name } => {
+                    env.remove(name);
+                }
+            }
+        }
+    }
+
+    /// Plans against `env` and applies the plan to it.
+    fn step(env: &mut HashMap<String, String>, overrides: &[Override]) {
+        let changes = plan(env, overrides);
+        apply(env, &changes);
+    }
+
+    fn base() -> HashMap<String, String> {
+        HashMap::from([
+            (
+                "PATH".to_owned(),
+                "/data/current/demo/bin:/usr/bin".to_owned(),
+            ),
+            ("DEMO_HOME".to_owned(), "/data/current/demo".to_owned()),
+        ])
+    }
+
+    #[test]
+    fn a_session_override_sets_variables_and_path_and_records_itself() {
+        let mut env = base();
+        let changes = plan(&env, &[over("demo", Layer::Session, "1.0.0")]);
+        apply(&mut env, &changes);
+        assert_eq!(env["DEMO_HOME"], "/data/tools/demo/default-1.0.0");
+        assert_eq!(
+            env["PATH"],
+            "/data/tools/demo/default-1.0.0/bin:/data/current/demo/bin:/usr/bin"
+        );
+        assert_eq!(env["JTM_SESSION_DEMO"], "default:1.0.0");
+        assert!(!env.contains_key("JTM_PROJECT_DEMO"));
+        assert!(env.contains_key("JTM_SAVED"));
+        // Applying the same plan again changes nothing.
+        assert_eq!(plan(&env, &[over("demo", Layer::Session, "1.0.0")]), []);
+    }
+
+    #[test]
+    fn switching_versions_replaces_the_path_entry() {
+        let mut env = base();
+        step(&mut env, &[over("demo", Layer::Session, "1.0.0")]);
+        step(&mut env, &[over("demo", Layer::Project, "1.1.0")]);
+        assert_eq!(
+            env["PATH"],
+            "/data/tools/demo/default-1.1.0/bin:/data/current/demo/bin:/usr/bin"
+        );
+        assert_eq!(env["DEMO_HOME"], "/data/tools/demo/default-1.1.0");
+        assert_eq!(env["JTM_PROJECT_DEMO"], "default:1.1.0");
+        assert!(!env.contains_key("JTM_SESSION_DEMO"));
+    }
+
+    #[test]
+    fn dropping_every_override_restores_the_original_environment() {
+        let original = base();
+        let mut env = original.clone();
+        step(
+            &mut env,
+            &[
+                over("demo", Layer::Session, "1.0.0"),
+                over("other", Layer::Project, "2.0"),
+            ],
+        );
+        assert_eq!(env["OTHER_HOME"], "/data/tools/other/default-2.0");
+        step(&mut env, &[]);
+        assert_eq!(env, original);
+    }
+
+    #[test]
+    fn a_variable_the_user_never_set_is_unset_again() {
+        let mut env = HashMap::from([("PATH".to_owned(), "/usr/bin".to_owned())]);
+        step(&mut env, &[over("demo", Layer::Session, "1.0.0")]);
+        assert!(env.contains_key("DEMO_HOME"));
+        step(&mut env, &[]);
+        assert_eq!(
+            env,
+            HashMap::from([("PATH".to_owned(), "/usr/bin".to_owned())])
+        );
+    }
+
+    #[test]
+    fn nothing_to_change_plans_nothing() {
+        assert_eq!(plan(&base(), &[]), []);
+    }
+}

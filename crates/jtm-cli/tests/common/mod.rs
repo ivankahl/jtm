@@ -116,6 +116,9 @@ bin_dirs = ["bin"]
 [executables]
 unix = ["demo"]
 windows = ["demo.cmd"]
+
+[env]
+DEMO_HOME = "{{home}}"
 "#,
             self.key.public_str()
         );
@@ -188,6 +191,11 @@ allow_http_mirrors = true
     pub fn trust(&self) {
         let (code, value) = self.json(&["trust", "add", &self.key.public_str(), "--scope", "demo"]);
         assert_eq!(code, 0, "{value}");
+    }
+
+    /// The path of the `jtm` binary under test.
+    pub fn exe(&self) -> PathBuf {
+        PathBuf::from(env!("CARGO_BIN_EXE_jtm"))
     }
 
     pub fn install_dir(&self, version: &str) -> PathBuf {

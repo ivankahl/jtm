@@ -1,0 +1,19 @@
+---
+source: crates/jtm-cli/src/shell/tests.rs
+expression: text
+---
+# jtm shell integration for bash. Add to your rc file:
+#   eval "$(jtm shell-init bash)"
+jtm() {
+  case " $* " in
+    *" --json "*|*" --help "*|*" -h "*) command '/opt/jtm'\''s/bin/jtm' "$@"; return $? ;;
+  esac
+  if [ "${1-}" = use ]; then
+    shift
+    local __jtm_out
+    __jtm_out="$(command '/opt/jtm'\''s/bin/jtm' use --shell bash "$@")" || return $?
+    eval "$__jtm_out"
+  else
+    command '/opt/jtm'\''s/bin/jtm' "$@"
+  fi
+}

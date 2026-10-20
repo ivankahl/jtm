@@ -1,0 +1,9 @@
+---
+source: crates/jtm-cli/src/shell/tests.rs
+expression: text
+---
+$env:DEMO_HOME = '/data/tools/demo/default-1.0.0'
+$env:DEMO_OPTS = 'it''s $HOME `x` "q" \n
+next'
+$env:PATH = '/data/tools/demo/default-1.0.0/bin:/usr/bin'
+Remove-Item -Path Env:JTM_PROJECT_DEMO -ErrorAction SilentlyContinue

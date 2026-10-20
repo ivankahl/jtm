@@ -106,15 +106,134 @@ impl Layers<'_> {
 /// The shell variable `jtm use` stores a tool's session version in. Plugin names never contain
 /// `_` or `--`, so writing `-` as `_` and `/` as `__` gives every tool its own name.
 pub fn session_var(tool: &str) -> String {
-    let name: String = tool
-        .chars()
+    format!("JTM_SESSION_{}", var_suffix(tool))
+}
+
+/// The shell variable the hook records a tool's applied project pin in.
+pub fn project_var(tool: &str) -> String {
+    format!("JTM_PROJECT_{}", var_suffix(tool))
+}
+
+fn var_suffix(tool: &str) -> String {
+    tool.chars()
         .map(|c| match c {
             '/' => "__".to_owned(),
             '-' => "_".to_owned(),
             c => c.to_ascii_uppercase().to_string(),
         })
+        .collect()
+}
+
+/// The variable holding the values `[env]` variables had before jtm overrode them, as a JSON
+/// object of name to value, `null` for unset.
+pub const SAVED_VAR: &str = "JTM_SAVED";
+
+/// A tool the shell should use from a real install dir rather than its current link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Override {
+    pub tool: String,
+    /// `Session` or `Project`.
+    pub layer: Layer,
+    /// The exact version, as `variant:version`.
+    pub selector: Selector,
+    pub env: ToolEnv,
+}
+
+/// One change to a shell's environment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum Change {
+    Set { name: String, value: String },
+    Unset { name: String },
+}
+
+impl Change {
+    pub fn name(&self) -> &str {
+        match self {
+            Change::Set { name, .. } | Change::Unset { name } => name,
+        }
+    }
+}
+
+/// The changes that turn the environment `env` into one where exactly `overrides` apply.
+///
+/// `PATH` entries under `tools_dir` are always jtm's, so they are dropped and the overrides'
+/// bin directories put first. `[env]` variables are set for the overrides; one jtm set before
+/// that no override sets now goes back to the value saved in [`SAVED_VAR`]. The session and
+/// project variables of `tools` record which layer applied each tool. The plan is empty when
+/// nothing would change, so applying it twice is a no-op.
+pub fn plan_env(
+    env: &dyn Fn(&str) -> Option<String>,
+    overrides: &[Override],
+    tools: &[String],
+    tools_dir: &Path,
+    path_separator: char,
+) -> Vec<Change> {
+    let saved_before: BTreeMap<String, Option<String>> = env(SAVED_VAR)
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+    let mut desired: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut saved = BTreeMap::new();
+    for o in overrides {
+        for (name, value) in &o.env.vars {
+            desired.insert(name.clone(), Some(value.clone()));
+            let original = match saved_before.get(name) {
+                Some(original) => original.clone(),
+                None => env(name),
+            };
+            saved.insert(name.clone(), original);
+        }
+    }
+    for (name, original) in &saved_before {
+        desired
+            .entry(name.clone())
+            .or_insert_with(|| original.clone());
+    }
+
+    let current_path = env("PATH");
+    let mut entries: Vec<String> = overrides
+        .iter()
+        .flat_map(|o| o.env.path.iter().map(|p| p.display().to_string()))
         .collect();
-    format!("JTM_SESSION_{name}")
+    if let Some(path) = &current_path {
+        entries.extend(
+            path.split(path_separator)
+                .filter(|entry| !Path::new(entry).starts_with(tools_dir))
+                .map(str::to_owned),
+        );
+    }
+    if current_path.is_some() || !entries.is_empty() {
+        desired.insert(
+            "PATH".to_owned(),
+            Some(entries.join(&path_separator.to_string())),
+        );
+    }
+
+    desired.insert(
+        SAVED_VAR.to_owned(),
+        (!saved.is_empty()).then(|| serde_json::to_string(&saved).unwrap_or_default()),
+    );
+    let mut all_tools: Vec<&str> = tools.iter().map(String::as_str).collect();
+    all_tools.extend(overrides.iter().map(|o| o.tool.as_str()));
+    for tool in all_tools {
+        let applied = |layer: Layer| {
+            overrides
+                .iter()
+                .find(|o| o.tool == tool && o.layer == layer)
+                .map(|o| o.selector.to_string())
+        };
+        desired.insert(session_var(tool), applied(Layer::Session));
+        desired.insert(project_var(tool), applied(Layer::Project));
+    }
+
+    desired
+        .into_iter()
+        .filter(|(name, want)| env(name) != *want)
+        .map(|(name, want)| match want {
+            Some(value) => Change::Set { name, value },
+            None => Change::Unset { name },
+        })
+        .collect()
 }
 
 /// The session versions of `tools` set in the environment. An empty variable is unset.

@@ -5,6 +5,7 @@ mod cli;
 mod logging;
 mod output;
 mod prompt;
+mod shell;
 mod tools;
 mod trust;
 
@@ -149,6 +150,32 @@ fn main() -> ExitCode {
             "default",
             activate::default(&ctx, &spec, install, latest),
         ),
+        Some(Command::Use {
+            spec,
+            unset,
+            install,
+            latest,
+            shell,
+        }) => render(
+            &mut renderer,
+            "use",
+            activate::use_version(
+                &ctx,
+                &spec,
+                activate::UseOptions {
+                    unset,
+                    install,
+                    latest,
+                    shell: shell.as_deref(),
+                },
+            ),
+        ),
+        Some(Command::Env { shell }) => {
+            render(&mut renderer, "env", activate::env(&ctx, shell.as_deref()))
+        }
+        Some(Command::ShellInit { shell }) => {
+            render(&mut renderer, "shell-init", activate::shell_init(&shell))
+        }
         Some(Command::Trust(cmd)) => {
             let name = trust::command_name(&cmd);
             let _ = match trust::run(&ctx, cmd) {

@@ -83,6 +83,35 @@ pub(crate) enum Command {
         #[arg(long)]
         latest: bool,
     },
+    /// Use a version in the current shell only. Needs the shell hook from `jtm shell-init`.
+    Use {
+        /// The version to use, such as `java@21`; with `--unset`, only the tool.
+        #[arg(value_name = "SPEC")]
+        spec: String,
+        /// Stop using a session version, going back to the project pin or default.
+        #[arg(long, conflicts_with_all = ["install", "latest"])]
+        unset: bool,
+        /// Install the version first when it is missing.
+        #[arg(long)]
+        install: bool,
+        /// Refresh the index and use the newest match instead of an installed one.
+        #[arg(long)]
+        latest: bool,
+        /// Print code for this shell; the shell hook passes it.
+        #[arg(long, value_name = "SHELL")]
+        shell: Option<String>,
+    },
+    /// Print the environment changes for the active versions.
+    Env {
+        /// bash, zsh, fish, pwsh or cmd; the default is bash, or pwsh on Windows.
+        #[arg(long, value_name = "SHELL")]
+        shell: Option<String>,
+    },
+    /// Print the shell hook for bash, zsh, fish or pwsh.
+    ShellInit {
+        #[arg(value_name = "SHELL")]
+        shell: String,
+    },
     /// Manage keys trusted to sign version indices.
     #[command(subcommand)]
     Trust(TrustCommand),

@@ -14,7 +14,7 @@ use jtm_plugin::{Candidate, ResolveError};
 use jtm_security::{IndexEntry, Timestamp, Warning};
 use serde::Serialize;
 
-use crate::activate::{Defaults, Installed, pick_installed};
+use crate::activate::{Defaults, Installed, Layers, Override, pick_installed, tool_env};
 use crate::config::{AutoRefresh, Config, ConfigInputs, FileSource, Settings};
 use crate::context::Context;
 use crate::dirs::{Dirs, dir_name};
@@ -25,12 +25,18 @@ use crate::indices::{
 };
 use crate::install::{self, Archives, InstallRequest, Progress, Receipt, Status, VersionId};
 use crate::links;
+use crate::pins::{ProjectPins, W_PIN_CONFLICT};
 use crate::platform::Platform;
 use crate::plugins::{BUILTIN, Plugin, Registry};
 use crate::spec::{Selector, ToolSpec};
 
 /// Warning code when uninstalling the version the user default pointed at.
 pub const W_DEFAULT_CLEARED: &str = "W_DEFAULT_CLEARED";
+/// Warning code for a session or project version that is not installed, so it does not apply.
+pub const W_NOT_INSTALLED: &str = "W_NOT_INSTALLED";
+
+/// The `PATH` list separator on this OS.
+pub const PATH_SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
 
 /// The first-party indices compiled into this build.
 // Embedded by T6.6; until then every index comes from the cache or the network.
@@ -768,6 +774,59 @@ impl<'a> Session<'a> {
         Ok((installed, item.status.changed(), warnings))
     }
 
+    /// The tools a shell should use from real install dirs: the session and project choices
+    /// in `session` and `pins`. Defaults are left to the current links. A choice with no
+    /// matching install is skipped with a `W_NOT_INSTALLED` warning.
+    pub fn overrides(
+        &self,
+        session: &BTreeMap<String, Selector>,
+        pins: &ProjectPins,
+        plugins: &[Plugin],
+    ) -> Result<(Vec<Override>, Vec<Warning>)> {
+        let defaults = Defaults::empty(self.dirs.defaults_file());
+        let layers = Layers {
+            exec: &[],
+            session,
+            project: pins,
+            defaults: &defaults,
+        };
+        let mut overrides = Vec::new();
+        let mut warnings = pin_warnings(pins);
+        for plugin in plugins {
+            let tool = plugin.manifest.name.as_str();
+            let Some(choice) = layers.choose(tool) else {
+                continue;
+            };
+            match self.installed_match(plugin, choice.selector.as_ref())? {
+                Some(found) => overrides.push(Override {
+                    tool: tool.to_owned(),
+                    layer: choice.layer,
+                    env: tool_env(&plugin.manifest, &found.home),
+                    selector: Selector {
+                        variant: Some(found.variant),
+                        value: found.version,
+                    },
+                }),
+                None => {
+                    let wanted = choice
+                        .selector
+                        .as_ref()
+                        .map(|s| format!("{tool}@{s}"))
+                        .unwrap_or_else(|| tool.to_owned());
+                    warnings.push(Warning {
+                        code: W_NOT_INSTALLED,
+                        message: format!(
+                            "{} sets `{wanted}`, which is not installed; run `jtm install \
+                             {wanted}` or `jtm sync`",
+                            choice.origin
+                        ),
+                    });
+                }
+            }
+        }
+        Ok((overrides, warnings))
+    }
+
     /// Makes the version `spec` picks the user default: points `current/<tool>` at it and
     /// records it in `state/defaults.toml`.
     pub fn set_default(
@@ -814,6 +873,17 @@ impl<'a> Session<'a> {
         };
         Ok((item, link_changed || default_changed || installed, warnings))
     }
+}
+
+/// A `W_PIN_CONFLICT` warning for each conflict between pin files.
+pub fn pin_warnings(pins: &ProjectPins) -> Vec<Warning> {
+    pins.conflicts
+        .iter()
+        .map(|c| Warning {
+            code: W_PIN_CONFLICT,
+            message: c.message(),
+        })
+        .collect()
 }
 
 /// The tool home of an install: `dir` plus the receipt's `/`-separated `home`.
