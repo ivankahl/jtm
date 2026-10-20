@@ -1,8 +1,10 @@
 //! The `jtm` command-line interface.
 
+mod activate;
 mod cli;
 mod logging;
 mod output;
+mod prompt;
 mod tools;
 mod trust;
 
@@ -138,6 +140,15 @@ fn main() -> ExitCode {
                 tools::available(&ctx, &tool, &options),
             )
         }
+        Some(Command::Default {
+            spec,
+            install,
+            latest,
+        }) => render(
+            &mut renderer,
+            "default",
+            activate::default(&ctx, &spec, install, latest),
+        ),
         Some(Command::Trust(cmd)) => {
             let name = trust::command_name(&cmd);
             let _ = match trust::run(&ctx, cmd) {

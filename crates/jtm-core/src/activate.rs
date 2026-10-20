@@ -148,6 +148,8 @@ pub struct Installed {
     pub version: String,
     /// The install dir.
     pub dir: PathBuf,
+    /// The tool home: the install dir plus the receipt's `home`.
+    pub home: PathBuf,
 }
 
 impl jtm_plugin::Candidate for Installed {

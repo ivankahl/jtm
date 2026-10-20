@@ -169,6 +169,7 @@ fn installed(list: &[&str]) -> Vec<Installed> {
                 variant: variant.to_owned(),
                 version: version.to_owned(),
                 dir: PathBuf::from(format!("/data/tools/java/{variant}-{version}")),
+                home: PathBuf::from(format!("/data/tools/java/{variant}-{version}")),
             }
         })
         .collect()

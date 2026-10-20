@@ -71,6 +71,18 @@ pub(crate) enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Set the persistent user-wide version of a tool.
+    Default {
+        /// The version to make the default, such as `java@temurin:21` or `maven@3.9`.
+        #[arg(value_name = "SPEC")]
+        spec: String,
+        /// Install the version first when it is missing.
+        #[arg(long)]
+        install: bool,
+        /// Refresh the index and use the newest match instead of an installed one.
+        #[arg(long)]
+        latest: bool,
+    },
     /// Manage keys trusted to sign version indices.
     #[command(subcommand)]
     Trust(TrustCommand),

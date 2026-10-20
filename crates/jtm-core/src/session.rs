@@ -14,6 +14,7 @@ use jtm_plugin::{Candidate, ResolveError};
 use jtm_security::{IndexEntry, Timestamp, Warning};
 use serde::Serialize;
 
+use crate::activate::{Defaults, Installed, pick_installed};
 use crate::config::{AutoRefresh, Config, ConfigInputs, FileSource, Settings};
 use crate::context::Context;
 use crate::dirs::{Dirs, dir_name};
@@ -23,9 +24,10 @@ use crate::indices::{
     PluginKeys, cache_path,
 };
 use crate::install::{self, Archives, InstallRequest, Progress, Receipt, Status, VersionId};
+use crate::links;
 use crate::platform::Platform;
 use crate::plugins::{BUILTIN, Plugin, Registry};
-use crate::spec::ToolSpec;
+use crate::spec::{Selector, ToolSpec};
 
 /// Warning code when uninstalling the version the user default pointed at.
 pub const W_DEFAULT_CLEARED: &str = "W_DEFAULT_CLEARED";
@@ -105,6 +107,29 @@ pub struct InstallOptions {
     pub dry_run: bool,
     /// Refresh the index first, so the newest versions are seen.
     pub latest: bool,
+}
+
+/// Options for commands that need a version installed, such as `jtm default`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EnsureOptions {
+    /// Install the version when it is missing.
+    pub install: bool,
+    /// Resolve against a refreshed index instead of preferring an installed match.
+    pub latest: bool,
+}
+
+/// What `jtm default` set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DefaultItem {
+    #[serde(flatten)]
+    pub version: VersionItem,
+    /// The tool home the link points at.
+    pub home: String,
+    pub link: String,
+    /// The default before, as `tool@variant:version`, when it was another version.
+    pub previous: Option<String>,
+    /// Whether the version was installed by this command.
+    pub installed: bool,
 }
 
 /// Options for [`Session::uninstall`].
@@ -625,6 +650,10 @@ impl<'a> Session<'a> {
                 if let Some(link) = link
                     && clear_link(&link)
                 {
+                    let mut defaults = Defaults::load(&self.dirs.defaults_file())?;
+                    if defaults.remove(&v.id.tool) {
+                        defaults.save()?;
+                    }
                     warnings.push(Warning {
                         code: W_DEFAULT_CLEARED,
                         message: format!(
@@ -639,14 +668,159 @@ impl<'a> Session<'a> {
         Ok((removed, warnings))
     }
 
-    /// `current/<tool>`, when it points at `install_dir`.
+    /// `current/<tool>`, when it points at `install_dir` or a directory inside it.
     fn current_link_to(&self, tool: &str, install_dir: &Path) -> Option<PathBuf> {
-        let link = self.dirs.current().join(dir_name(tool));
+        let link = self.current_link(tool);
         match (fs::canonicalize(&link), fs::canonicalize(install_dir)) {
-            (Ok(a), Ok(b)) if a == b => Some(link),
+            (Ok(a), Ok(b)) if a.starts_with(&b) => Some(link),
             _ => None,
         }
     }
+
+    /// `<data>/current/<tool>`.
+    pub fn current_link(&self, tool: &str) -> PathBuf {
+        self.dirs.current().join(dir_name(tool))
+    }
+
+    pub fn dirs(&self) -> &Dirs {
+        &self.dirs
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Every plugin available, builtin first.
+    pub fn plugins(&self) -> Result<Vec<Plugin>> {
+        let registry = self.registry();
+        registry
+            .names()?
+            .iter()
+            .map(|name| registry.find(name))
+            .collect()
+    }
+
+    /// The installed versions of `tool`, highest first per variant.
+    pub fn installed(&self, tool: &str) -> Result<Vec<Installed>> {
+        Ok(self
+            .list(Some(tool))?
+            .into_iter()
+            .map(|item| {
+                let dir = PathBuf::from(&item.version.path);
+                let home = Receipt::read(&dir)
+                    .map(|r| home_dir(&dir, &r.home))
+                    .unwrap_or_else(|| dir.clone());
+                Installed {
+                    variant: item.version.id.variant,
+                    version: item.version.id.version,
+                    dir,
+                    home,
+                }
+            })
+            .collect())
+    }
+
+    /// The installed version `selector` picks for `plugin`, as activation uses it.
+    pub fn installed_match(
+        &self,
+        plugin: &Plugin,
+        selector: Option<&Selector>,
+    ) -> Result<Option<Installed>> {
+        let installed = self.installed(&plugin.manifest.name)?;
+        Ok(pick_installed(&plugin.manifest, selector, &installed).cloned())
+    }
+
+    /// The installed version `spec` picks, installing it first when `install` is set. Without
+    /// `install`, a missing version fails with `E_INPUT_REQUIRED` naming `--install`.
+    pub fn ensure_installed(
+        &self,
+        spec: &ToolSpec,
+        options: EnsureOptions,
+        progress: &mut dyn FnMut(Progress),
+    ) -> Result<(Installed, bool, Vec<Warning>)> {
+        let plugin = self.plugin(&spec.tool)?;
+        if !options.latest
+            && let Some(found) = self.installed_match(&plugin, spec.selector.as_ref())?
+        {
+            return Ok((found, false, Vec::new()));
+        }
+        if !options.install {
+            return Err(JtmError::InputRequired {
+                action: format!("`{spec}` is not installed, and installing it"),
+                resolve: "--install (or --yes)".to_owned(),
+            });
+        }
+        let install_options = InstallOptions {
+            latest: options.latest,
+            ..InstallOptions::default()
+        };
+        let (item, warnings) = self.install(spec, install_options, progress)?;
+        let dir = PathBuf::from(&item.version.path);
+        let home = Receipt::read(&dir)
+            .map(|r| home_dir(&dir, &r.home))
+            .unwrap_or_else(|| dir.clone());
+        let installed = Installed {
+            variant: item.version.id.variant,
+            version: item.version.id.version,
+            dir,
+            home,
+        };
+        Ok((installed, item.status.changed(), warnings))
+    }
+
+    /// Makes the version `spec` picks the user default: points `current/<tool>` at it and
+    /// records it in `state/defaults.toml`.
+    pub fn set_default(
+        &self,
+        spec: &ToolSpec,
+        options: EnsureOptions,
+        progress: &mut dyn FnMut(Progress),
+    ) -> Result<(DefaultItem, bool, Vec<Warning>)> {
+        let (found, installed, warnings) = self.ensure_installed(spec, options, progress)?;
+        let tool = spec.tool.as_str();
+        let link = self.current_link(tool);
+        let mut defaults = Defaults::load(&self.dirs.defaults_file())?;
+        let previous = defaults
+            .get(tool)
+            .map(|s| format!("{tool}@{s}"))
+            .filter(|_| links::read(&link).is_some());
+        let selector = Selector {
+            variant: Some(found.variant.clone()),
+            value: found.version.clone(),
+        };
+        // SPEC-QUESTION: section 5 says the link points at the install dir. It points at the
+        // tool home inside it instead, so `[env]` values such as `{home}` stay correct through
+        // the link for layouts like a macOS JDK's `Contents/Home`.
+        let link_changed = links::set(&link, &found.home)?;
+        let default_changed = defaults.set(tool, selector);
+        if default_changed {
+            defaults.save()?;
+        }
+        let id = VersionId {
+            tool: tool.to_owned(),
+            variant: found.variant,
+            version: found.version,
+        };
+        let previous = previous.filter(|p| *p != id.to_string());
+        let item = DefaultItem {
+            version: VersionItem {
+                id,
+                path: found.dir.display().to_string(),
+            },
+            home: found.home.display().to_string(),
+            link: link.display().to_string(),
+            previous,
+            installed,
+        };
+        Ok((item, link_changed || default_changed || installed, warnings))
+    }
+}
+
+/// The tool home of an install: `dir` plus the receipt's `/`-separated `home`.
+pub fn home_dir(dir: &Path, home: &str) -> PathBuf {
+    home.split('/')
+        .filter(|part| !part.is_empty())
+        .fold(dir.to_path_buf(), |dir, part| dir.join(part))
 }
 
 /// Removes a current link. Returns whether it did.

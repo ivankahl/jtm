@@ -159,6 +159,11 @@ impl Dirs {
         self.data.join("state")
     }
 
+    /// `<data>/state/defaults.toml`, the user defaults set by `jtm default`.
+    pub fn defaults_file(&self) -> PathBuf {
+        self.state().join("defaults.toml")
+    }
+
     /// `<data>/locks`, for per-install file locks.
     pub fn locks(&self) -> PathBuf {
         self.data.join("locks")

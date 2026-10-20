@@ -270,7 +270,7 @@ impl Reporter {
     }
 }
 
-fn warnings(found: Vec<jtm_security::Warning>) -> Vec<Warning> {
+pub(crate) fn warnings(found: Vec<jtm_security::Warning>) -> Vec<Warning> {
     let mut out: Vec<Warning> = Vec::new();
     for w in found {
         if !out
