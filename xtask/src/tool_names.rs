@@ -191,133 +191,172 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
 /// The contents of every string literal in Rust `source`, with the line each starts on.
 /// Comments, character literals and lifetimes are skipped; escapes are kept as written.
 pub(crate) fn string_literals(source: &str) -> Vec<(usize, String)> {
-    let chars: Vec<char> = source.chars().collect();
-    let mut out = Vec::new();
-    let mut line = 1;
-    let mut i = 0;
-    let at = |i: usize| chars.get(i).copied();
-    while let Some(c) = at(i) {
+    let mut lexer = Lexer {
+        chars: source.chars().collect(),
+        i: 0,
+        line: 1,
+        out: Vec::new(),
+    };
+    while let Some(c) = lexer.at(0) {
         match c {
             '\n' => {
-                line += 1;
-                i += 1;
+                lexer.line += 1;
+                lexer.i += 1;
             }
-            '/' if at(i + 1) == Some('/') => {
-                while at(i).is_some_and(|c| c != '\n') {
-                    i += 1;
-                }
-            }
-            '/' if at(i + 1) == Some('*') => {
-                let mut depth = 0;
-                while let Some(c) = at(i) {
-                    if c == '/' && at(i + 1) == Some('*') {
-                        depth += 1;
-                        i += 2;
-                    } else if c == '*' && at(i + 1) == Some('/') {
-                        depth -= 1;
-                        i += 2;
-                        if depth == 0 {
-                            break;
-                        }
-                    } else {
-                        if c == '\n' {
-                            line += 1;
-                        }
-                        i += 1;
-                    }
-                }
-            }
-            'r' | 'b'
-                if !at(i.wrapping_sub(1)).is_some_and(|p| p.is_alphanumeric() || p == '_') =>
-            {
-                // `r"..."`, `r#"..."#`, `br"..."`, or `b"..."`.
-                let mut j = i + 1;
-                if c == 'b' && at(j) == Some('r') {
-                    j += 1;
-                }
-                let raw = c == 'r' || at(i + 1) == Some('r');
-                let mut hashes = 0;
-                while raw && at(j) == Some('#') {
-                    hashes += 1;
-                    j += 1;
-                }
-                if at(j) != Some('"') {
-                    i += 1;
-                    continue;
-                }
-                let start_line = line;
-                let mut text = String::new();
-                j += 1;
-                if raw {
-                    let close: String = std::iter::once('"')
-                        .chain((0..hashes).map(|_| '#'))
-                        .collect();
-                    let close: Vec<char> = close.chars().collect();
-                    while j < chars.len() && chars[j..].iter().take(close.len()).ne(close.iter()) {
-                        if chars[j] == '\n' {
-                            line += 1;
-                        }
-                        text.push(chars[j]);
-                        j += 1;
-                    }
-                    i = j + close.len();
-                } else {
-                    i = read_quoted(&chars, j, &mut text, &mut line);
-                }
-                out.push((start_line, text));
-            }
+            '/' if lexer.at(1) == Some('/') => lexer.skip_line_comment(),
+            '/' if lexer.at(1) == Some('*') => lexer.skip_block_comment(),
+            'r' | 'b' if !lexer.after_identifier() => lexer.prefixed_string(c),
             '"' => {
-                let start_line = line;
-                let mut text = String::new();
-                i = read_quoted(&chars, i + 1, &mut text, &mut line);
-                out.push((start_line, text));
+                lexer.i += 1;
+                lexer.quoted();
             }
-            '\'' => {
-                // A character literal such as `'"'` or `'\''`, or a lifetime such as `'a`.
-                if at(i + 1) == Some('\\') {
-                    i += 2;
-                    while at(i).is_some_and(|c| c != '\'') {
-                        i += 1;
-                    }
-                    i += 1;
-                } else if at(i + 2) == Some('\'') {
-                    i += 3;
-                } else {
-                    i += 1;
-                }
-            }
-            _ => i += 1,
+            '\'' => lexer.skip_char_or_lifetime(),
+            _ => lexer.i += 1,
         }
     }
-    out
+    lexer.out
 }
 
-/// Reads an escaped string body starting at `i`, just after the opening quote, into `text`.
-/// Returns the index after the closing quote.
-fn read_quoted(chars: &[char], mut i: usize, text: &mut String, line: &mut usize) -> usize {
-    while let Some(&c) = chars.get(i) {
-        match c {
-            '\\' => {
-                text.push(c);
-                if let Some(&next) = chars.get(i + 1) {
-                    if next == '\n' {
-                        *line += 1;
-                    }
-                    text.push(next);
+/// A cursor over Rust source collecting string literals.
+struct Lexer {
+    chars: Vec<char>,
+    i: usize,
+    line: usize,
+    out: Vec<(usize, String)>,
+}
+
+impl Lexer {
+    /// The character `offset` places after the cursor.
+    fn at(&self, offset: usize) -> Option<char> {
+        self.chars.get(self.i + offset).copied()
+    }
+
+    /// Whether the cursor follows an identifier character, so an `r` or `b` there is part of
+    /// a name rather than a string prefix.
+    fn after_identifier(&self) -> bool {
+        self.i
+            .checked_sub(1)
+            .and_then(|p| self.chars.get(p))
+            .is_some_and(|p| p.is_alphanumeric() || *p == '_')
+    }
+
+    fn skip_line_comment(&mut self) {
+        while self.at(0).is_some_and(|c| c != '\n') {
+            self.i += 1;
+        }
+    }
+
+    /// Skips a `/* ... */` comment, which may nest.
+    fn skip_block_comment(&mut self) {
+        let mut depth = 0;
+        while let Some(c) = self.at(0) {
+            if c == '/' && self.at(1) == Some('*') {
+                depth += 1;
+                self.i += 2;
+            } else if c == '*' && self.at(1) == Some('/') {
+                depth -= 1;
+                self.i += 2;
+                if depth == 0 {
+                    return;
                 }
-                i += 2;
-            }
-            '"' => return i + 1,
-            _ => {
-                if c == '\n' {
-                    *line += 1;
-                }
-                text.push(c);
-                i += 1;
+            } else {
+                self.newline(c);
+                self.i += 1;
             }
         }
     }
-    i
+
+    /// A string after an `r` or `b` prefix: `r"..."`, `r#"..."#`, `br"..."` or `b"..."`. Any
+    /// other use of the letter is skipped.
+    fn prefixed_string(&mut self, c: char) {
+        let mut j = self.i + 1;
+        if c == 'b' && self.chars.get(j) == Some(&'r') {
+            j += 1;
+        }
+        let raw = c == 'r' || self.at(1) == Some('r');
+        let mut hashes = 0;
+        while raw && self.chars.get(j) == Some(&'#') {
+            hashes += 1;
+            j += 1;
+        }
+        if self.chars.get(j) != Some(&'"') {
+            self.i += 1;
+            return;
+        }
+        self.i = j + 1;
+        if raw {
+            self.raw(hashes);
+        } else {
+            self.quoted();
+        }
+    }
+
+    /// A raw string body up to `"` and `hashes` hashes, with the cursor just after the opening
+    /// quote.
+    fn raw(&mut self, hashes: usize) {
+        let close: Vec<char> = std::iter::once('"')
+            .chain(std::iter::repeat_n('#', hashes))
+            .collect();
+        let start = self.line;
+        let mut text = String::new();
+        while self.i < self.chars.len() && !self.chars[self.i..].starts_with(&close) {
+            let c = self.chars[self.i];
+            self.newline(c);
+            text.push(c);
+            self.i += 1;
+        }
+        self.i += close.len();
+        self.out.push((start, text));
+    }
+
+    /// An escaped string body, with the cursor just after the opening quote.
+    fn quoted(&mut self) {
+        let start = self.line;
+        let mut text = String::new();
+        while let Some(c) = self.at(0) {
+            match c {
+                '\\' => {
+                    text.push(c);
+                    if let Some(next) = self.at(1) {
+                        self.newline(next);
+                        text.push(next);
+                    }
+                    self.i += 2;
+                }
+                '"' => {
+                    self.i += 1;
+                    break;
+                }
+                _ => {
+                    self.newline(c);
+                    text.push(c);
+                    self.i += 1;
+                }
+            }
+        }
+        self.out.push((start, text));
+    }
+
+    /// Skips a character literal such as `'"'` or `'\''`, or a lifetime such as `'a`.
+    fn skip_char_or_lifetime(&mut self) {
+        if self.at(1) == Some('\\') {
+            self.i += 2;
+            while self.at(0).is_some_and(|c| c != '\'') {
+                self.i += 1;
+            }
+            self.i += 1;
+        } else if self.at(2) == Some('\'') {
+            self.i += 3;
+        } else {
+            self.i += 1;
+        }
+    }
+
+    fn newline(&mut self, c: char) {
+        if c == '\n' {
+            self.line += 1;
+        }
+    }
 }
 
 #[cfg(test)]

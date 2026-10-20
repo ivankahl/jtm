@@ -112,7 +112,7 @@ fn ensure_dir(dir: &Path, repaired: &mut Vec<PathBuf>) -> Result<()> {
 
 fn read_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
     fs::read_dir(dir)
-        .and_then(|entries| entries.collect::<io::Result<Vec<_>>>())
+        .and_then(Iterator::collect::<io::Result<Vec<_>>>)
         .map_err(|e| JtmError::io(dir, e))
 }
 
