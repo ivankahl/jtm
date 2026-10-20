@@ -130,3 +130,36 @@ fn reads_and_writes_the_file_on_disk() {
     let back = ProjectFile::read(dir.path()).unwrap().unwrap();
     assert_eq!(back.tool("java"), Some(selector("21")));
 }
+
+#[cfg(unix)]
+#[test]
+fn write_atomic_keeps_permissions_and_symlinks() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("dotfiles").join("gradle.properties");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::write(&real, "a=1\n").unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let link = dir.path().join("gradle.properties");
+    symlink(&real, &link).unwrap();
+
+    write_atomic(&link, b"a=2\n").unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), "a=2\n");
+    let mode = std::fs::metadata(&real).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o644);
+
+    // A new file gets what a plain write would give it under the umask, not owner-only.
+    let new = dir.path().join("new.toml");
+    write_atomic(&new, b"x").unwrap();
+    let plain = dir.path().join("plain.toml");
+    std::fs::write(&plain, b"x").unwrap();
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&new), mode(&plain));
+}
