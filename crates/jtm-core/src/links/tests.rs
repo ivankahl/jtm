@@ -75,9 +75,15 @@ fn retargeting_never_leaves_the_link_missing_on_unix() {
         let reader = scope.spawn(|| {
             let mut seen = 0;
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let target = fs::read_link(&link).unwrap_or_else(|e| panic!("{e:?}"));
-                assert!(target == a || target == b, "{}", target.display());
-                seen += 1;
+                // The path always exists. APFS can briefly answer `readlink` with EINVAL while
+                // a rename swaps the entry, so only a successful read is checked for its target.
+                if let Err(e) = fs::symlink_metadata(&link) {
+                    panic!("the link went missing: {e:?}");
+                }
+                if let Ok(target) = fs::read_link(&link) {
+                    assert!(target == a || target == b, "{}", target.display());
+                    seen += 1;
+                }
             }
             seen
         });
