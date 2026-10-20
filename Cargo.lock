@@ -1024,10 +1024,12 @@ dependencies = [
  "jtm-fetch",
  "jtm-plugin",
  "jtm-security",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "toml",
+ "tracing",
 ]
 
 [[package]]
