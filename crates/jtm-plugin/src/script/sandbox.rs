@@ -101,7 +101,7 @@ pub(super) fn run(job: Job) -> Result<Json, Failure> {
     .map_err(setup)?;
     lua.set_memory_limit(job.limits.memory).map_err(setup)?;
 
-    let deadline = Instant::now() + job.limits.time;
+    let deadline = job.shared.deadline;
     let shared = Arc::clone(&job.shared);
     lua.set_interrupt(move |_| {
         if shared.cancelled() || Instant::now() >= deadline {
@@ -220,6 +220,15 @@ fn host_api(lua: &Lua, job: &Job) -> mlua::Result<Table> {
     if let Some(root) = &job.fs_root {
         api.raw_set("fs", fs::api(lua, root.clone(), Arc::clone(&job.shared))?)?;
     }
+    // A host call that blocks without returning to Lua, as a stuck C function would.
+    #[cfg(test)]
+    api.raw_set(
+        "sleep",
+        lua.create_function(|_, ms: u64| {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            Ok(())
+        })?,
+    )?;
     api.set_readonly(true);
     Ok(api)
 }

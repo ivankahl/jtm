@@ -26,7 +26,7 @@
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard};
 
 use jtm_archive::tree::{self, ReadError, display_rel};
 use mlua::{Lua, Table};
@@ -50,11 +50,16 @@ struct Root {
 }
 
 impl Root {
+    /// Starts one operation; hold the guard until it is done, so a host abandoning the hook
+    /// waits for it. Fails once the hook is abandoned.
+    fn enter(&self) -> mlua::Result<MutexGuard<'_, ()>> {
+        self.shared
+            .enter()
+            .ok_or_else(|| refuse(&self.shared, Limit::Time(self.shared.limits.time)))
+    }
+
     /// The absolute path for `rel`, refusing anything that could leave the root.
     fn resolve(&self, rel: &str) -> mlua::Result<PathBuf> {
-        if self.shared.cancelled() {
-            return Err(refuse(&self.shared, Limit::Time(self.shared.limits.time)));
-        }
         let escape = |reason: &str| {
             refuse(
                 &self.shared,
@@ -112,6 +117,7 @@ pub(super) fn api(lua: &Lua, dir: PathBuf, shared: Arc<Shared>) -> mlua::Result<
     t.raw_set(
         "exists",
         lua.create_function(move |_, path: String| {
+            let _busy = r.enter()?;
             Ok(fs::symlink_metadata(r.resolve(&path)?).is_ok())
         })?,
     )?;
@@ -119,6 +125,7 @@ pub(super) fn api(lua: &Lua, dir: PathBuf, shared: Arc<Shared>) -> mlua::Result<
     t.raw_set(
         "is_dir",
         lua.create_function(move |_, path: String| {
+            let _busy = r.enter()?;
             Ok(fs::symlink_metadata(r.resolve(&path)?).is_ok_and(|m| m.is_dir()))
         })?,
     )?;
@@ -126,6 +133,7 @@ pub(super) fn api(lua: &Lua, dir: PathBuf, shared: Arc<Shared>) -> mlua::Result<
     t.raw_set(
         "list",
         lua.create_function(move |lua, path: String| {
+            let _busy = r.enter()?;
             let dir = r.resolve(&path)?;
             if !fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
                 return Err(mlua::Error::runtime(format!("`{path}` is not a directory")));
@@ -141,6 +149,7 @@ pub(super) fn api(lua: &Lua, dir: PathBuf, shared: Arc<Shared>) -> mlua::Result<
     )?;
     let r = root.clone();
     let rename = lua.create_function(move |_, (from, to): (String, String)| {
+        let _busy = r.enter()?;
         let (source, dest) = (r.resolve_entry(&from)?, r.resolve_entry(&to)?);
         fs::symlink_metadata(&source).map_err(|e| io_error(&from, &e))?;
         if fs::symlink_metadata(&dest).is_ok() {
@@ -159,6 +168,7 @@ pub(super) fn api(lua: &Lua, dir: PathBuf, shared: Arc<Shared>) -> mlua::Result<
     t.raw_set(
         "remove",
         lua.create_function(move |_, path: String| {
+            let _busy = r.enter()?;
             let target = r.resolve_entry(&path)?;
             let meta = fs::symlink_metadata(&target).map_err(|e| io_error(&path, &e))?;
             let removed = if meta.is_dir() {
@@ -173,6 +183,7 @@ pub(super) fn api(lua: &Lua, dir: PathBuf, shared: Arc<Shared>) -> mlua::Result<
     t.raw_set(
         "chmod",
         lua.create_function(move |_, (path, mode): (String, u32)| {
+            let _busy = r.enter()?;
             if mode > MAX_MODE {
                 return Err(mlua::Error::runtime(format!(
                     "mode {mode:#o} is above 0o777; setuid, setgid and sticky bits are not allowed"
