@@ -247,9 +247,9 @@ fn builtin_set(pad: usize) -> &'static [BuiltinManifest] {
     ]))
 }
 
-/// Builtin manifests with large files, so each repair takes long enough to overlap.
+/// Builtin manifests with larger files, so the repairs started at once overlap.
 fn big_builtin() -> &'static [BuiltinManifest] {
-    builtin_set(1 << 20)
+    builtin_set(1 << 16)
 }
 
 /// The names of the repair's temporary files left in `<data>/plugins`.
@@ -317,24 +317,38 @@ fn concurrent_repairs_never_remove_each_others_files() {
 fn temporary_files_a_killed_process_left_are_swept() {
     let (_home, dirs) = dirs();
     fs::create_dir_all(dirs.plugins()).unwrap();
-    let stale = dirs.plugins().join(format!("{TEMP_PREFIX}stale"));
-    let fresh = dirs.plugins().join(format!("{TEMP_PREFIX}fresh"));
+    let left = dirs.plugins().join(format!("{TEMP_PREFIX}left"));
     let other = dirs.plugins().join(".tmp-not-ours");
-    for path in [&stale, &fresh, &other] {
+    for path in [&left, &other] {
         fs::write(path, "partial").unwrap();
     }
-    let old = std::time::SystemTime::now() - TEMP_MAX_AGE * 2;
-    fs::File::options()
-        .write(true)
-        .open(&stale)
-        .unwrap()
-        .set_modified(old)
-        .unwrap();
     sync_working_copy(&dirs, builtin_set(0)).unwrap();
-    assert!(!stale.exists(), "a stale temporary file is removed");
-    assert!(
-        fresh.exists(),
-        "another process may still be writing a fresh one"
-    );
+    assert!(!left.exists(), "a leftover temporary file is removed");
     assert!(other.exists(), "only jtm's own temporary files are touched");
+}
+
+#[test]
+fn a_repair_already_running_elsewhere_is_not_waited_for() {
+    let (_home, dirs) = dirs();
+    let held = lock_working_copy(&dirs).unwrap().unwrap();
+    fs::create_dir_all(dirs.plugins()).unwrap();
+    let left = dirs.plugins().join(format!("{TEMP_PREFIX}in-progress"));
+    fs::write(&left, "partial").unwrap();
+    assert_eq!(
+        sync_working_copy(&dirs, builtin_set(0)).unwrap(),
+        Vec::<PathBuf>::new()
+    );
+    assert!(
+        left.exists(),
+        "the lock holder's temporary file is left alone"
+    );
+    assert!(!dirs.builtin_plugins().join("demo").exists());
+    drop(held);
+    assert!(!sync_working_copy(&dirs, builtin_set(0)).unwrap().is_empty());
+    assert!(
+        dirs.builtin_plugins()
+            .join("demo")
+            .join("plugin.toml")
+            .is_file()
+    );
 }

@@ -20,9 +20,6 @@ use crate::platform::Platform;
 
 /// The name prefix of the files the working copy repair writes in `<data>/plugins`.
 const TEMP_PREFIX: &str = ".jtm-builtin-";
-/// How old a repair's temporary file must be before the sync takes it for one a killed process
-/// left behind. A repair writes for well under a second.
-const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// The working copy files of one builtin plugin, as `(file name, bytes)`.
 fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> {
@@ -43,16 +40,20 @@ fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> 
 /// cannot change a trust decision; [`Registry`] reads only the compiled-in manifests.
 ///
 /// Several jtm processes may start a repair at once, such as two shells' prompt hooks, so a
-/// repair holds an exclusive lock in `<data>/locks` and the others wait for it. New files are
-/// also written in `<data>/plugins`, outside the copy, and renamed into place, so nothing that
-/// does not take the lock sees a half-written file in the copy.
+/// repair holds an exclusive lock in `<data>/locks`. While another process holds it, the sync
+/// is skipped and reports no repairs rather than waiting, so a stopped process never stalls
+/// every prompt. New files are also written in `<data>/plugins`, outside the copy, and renamed
+/// into place, so nothing that does not take the lock sees a half-written file in the copy.
 /// Without any `builtin` manifests, such as from a context that embeds none, there is nothing
 /// to compare against, so the copy is left alone.
 pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec<PathBuf>> {
     if builtin.is_empty() {
         return Ok(Vec::new());
     }
-    let _lock = lock_working_copy(dirs)?;
+    let Some(_lock) = lock_working_copy(dirs)? else {
+        tracing::debug!("another process is repairing the builtin plugin working copy");
+        return Ok(Vec::new());
+    };
     let root = dirs.builtin_plugins();
     let scratch = dirs.plugins();
     let mut repaired = Vec::new();
@@ -109,10 +110,12 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
 /// working copy is never followed.
 ///
 /// Windows briefly refuses a rename onto a file another program has open, such as a virus
-/// scanner or an editor, so there a refused rename is retried a few times. Any other failure
-/// is returned at once.
+/// scanner or an editor, so there a refused rename is retried twice, waiting at most 60 ms in
+/// all. Any other failure is returned at once.
 fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
-    const ATTEMPTS: u32 = 5;
+    const ATTEMPTS: u32 = 3;
+    // ERROR_SHARING_VIOLATION, which std does not map to an error kind.
+    const SHARING_VIOLATION: i32 = 32;
     let mut file = tempfile::Builder::new()
         .prefix(TEMP_PREFIX)
         .tempfile_in(scratch)
@@ -124,7 +127,9 @@ fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
             Ok(_) => return Ok(()),
             Err(failed) => failed,
         };
-        let transient = cfg!(windows) && failed.error.kind() == io::ErrorKind::PermissionDenied;
+        let transient = cfg!(windows)
+            && (failed.error.kind() == io::ErrorKind::PermissionDenied
+                || failed.error.raw_os_error() == Some(SHARING_VIOLATION));
         if !transient || attempt == ATTEMPTS {
             return Err(JtmError::io(path, failed.error));
         }
@@ -134,8 +139,9 @@ fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
     }
 }
 
-/// Takes the exclusive lock on the working copy, waiting for any other repair to finish.
-fn lock_working_copy(dirs: &Dirs) -> Result<fs::File> {
+/// Takes the exclusive lock on the working copy, or returns `None` while another process
+/// holds it.
+fn lock_working_copy(dirs: &Dirs) -> Result<Option<fs::File>> {
     let locks = dirs.locks();
     fs::create_dir_all(&locks).map_err(|e| JtmError::io(&locks, e))?;
     // A leading `.` keeps this apart from every install lock, which starts with a plugin name.
@@ -146,27 +152,23 @@ fn lock_working_copy(dirs: &Dirs) -> Result<fs::File> {
         .write(true)
         .open(&path)
         .map_err(|e| JtmError::io(&path, e))?;
-    file.lock().map_err(|e| JtmError::io(&path, e))?;
-    Ok(file)
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(e)) => Err(JtmError::io(&path, e)),
+    }
 }
 
-/// Removes the repair's temporary files in `scratch` older than [`TEMP_MAX_AGE`], which a
-/// process killed mid-repair left behind. Failures are ignored; the next sync tries again.
+/// Removes the repair's temporary files in `scratch`. Only a repair holding the working copy
+/// lock writes them, so with the lock held every one is from a process killed mid-repair.
+/// Failures are ignored; the next sync tries again.
 fn sweep_temp_files(scratch: &Path) {
     let Ok(entries) = fs::read_dir(scratch) else {
         return;
     };
     for entry in entries.flatten() {
-        if !entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
-            continue;
-        }
-        let stale = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age > TEMP_MAX_AGE);
-        if stale && entry.file_type().is_ok_and(|t| t.is_file()) {
+        let ours = entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX);
+        if ours && entry.file_type().is_ok_and(|t| t.is_file()) {
             let _ = fs::remove_file(entry.path());
         }
     }
