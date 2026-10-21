@@ -172,21 +172,62 @@ fn the_first_candidate_home_that_exists_wins() {
 }
 
 #[test]
-fn a_star_candidate_needs_exactly_one_match() {
-    // Two bundles: `*` is ambiguous, so the root wins.
+fn an_ambiguous_star_candidate_fails_instead_of_falling_through() {
+    // Two bundles: `*` is ambiguous, which is an error even with the root as a fallback.
     let files = [
         "t/a.jdk/Contents/Home/bin/java",
-        "t/b.jdk/Contents/Home/bin/java",
+        "t/b.jdk/Contents/Home/README",
+        "t/bin/java",
     ];
-    assert_eq!(mac_home(&files).unwrap(), PathBuf::new());
-    // Without the root as a fallback, nothing matches.
-    let err = mac_home_with(BUNDLES_ONLY, &files).unwrap_err();
+    let err = mac_home(&files).unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    let message = err.to_string();
+    assert!(message.contains("ambiguous"), "{message}");
+    assert!(
+        message.contains("`a.jdk/Contents/Home`, `b.jdk/Contents/Home`"),
+        "{message}"
+    );
+    // Directories that `*` reaches but the rest of the path does not fit are no matches.
+    let home = mac_home(&["t/a.jdk/Contents/Home/bin/java", "t/b.jdk/Contents/README"]).unwrap();
+    assert_eq!(home, PathBuf::from("a.jdk/Contents/Home"));
+}
+
+#[test]
+fn no_match_names_every_candidate_tried() {
+    let err = mac_home_with(BUNDLES_ONLY, &["t/lib/x", "t/README"]).unwrap_err();
     let message = err.to_string();
     assert!(
         message.contains("`Contents/Home`, `*/Contents/Home`"),
         "{message}"
     );
+}
+
+#[test]
+fn a_star_matches_only_safe_names() {
+    for name in ["zulu-17.jdk", "jdk_8u512+b1.jdk", "Z9"] {
+        let file = format!("t/{name}/Contents/Home/bin/java");
+        let home = mac_home(&[&file, "t/bin/java"]).unwrap();
+        assert_eq!(home, Path::new(name).join("Contents/Home"), "{name}");
+    }
+    for name in [
+        "Zulu 17.jdk",
+        "-rf",
+        ".hidden",
+        "jdk$(x)",
+        "jdk;x",
+        "j\u{e9}k",
+    ] {
+        let file = format!("t/{name}/Contents/Home/bin/java");
+        let err = mac_home(&[&file, "t/bin/java"]).unwrap_err();
+        assert_eq!(err.code(), "E_PLUGIN_INVALID", "{name}");
+        assert!(
+            err.to_string().contains("may hold only ASCII"),
+            "{name}: {err}"
+        );
+    }
+    // A name the rest of the path does not fit is never looked at.
+    let home = mac_home(&["t/Some Docs/README", "t/bin/java"]).unwrap();
+    assert_eq!(home, PathBuf::new());
 }
 
 #[test]
@@ -245,7 +286,7 @@ fn a_candidate_that_is_not_relative_fails_instead_of_falling_through() {
     assert!(err.to_string().contains("not a relative path"), "{err}");
 }
 
-/// Linux file names may be any bytes; the receipt records the home as text.
+/// Linux file names may be any bytes; one that is not UTF-8 is never a safe name.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_star_never_matches_a_name_that_is_not_utf8() {
@@ -259,4 +300,5 @@ fn a_star_never_matches_a_name_that_is_not_utf8() {
     fs::write(bad.join("Contents/Home/bin/java"), b"x").unwrap();
     let err = apply("demo", dir.path(), &layout(BUNDLES_ONLY), Os::Macos).unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    assert!(err.to_string().contains("may hold only ASCII"), "{err}");
 }

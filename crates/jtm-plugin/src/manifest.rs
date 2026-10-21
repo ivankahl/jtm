@@ -173,7 +173,8 @@ impl Layout {
 /// The tool home candidates for one OS, written as one path or a list of paths and tried in
 /// order: the first that is a directory inside the archive wins, and the bin dirs are checked
 /// after `post_extract`. `""` is the archive root, and a `*` segment matches any one directory
-/// (never a link); a candidate with a `*` matches only when exactly one directory fits it.
+/// (never a link). A `*` candidate that two or more directories fit, or that matches a name
+/// outside ASCII letters, digits, `.`, `_`, `+` and `-`, fails the install.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HomeCandidates(pub Vec<String>);
 

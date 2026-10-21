@@ -78,15 +78,15 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
             home: PathBuf::new(),
         });
     }
-    // The first candidate that exists wins. Its bin dirs are checked after `post_extract`,
-    // which may fill them.
     // Validation rejects these; never let one quietly hand the choice to another candidate,
     // whatever the archive holds.
     if let Some(bad) = candidates.iter().find(|c| relative(c).is_none()) {
         return Err(mismatch(format!("`{bad}` is not a relative path")));
     }
+    // The first candidate that exists wins. Its bin dirs are checked after `post_extract`,
+    // which may fill them.
     for candidate in candidates {
-        if let Some(home) = find_home(&root, candidate)? {
+        if let Some(home) = find_home(plugin, &root, candidate)? {
             return Ok(Placed { root, home });
         }
     }
@@ -103,9 +103,15 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
 }
 
 /// The home `candidate` names inside `root`, relative to it, when it is a directory inside
-/// `root`. A `*` segment matches any one real directory, never a link, and the candidate
-/// matches only when exactly one directory fits the whole path.
-fn find_home(root: &Path, candidate: &str) -> Result<Option<PathBuf>> {
+/// `root`, or `None` when it is not. A `*` segment matches any one real directory, never a
+/// link. When two or more directories fit the whole path the candidate is ambiguous, and a
+/// directory `*` matched must have a [safe name](is_safe_name): both are errors, never a
+/// reason to try the next candidate.
+fn find_home(plugin: &str, root: &Path, candidate: &str) -> Result<Option<PathBuf>> {
+    let mismatch = |message: String| JtmError::LayoutMismatch {
+        plugin: plugin.to_owned(),
+        message,
+    };
     let Some(rel) = relative(candidate) else {
         return Ok(None);
     };
@@ -135,9 +141,7 @@ fn find_home(root: &Path, candidate: &str) -> Result<Option<PathBuf>> {
                 let kind = entry
                     .file_type()
                     .map_err(|e| JtmError::io(entry.path(), e))?;
-                // The receipt records the home as text, so a name that is not UTF-8 is
-                // never a match.
-                if kind.is_dir() && entry.file_name().to_str().is_some() {
+                if kind.is_dir() {
                     next.push(path.join(entry.file_name()));
                 }
             }
@@ -151,7 +155,51 @@ fn find_home(root: &Path, candidate: &str) -> Result<Option<PathBuf>> {
             homes.push(path);
         }
     }
-    Ok(<[PathBuf; 1]>::try_from(homes).ok().map(|[home]| home))
+    let home = match <[PathBuf; 1]>::try_from(homes) {
+        Ok([home]) => home,
+        Err(homes) if homes.is_empty() => return Ok(None),
+        Err(mut homes) => {
+            homes.sort();
+            let found: Vec<String> = homes
+                .iter()
+                .map(|h| {
+                    // `/` on every OS, as in the manifest.
+                    let parts: Vec<_> = h.iter().map(|p| p.to_string_lossy()).collect();
+                    format!("`{}`", parts.join("/"))
+                })
+                .collect();
+            return Err(mismatch(format!(
+                "home candidate `{candidate}` is ambiguous: it matches {}",
+                found.join(", ")
+            )));
+        }
+    };
+    // The names `*` matched come from the archive, not the signed manifest, and end up in
+    // the receipt, `{home}` and shell output.
+    let stars = rel
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .map(|c| c.as_os_str() == "*");
+    for (is_star, name) in stars.zip(home.components()) {
+        if is_star && !name.as_os_str().to_str().is_some_and(is_safe_name) {
+            return Err(mismatch(format!(
+                "home candidate `{candidate}` matches `{}`, whose name may hold only ASCII \
+                 letters, digits, `.`, `_`, `+` and `-` and may not start with `.` or `-`",
+                name.as_os_str().to_string_lossy()
+            )));
+        }
+    }
+    Ok(Some(home))
+}
+
+/// Whether a directory name a `*` matched is safe to record as part of a tool home: ASCII
+/// letters, digits, `.`, `_`, `+` and `-`, not starting with `.` or `-`.
+fn is_safe_name(name: &str) -> bool {
+    !name.starts_with(['.', '-'])
+        && !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
 }
 
 /// Checks that every bin dir is a directory inside the install holding at least one file, so a
