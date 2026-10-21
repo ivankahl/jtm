@@ -212,6 +212,20 @@ fn resolve_errors_map_to_not_found_codes() {
 }
 
 #[test]
+fn a_command_in_no_active_install_is_tool_unknown() {
+    let err = JtmError::CommandUnknown {
+        command: "demo".into(),
+    };
+    assert_eq!(err.code(), "E_TOOL_UNKNOWN");
+    assert_eq!(err.exit_code().as_u8(), 3);
+    assert_eq!(err.to_string(), "`demo` is in no active install");
+    assert_eq!(
+        Value::Object(err.details()),
+        serde_json::json!({ "command": "demo" })
+    );
+}
+
+#[test]
 fn security_errors_map_to_verification_and_trust_codes() {
     let invalid = JtmError::from(jtm_security::Error::SignatureInvalid {
         file: "demo-linux-x64.json".into(),

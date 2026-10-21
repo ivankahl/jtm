@@ -15,13 +15,16 @@ use crate::error::{JtmError, Result};
 use crate::pins::{ProjectPins, discover};
 use crate::platform::Os;
 use crate::plugins::Plugin;
-use crate::session::{PATH_SEPARATOR, Session, pin_warnings};
+use crate::session::{PATH_SEPARATOR, Session, not_installed_warning, pin_warnings};
 use crate::spec::Selector;
 use crate::sync::apply_lock;
 
 /// Warning code when an active tool's `[requires]` entry is not met by the active version of
 /// the tool it needs, such as a build tool that needs a newer Java than the one active.
 pub const W_REQUIRES_UNMET: &str = "W_REQUIRES_UNMET";
+
+/// Warning code when `jtm which` skips a tool whose installs cannot be read.
+pub const W_TOOL_SKIPPED: &str = "W_TOOL_SKIPPED";
 
 /// The plugins, pins, session versions and defaults that apply in one directory.
 #[derive(Debug)]
@@ -56,14 +59,16 @@ pub struct CurrentItem {
     pub installed: bool,
 }
 
-/// What `jtm which` found.
+/// What `jtm which` found: always a file in an active jtm install.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WhichItem {
     pub command: String,
-    /// The tool providing it, when jtm manages it here.
-    pub tool: Option<String>,
-    pub layer: Option<Layer>,
-    pub version: Option<String>,
+    /// The tool providing it.
+    pub tool: String,
+    /// The layer that activated that tool.
+    pub layer: Layer,
+    /// The install, as `variant:version`.
+    pub version: String,
     pub path: String,
 }
 
@@ -260,43 +265,84 @@ impl<'s, 'c> Here<'s, 'c> {
         )
     }
 
-    /// The executable `command` runs here: the first active install whose bin dirs hold it, so
-    /// any file a tool ships maps to that tool, whatever the version calls it; anything else is
-    /// looked up on `path`.
-    pub fn which(&self, command: &str, os: Os, path: Option<&str>) -> Result<WhichItem> {
+    /// The executable `command` resolves to among the active installs: the first whose bin
+    /// dirs hold it, so any file a tool ships maps to that tool, whatever the version calls it.
+    /// Only installs jtm manages are searched, never `PATH`, so the answer is always a jtm
+    /// install. Each tool counts only in the version its highest layer chooses, and an active
+    /// version that is not installed never falls back to a lower layer.
+    ///
+    /// A tool whose installs cannot be read is skipped with a [`W_TOOL_SKIPPED`] warning, so
+    /// one broken tool does not hide the others. A command in no active install is
+    /// `E_TOOL_UNKNOWN`, with a `W_NOT_INSTALLED` warning for every active version that is not
+    /// installed, since any of them might hold it. A command that is found gets that warning
+    /// only for the tools its tool `[requires]`, since those are the ones it would run with.
+    ///
+    /// The warnings come back whether or not the command is found.
+    pub fn which(&self, command: &str, os: Os) -> (Result<WhichItem>, Vec<Warning>) {
+        let mut warnings = Vec::new();
+        let mut missing = Vec::new();
         for plugin in &self.plugins {
             let tool = plugin.manifest.name.as_str();
             let Some(choice) = self.layers().choose(tool) else {
                 continue;
             };
-            let Some(found) = self
+            let found = match self
                 .session
-                .installed_match(plugin, choice.selector.as_ref())?
-            else {
-                continue;
+                .installed_match(plugin, choice.selector.as_ref())
+            {
+                Ok(Some(found)) => found,
+                Ok(None) => {
+                    missing.push(not_installed_warning(&choice));
+                    continue;
+                }
+                Err(err) => {
+                    warnings.push(Warning {
+                        code: W_TOOL_SKIPPED,
+                        message: format!("skipped `{tool}`, whose installs cannot be read: {err}"),
+                    });
+                    continue;
+                }
             };
             let env = tool_env(&plugin.manifest, &found.home);
             let Some(path) = find_in_dirs(command, &env.path, os) else {
                 continue;
             };
-            return Ok(WhichItem {
+            let item = WhichItem {
                 command: command.to_owned(),
-                tool: Some(tool.to_owned()),
-                layer: Some(choice.layer),
-                version: Some(format!("{}:{}", found.variant, found.version)),
+                tool: tool.to_owned(),
+                layer: choice.layer,
+                version: format!("{}:{}", found.variant, found.version),
                 path: path.display().to_string(),
-            });
+            };
+            warnings.extend(self.required_not_installed(plugin));
+            return (Ok(item), warnings);
         }
-        let found = find_on_path(command, path, os).ok_or_else(|| JtmError::ToolUnknown {
-            tool: command.to_owned(),
-        })?;
-        Ok(WhichItem {
+        warnings.extend(missing);
+        let err = JtmError::CommandUnknown {
             command: command.to_owned(),
-            tool: None,
-            layer: None,
-            version: None,
-            path: found.display().to_string(),
-        })
+        };
+        (Err(err), warnings)
+    }
+
+    /// A `W_NOT_INSTALLED` warning for each tool `plugin` `[requires]` whose active version is
+    /// not installed. A required tool jtm does not manage, or whose installs cannot be read,
+    /// is left out.
+    fn required_not_installed(&self, plugin: &Plugin) -> Vec<Warning> {
+        let mut warnings = Vec::new();
+        for needed in plugin.manifest.requires.keys() {
+            let (Ok(needed_plugin), Some(choice)) =
+                (self.plugin(needed), self.layers().choose(needed))
+            else {
+                continue;
+            };
+            if let Ok(None) = self
+                .session
+                .installed_match(needed_plugin, choice.selector.as_ref())
+            {
+                warnings.push(not_installed_warning(&choice));
+            }
+        }
+        warnings
     }
 }
 

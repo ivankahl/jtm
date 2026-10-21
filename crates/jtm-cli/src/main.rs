@@ -109,7 +109,8 @@ fn main() -> ExitCode {
                     code.into()
                 }
                 Err(failure) => {
-                    let _ = renderer.failure_with("install", &failure.error, failure.details());
+                    let _ =
+                        renderer.failure_with("install", &failure.error, failure.details(), &[]);
                     failure.error.exit_code().into()
                 }
             }
@@ -205,9 +206,21 @@ fn main() -> ExitCode {
             "current",
             project::current(&ctx, tool.as_deref()),
         ),
-        Some(Command::Which { command }) => {
-            render(&mut renderer, "which", project::which(&ctx, &command))
-        }
+        Some(Command::Which { command }) => match project::which(&ctx, &command) {
+            Ok(outcome) => {
+                let _ = renderer.success(&outcome);
+                JtmExitCode::Success.into()
+            }
+            Err(failure) => {
+                let _ = renderer.failure_with(
+                    "which",
+                    &failure.error,
+                    serde_json::Map::new(),
+                    &failure.warnings,
+                );
+                failure.error.exit_code().into()
+            }
+        },
         Some(Command::Exec {
             specs,
             install,
@@ -232,7 +245,7 @@ fn main() -> ExitCode {
                 code.into()
             }
             Err(failure) => {
-                let _ = renderer.failure_with("sync", &failure.error, failure.details());
+                let _ = renderer.failure_with("sync", &failure.error, failure.details(), &[]);
                 failure.error.exit_code().into()
             }
         },

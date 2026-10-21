@@ -803,6 +803,48 @@ fn an_unmet_java_requirement_is_a_warning() {
     assert!(codes(&value).is_empty(), "{value}");
 }
 
+#[test]
+fn which_warns_only_about_missing_tools_the_found_tool_requires() {
+    let mut h = Home::new();
+    with_java(&mut h);
+    with_any(&mut h, "maven", &[("3.9.9", &[])]);
+    with_any(&mut h, "gradle", &[("8.10.2", &[])]);
+    h.ok(&["install", "fp-maven@3.9.9"]);
+    // Maven needs Java, whose pin is not installed; Gradle is unrelated to `mvn`.
+    let project = h.project(&[(
+        ".jtm.toml",
+        "[tools]\nfp-java = \"temurin:21\"\nfp-gradle = \"8\"\nfp-maven = \"3.9.9\"\n",
+    )]);
+    let missing = |value: &Value| -> Vec<String> {
+        value["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == "W_NOT_INSTALLED")
+            .map(|w| w["message"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    let (code, value) = h.json(&project, &["which", "mvn"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["data"]["tool"], "fp-maven", "{value}");
+    let found = missing(&value);
+    assert_eq!(found.len(), 1, "{value}");
+    assert!(found[0].contains("`fp-java@temurin:21`"), "{value}");
+
+    // A command found nowhere names every active version that is not installed.
+    let (code, value) = h.json(&project, &["which", "no-such-command"]);
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
+    let found = missing(&value);
+    assert_eq!(found.len(), 2, "{value}");
+    assert!(
+        found.iter().any(|m| m.contains("`fp-java@temurin:21`")),
+        "{value}"
+    );
+    assert!(found.iter().any(|m| m.contains("`fp-gradle@8`")), "{value}");
+}
+
 // --- real tools ---
 
 /// The JDK and Maven installed on this machine: `JAVA_HOME`, and `MAVEN_HOME`, `M2_HOME` or

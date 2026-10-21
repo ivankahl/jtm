@@ -227,6 +227,12 @@ fn which_finds_the_executable_and_its_layer() {
     let (code, value) = json_in(&f, project.path(), &["which", "no-such-command-anywhere"]);
     assert_eq!(code, 3, "{value}");
 
+    // Only active jtm installs are searched, never PATH.
+    let system = if cfg!(windows) { "cmd" } else { "sh" };
+    let (code, value) = json_in(&f, project.path(), &["which", system]);
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
+
     // A path is never joined onto the bin dirs, so a file elsewhere is not the tool's.
     let elsewhere = project.path().join(".jtm.toml");
     for command in [elsewhere.to_str().unwrap(), "../demo"] {
@@ -321,6 +327,93 @@ fn exec_shows_warnings_before_running_the_command() {
     assert_eq!(output.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("warning[W_NOT_INSTALLED]"), "{stderr}");
+}
+
+/// The warnings in `value` with `code`, by message.
+fn warnings_of(value: &Value, code: &str) -> Vec<String> {
+    value["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["code"] == code)
+        .map(|w| w["message"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn which_reports_a_pin_that_is_not_installed() {
+    let f = ready();
+    let (code, value) = f.json(&["default", "demo@1.0"]);
+    assert_eq!(code, 0, "{value}");
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join(".jtm.toml"),
+        "[tools]\ndemo = \"9.9\"\n",
+    )
+    .unwrap();
+    // A command only on PATH is not jtm's, so it is never found, and the missing pin is
+    // reported because it might have held it.
+    let system = if cfg!(windows) { "cmd" } else { "sh" };
+    let (code, value) = json_in(&f, project.path(), &["which", system]);
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
+    let missing = warnings_of(&value, "W_NOT_INSTALLED");
+    assert_eq!(missing.len(), 1, "{value}");
+    assert!(missing[0].contains("`demo@9.9`"), "{value}");
+
+    // The pin replaces the default, so the installed default is not searched either. The
+    // error names only the command, and the warning names the pin.
+    let (code, value) = json_in(&f, project.path(), &["which", "demo"]);
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
+    assert_eq!(
+        value["error"]["message"], "`demo` is in no active install",
+        "{value}"
+    );
+    assert_eq!(
+        value["error"]["details"],
+        serde_json::json!({ "command": "demo" }),
+        "{value}"
+    );
+    let missing = warnings_of(&value, "W_NOT_INSTALLED");
+    assert_eq!(missing.len(), 1, "{value}");
+    assert!(
+        missing[0].contains(".jtm.toml") && missing[0].contains("`demo@9.9`"),
+        "{value}"
+    );
+
+    // A human sees the warning before the error.
+    let output = f
+        .jtm()
+        .current_dir(project.path())
+        .env_remove("JTM_SESSION_DEMO")
+        .args(["which", "demo"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let warning = stderr.find("warning[W_NOT_INSTALLED]").expect(&stderr);
+    let error = stderr.find("error[E_TOOL_UNKNOWN]").expect(&stderr);
+    assert!(warning < error, "{stderr}");
+}
+
+#[test]
+fn which_skips_a_tool_whose_installs_cannot_be_read() {
+    let f = ready();
+    let (code, value) = f.json(&["default", "demo@1.0"]);
+    assert_eq!(code, 0, "{value}");
+    // A file where the tool's install dir should be cannot be listed.
+    let tool_dir = f.install_dir("1.0.0").parent().unwrap().to_owned();
+    fs::remove_dir_all(&tool_dir).unwrap();
+    fs::write(&tool_dir, "").unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let (code, value) = json_in(&f, project.path(), &["which", "demo"]);
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
+    // The skipped tool travels with the error, so the cause is not lost.
+    let skipped = warnings_of(&value, "W_TOOL_SKIPPED");
+    assert_eq!(skipped.len(), 1, "{value}");
+    assert!(skipped[0].contains("`demo`"), "{value}");
 }
 
 #[test]

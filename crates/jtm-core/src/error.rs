@@ -259,6 +259,10 @@ pub enum JtmError {
     )]
     PinToolUnknown { tool: String, file: PathBuf },
 
+    /// `jtm which` found a command in no active install.
+    #[error("`{command}` is in no active install")]
+    CommandUnknown { command: String },
+
     #[error("no version of `{tool}` matches `{spec}`")]
     VersionNotFound { tool: String, spec: String },
 
@@ -430,9 +434,9 @@ impl JtmError {
             | JtmError::PluginScript { .. }
             | JtmError::PluginSigningKeys { .. }
             | JtmError::LayoutMismatch { .. } => ErrorCode::PluginInvalid,
-            JtmError::ToolUnknown { .. } | JtmError::PinToolUnknown { .. } => {
-                ErrorCode::ToolUnknown
-            }
+            JtmError::ToolUnknown { .. }
+            | JtmError::PinToolUnknown { .. }
+            | JtmError::CommandUnknown { .. } => ErrorCode::ToolUnknown,
             JtmError::VersionNotFound { .. } => ErrorCode::VersionNotFound,
             JtmError::AliasUnknown { .. } => ErrorCode::AliasUnknown,
             JtmError::PlatformUnsupported { .. } | JtmError::HostUnsupported { .. } => {
@@ -526,6 +530,7 @@ impl JtmError {
                 ("key", key.as_str().into()),
             ]),
             JtmError::ToolUnknown { tool } => obj([("tool", tool.as_str().into())]),
+            JtmError::CommandUnknown { command } => obj([("command", command.as_str().into())]),
             JtmError::PinToolUnknown { tool, file } => obj([
                 ("tool", tool.as_str().into()),
                 ("file", path(file)),

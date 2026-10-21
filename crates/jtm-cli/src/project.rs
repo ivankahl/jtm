@@ -14,7 +14,7 @@ use jtm_core::{Context, JtmError, Result, Selector, ToolSpec};
 use serde::Serialize;
 
 use crate::activate::{here, with_install_prompt};
-use crate::output::{Human, Outcome};
+use crate::output::{Human, Outcome, Warning};
 use crate::tools::{warnings, warnings_with};
 
 #[derive(Debug, Serialize)]
@@ -95,16 +95,14 @@ pub(crate) struct WhichData {
 impl Human for WhichData {
     fn render_human(&self, out: &mut dyn Write) -> io::Result<()> {
         let item = &self.item;
-        match (&item.tool, &item.layer) {
-            (Some(tool), Some(layer)) => writeln!(
-                out,
-                "{}  ({tool} {}, {})",
-                item.path,
-                item.version.as_deref().unwrap_or_default(),
-                layer.as_str()
-            ),
-            _ => writeln!(out, "{}  (not managed by jtm)", item.path),
-        }
+        writeln!(
+            out,
+            "{}  ({} {}, {})",
+            item.path,
+            item.tool,
+            item.version,
+            item.layer.as_str()
+        )
     }
 }
 
@@ -209,17 +207,42 @@ pub(crate) fn current(ctx: &Context, tool: Option<&str>) -> Result<Outcome<Curre
     })
 }
 
-pub(crate) fn which(ctx: &Context, command: &str) -> Result<Outcome<WhichData>> {
+/// A failed `jtm which`, with the warnings that may explain it, such as a pin that is not
+/// installed.
+#[derive(Debug)]
+pub(crate) struct WhichFailure {
+    pub(crate) error: JtmError,
+    pub(crate) warnings: Vec<Warning>,
+}
+
+impl From<JtmError> for WhichFailure {
+    fn from(error: JtmError) -> Self {
+        WhichFailure {
+            error,
+            warnings: Vec::new(),
+        }
+    }
+}
+
+pub(crate) fn which(
+    ctx: &Context,
+    command: &str,
+) -> std::result::Result<Outcome<WhichData>, WhichFailure> {
     let session = Session::open(ctx)?;
     let here = here(&session)?;
-    let path = std::env::var("PATH").ok();
-    let item = here.which(command, session.platform().os(), path.as_deref())?;
-    Ok(Outcome {
-        command: "which",
-        changed: false,
-        data: WhichData { item },
-        warnings: warnings_with(here.warnings(), &here.pins.conflicts),
-    })
+    let (item, which_warnings) = here.which(command, session.platform().os());
+    let mut found = here.warnings();
+    found.extend(which_warnings);
+    let warnings = warnings_with(found, &here.pins.conflicts);
+    match item {
+        Ok(item) => Ok(Outcome {
+            command: "which",
+            changed: false,
+            data: WhichData { item },
+            warnings,
+        }),
+        Err(error) => Err(WhichFailure { error, warnings }),
+    }
 }
 
 /// Runs `command` with `specs` applied, plus the session and project versions for every other

@@ -20,7 +20,7 @@ pub(crate) enum Format {
     Json,
 }
 
-/// A non-fatal problem reported alongside a successful result.
+/// A non-fatal problem reported alongside a result, successful or not.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Warning {
     pub(crate) code: &'static str,
@@ -58,6 +58,7 @@ struct ErrorEnvelope<'a> {
     ok: bool,
     command: &'a str,
     error: ErrorBody,
+    warnings: &'a [Warning],
     jtm_version: &'static str,
 }
 
@@ -119,15 +120,17 @@ impl<O: Write, E: Write> Renderer<O, E> {
     }
 
     pub(crate) fn failure(&mut self, command: &str, error: &JtmError) -> io::Result<()> {
-        self.failure_with(command, error, Map::new())
+        self.failure_with(command, error, Map::new(), &[])
     }
 
-    /// A failure whose `details` also carry `extra`.
+    /// A failure whose `details` also carry `extra`, reported with the `warnings` the command
+    /// collected before it failed.
     pub(crate) fn failure_with(
         &mut self,
         command: &str,
         error: &JtmError,
         extra: Map<String, Value>,
+        warnings: &[Warning],
     ) -> io::Result<()> {
         match self.format {
             Format::Json => {
@@ -142,11 +145,19 @@ impl<O: Write, E: Write> Renderer<O, E> {
                         retryable: error.retryable(),
                         details,
                     },
+                    warnings,
                     jtm_version: JTM_VERSION,
                 };
                 self.write_json(&envelope)
             }
             Format::Human => {
+                for warning in warnings {
+                    writeln!(
+                        self.stderr,
+                        "warning[{}]: {}",
+                        warning.code, warning.message
+                    )?;
+                }
                 writeln!(self.stderr, "error[{}]: {error}", error.code())?;
                 let mut source = error.source();
                 while let Some(cause) = source {
