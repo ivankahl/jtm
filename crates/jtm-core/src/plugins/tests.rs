@@ -352,3 +352,48 @@ fn a_repair_already_running_elsewhere_is_not_waited_for() {
             .is_file()
     );
 }
+
+/// A target no rename can replace: a directory that is not empty.
+fn unreplaceable(dirs: &Dirs) -> PathBuf {
+    fs::create_dir_all(dirs.plugins()).unwrap();
+    let target = dirs.builtin_plugins().join("demo").join("plugin.toml");
+    fs::create_dir_all(target.join("inside")).unwrap();
+    target
+}
+
+#[test]
+fn a_rename_that_cannot_work_fails_at_once_and_leaves_no_temp_file() {
+    let (_home, dirs) = dirs();
+    let target = unreplaceable(&dirs);
+    let tries = std::cell::Cell::new(0);
+    let result = write_replacing_with(&dirs.plugins(), &target, b"new", |_| {
+        tries.set(tries.get() + 1);
+        false
+    });
+    assert!(result.is_err());
+    assert_eq!(tries.get(), 1, "a lasting failure is not retried");
+    assert_eq!(temp_files(&dirs), Vec::<String>::new());
+}
+
+#[test]
+fn a_refused_rename_is_retried_a_few_times_then_fails() {
+    let (_home, dirs) = dirs();
+    let target = unreplaceable(&dirs);
+    let tries = std::cell::Cell::new(0);
+    let result = write_replacing_with(&dirs.plugins(), &target, b"new", |_| {
+        tries.set(tries.get() + 1);
+        true
+    });
+    assert!(result.is_err());
+    assert_eq!(tries.get(), 3, "the rename is tried three times in all");
+    assert!(target.join("inside").is_dir());
+    assert_eq!(temp_files(&dirs), Vec::<String>::new());
+}
+
+#[test]
+fn only_a_refused_rename_on_windows_counts_as_transient() {
+    let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+    let missing = io::Error::from(io::ErrorKind::NotFound);
+    assert_eq!(rename_refused(&denied), cfg!(windows));
+    assert!(!rename_refused(&missing));
+}

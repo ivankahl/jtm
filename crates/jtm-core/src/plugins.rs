@@ -113,9 +113,26 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
 /// scanner or an editor, so there a refused rename is retried twice, waiting at most 60 ms in
 /// all. Any other failure is returned at once.
 fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
-    const ATTEMPTS: u32 = 3;
+    write_replacing_with(scratch, path, bytes, rename_refused)
+}
+
+/// Whether a failed rename may work if tried again: on Windows, a refused or shared target.
+fn rename_refused(error: &io::Error) -> bool {
     // ERROR_SHARING_VIOLATION, which std does not map to an error kind.
     const SHARING_VIOLATION: i32 = 32;
+    cfg!(windows)
+        && (error.kind() == io::ErrorKind::PermissionDenied
+            || error.raw_os_error() == Some(SHARING_VIOLATION))
+}
+
+/// [`write_replacing`], retrying a failed rename while `transient` says it may work.
+fn write_replacing_with(
+    scratch: &Path,
+    path: &Path,
+    bytes: &[u8],
+    transient: impl Fn(&io::Error) -> bool,
+) -> Result<()> {
+    const ATTEMPTS: u32 = 3;
     let mut file = tempfile::Builder::new()
         .prefix(TEMP_PREFIX)
         .tempfile_in(scratch)
@@ -127,10 +144,7 @@ fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
             Ok(_) => return Ok(()),
             Err(failed) => failed,
         };
-        let transient = cfg!(windows)
-            && (failed.error.kind() == io::ErrorKind::PermissionDenied
-                || failed.error.raw_os_error() == Some(SHARING_VIOLATION));
-        if !transient || attempt == ATTEMPTS {
+        if !transient(&failed.error) || attempt == ATTEMPTS {
             return Err(JtmError::io(path, failed.error));
         }
         std::thread::sleep(std::time::Duration::from_millis(10 << attempt));
