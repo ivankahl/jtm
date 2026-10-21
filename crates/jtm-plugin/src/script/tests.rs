@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -128,6 +129,33 @@ fn resolve_alias_refuses_a_value_that_is_not_a_version() {
         s.resolve_alias("pick", "x", "default", &entries()),
         Err(ScriptError::Invalid { .. })
     ));
+}
+
+#[test]
+fn resolve_alias_must_pick_one_of_the_candidates() {
+    // An alias name, a version the index does not list, and one listed only for another
+    // variant are all refused.
+    for (picked, variant) in [
+        ("lts", "default"),
+        ("latest", "default"),
+        ("9.9.9", "default"),
+        ("3.9.9", "other"),
+    ] {
+        let s = script(&format!("function pick() return '{picked}' end"));
+        let result = s.resolve_alias("pick", "x", variant, &entries());
+        match result {
+            Err(ScriptError::Invalid { message, .. }) => {
+                assert!(message.contains(picked), "{message}");
+                assert!(message.contains("is not the version of any"), "{message}");
+            }
+            other => panic!("`{picked}` should be refused, got {other:?}"),
+        }
+    }
+    let s = script("function pick() return '4.0.0-rc-2' end");
+    assert_eq!(
+        s.resolve_alias("pick", "x", "default", &entries()),
+        Ok(Some("4.0.0-rc-2".to_owned()))
+    );
 }
 
 #[test]
@@ -357,6 +385,14 @@ fn deep_recursion_fails_without_crashing() {
         eval("local function f(n) return f(n + 1) + 1 end return tostring(f(1))"),
         Err(ScriptError::Failed { .. })
     ));
+    // Each protected call goes through the host, so nesting them is bounded too.
+    for source in [
+        "local function f() return pcall(f) end return tostring((f()))",
+        "local function f() return xpcall(f, f) end return tostring((f()))",
+    ] {
+        // The innermost call fails on the C stack limit, and every outer one succeeds.
+        assert_eq!(ok(source), "true", "{source}");
+    }
 }
 
 #[test]
@@ -458,12 +494,12 @@ fn loading_the_script_counts_towards_the_time_limit() {
 }
 
 #[test]
-fn a_hook_stuck_in_a_slow_pattern_match_is_abandoned() {
-    // Lua patterns backtrack inside one C call, where the interrupt never runs.
+fn a_slow_pattern_match_is_stopped_at_the_deadline() {
+    // Lua patterns backtrack inside one C call; Luau still stops it at the deadline.
     let s = tight(
         r#"
         function f()
-            -- Anchored, so the thread still finishes in a few seconds once abandoned.
+            -- Anchored, so even a missed interrupt would end within a few seconds.
             local s = string.rep("a", 3000)
             string.find(s, "^.-.-.-b")
             return "1"
@@ -476,6 +512,129 @@ fn a_hook_stuck_in_a_slow_pattern_match_is_abandoned() {
         Limit::Time(_)
     ));
     assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn abandoning_a_hook_waits_for_its_file_operation() {
+    let shared = Arc::new(Shared::new(Limits::default()));
+    let (started, wait) = mpsc::channel();
+    let (go, end) = mpsc::channel::<()>();
+    let worker = Arc::clone(&shared);
+    let thread = std::thread::spawn(move || {
+        let busy = worker
+            .enter()
+            .unwrap_or_else(|| panic!("not abandoned yet"));
+        started.send(()).unwrap_or_else(|e| panic!("{e}"));
+        std::thread::sleep(Duration::from_millis(300));
+        drop(busy);
+        // The hook goes on running after its file operation, until the test lets it end.
+        end.recv().unwrap_or_else(|e| panic!("{e}"));
+        worker.finish()
+    });
+    wait.recv().unwrap_or_else(|e| panic!("{e}"));
+    let start = Instant::now();
+    shared.cut_off();
+    assert!(shared.abandon(), "the thread was still running");
+    assert!(
+        start.elapsed() >= Duration::from_millis(200),
+        "abandon returned early"
+    );
+    assert!(
+        shared.enter().is_none(),
+        "no file operation starts once abandoned"
+    );
+    go.send(()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        thread.join().unwrap_or_else(|_| panic!("thread panicked")),
+        "the thread learns it was abandoned"
+    );
+}
+
+#[test]
+fn a_panicking_abandoned_hook_still_releases_its_count() {
+    static STUCK: AtomicUsize = AtomicUsize::new(1);
+    let shared = Arc::new(Shared::new(Limits::default()));
+    assert!(shared.abandon());
+    let finish = Finish {
+        shared: Arc::clone(&shared),
+        stuck: &STUCK,
+    };
+    let panicked = std::thread::spawn(move || {
+        let _finish = finish;
+        panic!("a bug in a host function");
+    })
+    .join();
+    assert!(panicked.is_err());
+    assert_eq!(STUCK.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[test]
+fn no_file_operation_starts_after_the_deadline() {
+    let shared = Shared::new(Limits {
+        memory: MEMORY_LIMIT,
+        time: Duration::ZERO,
+    });
+    assert!(
+        shared.enter().is_none(),
+        "the grace period allows no new work"
+    );
+}
+
+#[test]
+fn a_hook_that_finishes_first_is_not_abandoned() {
+    let shared = Shared::new(Limits::default());
+    assert!(!shared.finish());
+    assert!(!shared.abandon());
+}
+
+#[test]
+fn too_many_stuck_hooks_refuse_the_next_one() {
+    static STUCK: AtomicUsize = AtomicUsize::new(0);
+    // Enough time to reach the sleep on a loaded runner, and a sleep that outlasts all the calls.
+    let limits = Limits {
+        memory: 8 * 1024 * 1024,
+        time: Duration::from_millis(500),
+    };
+    let s = script(
+        r#"
+        function f()
+            jtm.sleep(8000)
+            return "1"
+        end
+        "#,
+    )
+    .with_limits(limits)
+    .with_stuck_counter(&STUCK);
+    for stuck in 1..=MAX_STUCK {
+        assert!(matches!(
+            limit_of(s.format_interop("f", "f", "v", "1")),
+            Limit::Time(_)
+        ));
+        assert_eq!(STUCK.load(AtomicOrdering::SeqCst), stuck);
+    }
+    assert!(
+        matches!(
+            limit_of(s.format_interop("f", "f", "v", "1")),
+            Limit::Stuck(MAX_STUCK)
+        ),
+        "the stuck hooks were counted"
+    );
+    // Each abandoned thread is released when its sleep ends.
+    let start = Instant::now();
+    while STUCK.load(AtomicOrdering::SeqCst) > 0 {
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "stuck hooks never ended"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let quick = tight(r#"function f() return "1" end"#).with_stuck_counter(&STUCK);
+    assert_eq!(
+        quick
+            .format_interop("f", "f", "v", "1")
+            .unwrap_or_else(|e| panic!("{e}")),
+        "1"
+    );
 }
 
 // --- post_extract ---
@@ -499,6 +658,41 @@ const CONTEXT: PostExtract<'static> = PostExtract {
 
 fn post_extract(root: &Path, body: &str) -> Result<(), ScriptError> {
     script(&format!("function post(ctx)\n{body}\nend")).post_extract("post", root, &CONTEXT)
+}
+
+#[test]
+fn an_install_dir_jtm_cannot_open_is_an_io_error() {
+    let dir = install_dir();
+    let missing = dir.path().join("missing");
+    match post_extract(&missing, "") {
+        Err(ScriptError::Io { path, kind, .. }) => {
+            assert_eq!(path, missing);
+            assert_eq!(kind, std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected an IO error, got {other:?}"),
+    }
+}
+
+#[test]
+fn host_side_failures_say_jtm_could_not_run_the_hook() {
+    let io = ScriptError::Io {
+        hook: "post".to_owned(),
+        path: PathBuf::from("install"),
+        kind: std::io::ErrorKind::PermissionDenied,
+        message: "access denied".to_owned(),
+    };
+    assert_eq!(
+        io.to_string(),
+        "cannot run hook `post`: cannot access install: access denied"
+    );
+    let host = ScriptError::Host {
+        hook: "post".to_owned(),
+        message: "the script engine stopped unexpectedly".to_owned(),
+    };
+    assert_eq!(
+        host.to_string(),
+        "cannot run hook `post`: the script engine stopped unexpectedly"
+    );
 }
 
 #[test]
@@ -639,21 +833,266 @@ fn a_link_that_escapes_through_another_link_fails_the_hook() {
     assert!(is_path_limit(post_extract(dir.path(), "")));
 }
 
+/// Gives every directory under its path back `0o755` when dropped, so a test that fails while
+/// a directory is locked still leaves a temp dir that can be removed. Declare it after the
+/// temp dir, so it is dropped first.
+#[cfg(unix)]
+struct Unlock<'a>(&'a Path);
+
+#[cfg(unix)]
+impl Drop for Unlock<'_> {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let open = |path: &Path| fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+        let _ = open(self.0);
+        let _ = jtm_archive::tree::walk(self.0, |entry| {
+            if entry.kind.is_dir() {
+                let _ = open(&entry.path);
+            }
+            Ok::<(), jtm_archive::tree::ReadError>(())
+        });
+    }
+}
+
+#[cfg(unix)]
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::symlink_metadata(path)
+        .map(|m| m.permissions().mode() & 0o7777)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+#[test]
+fn chmod_keeps_files_readable_by_their_owner() {
+    let dir = install_dir();
+    for mode in [0, 0o200, 0o100, 0o377] {
+        // A mode jtm could not read is a limit breach, so catching it does not help.
+        let result = post_extract(
+            dir.path(),
+            &format!("pcall(jtm.fs.chmod, 'lib/nested/a.txt', {mode})"),
+        );
+        assert_eq!(
+            limit_of(result),
+            Limit::Mode {
+                path: "lib/nested/a.txt".to_owned(),
+                mode,
+            },
+            "{mode:#o}"
+        );
+    }
+    post_extract(
+        dir.path(),
+        "jtm.fs.chmod('README', 256) jtm.fs.chmod('bin/tool', 365)",
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[cfg(unix)]
+#[test]
+fn directories_the_hook_locks_get_their_owner_bits_back() {
+    let dir = install_dir();
+    let _unlock = Unlock(dir.path());
+    post_extract(
+        dir.path(),
+        "jtm.fs.chmod('lib/nested', 0) jtm.fs.chmod('lib', 0) jtm.fs.chmod('.', 365)",
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(mode_of(dir.path()), 0o755);
+    assert_eq!(mode_of(&dir.path().join("lib")), 0o700);
+    assert_eq!(mode_of(&dir.path().join("lib/nested")), 0o700);
+    // A hook that fails after locking a directory leaves one jtm can still remove.
+    let failed = post_extract(dir.path(), "jtm.fs.chmod('lib', 0) error('boom')");
+    assert!(
+        matches!(failed, Err(ScriptError::Failed { .. })),
+        "{failed:?}"
+    );
+    assert_eq!(mode_of(&dir.path().join("lib")), 0o700);
+}
+
+#[cfg(unix)]
+#[test]
+fn locking_a_directory_cannot_hide_a_link_moved_outside() {
+    let dir = install_dir();
+    let _unlock = Unlock(dir.path());
+    // `lib/nested/up` points at the root; moved up into `lib`, it points above the root.
+    std::os::unix::fs::symlink("../..", dir.path().join("lib/nested/up"))
+        .unwrap_or_else(|e| panic!("{e}"));
+    for lock in ["jtm.fs.chmod('lib', 0)", "jtm.fs.chmod('.', 73)"] {
+        let result = post_extract(
+            dir.path(),
+            &format!("jtm.fs.rename('lib/nested/up', 'lib/up') {lock}"),
+        );
+        match limit_of(result) {
+            Limit::Path { path, reason } => {
+                assert_eq!(path, "lib/up", "{lock}: {reason}");
+                assert!(
+                    reason.contains("outside the install dir"),
+                    "{lock}: {reason}"
+                );
+            }
+            other => panic!("{lock}: expected a containment failure, got {other:?}"),
+        }
+        fs::rename(dir.path().join("lib/up"), dir.path().join("lib/nested/up"))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_directory_fails_the_link_check() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = install_dir();
+    let _unlock = Unlock(dir.path());
+    let hidden = dir.path().join("lib/nested");
+    std::os::unix::fs::symlink("../../..", hidden.join("escape")).unwrap_or_else(|e| panic!("{e}"));
+    fs::set_permissions(&hidden, fs::Permissions::from_mode(0o000))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let readable = fs::read_dir(&hidden).is_ok();
+    // Without restoring modes first, so the check itself must fail closed.
+    match super::fs::check_links(dir.path()) {
+        Err(super::fs::Failure::Io { path, source }) if !readable => {
+            assert_eq!(path, hidden);
+            assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+        }
+        // Running as root, permissions do not stop the read; the escaping link is found.
+        Err(super::fs::Failure::Limit(Limit::Path { path, reason })) if readable => {
+            assert_eq!(path, "lib/nested/escape", "{reason}");
+            assert!(reason.contains("outside the install dir"), "{reason}");
+        }
+        other => panic!("readable: {readable}, got {other:?}"),
+    }
+}
+
 #[test]
 fn catching_a_memory_breach_does_not_help() {
     for source in [
         "function f() pcall(string.rep, 'x', 64 * 1024 * 1024) return '1' end",
         "function f() pcall(function() local t = {} for i = 1, 1e9 do t[i] = string.rep('x', 4096) .. i end end) return '1' end",
         "function f() xpcall(function() return string.rep('x', 64 * 1024 * 1024) end, function(e) return e end) return '1' end",
+        // A handler that raises again must not replace the breach with its own error.
+        "function f() xpcall(function() return string.rep('x', 64 * 1024 * 1024) end, function(e) error('hidden') end) return '1' end",
+        "function f() pcall(xpcall, function() return string.rep('x', 64 * 1024 * 1024) end, function(e) error({}) end) return '1' end",
+        // Running out of memory in the handler is a breach too.
+        "function f() xpcall(function() error('x') end, function(e) return string.rep('x', 64 * 1024 * 1024) end) return '1' end",
+        // So is one caught by nested protected calls.
+        "function f() pcall(pcall, pcall, string.rep, 'x', 64 * 1024 * 1024) return '1' end",
+        "function f() xpcall(pcall, function(e) return e end, string.rep, 'x', 64 * 1024 * 1024) return '1' end",
     ] {
-        assert!(
-            matches!(
-                limit_of(tight(source).format_interop("f", "f", "v", "1")),
-                Limit::Memory(_)
-            ),
-            "{source}"
-        );
+        let limit = limit_of(tight(source).format_interop("f", "f", "v", "1"));
+        assert!(matches!(limit, Limit::Memory(_)), "{source}: {limit:?}");
     }
+    // And one in a host function. Building and decoding the text takes long enough on a slow
+    // runner to pass a tight deadline first, so this case gets more time.
+    let source = "function f() local text = '[' .. string.rep('0,', 1000000) .. '0]' \
+                  pcall(jtm.json.decode, text) return '1' end";
+    let limit = limit_of(
+        script(source)
+            .with_limits(Limits {
+                memory: 8 * 1024 * 1024,
+                time: Duration::from_secs(30),
+            })
+            .format_interop("f", "f", "v", "1"),
+    );
+    assert!(matches!(limit, Limit::Memory(_)), "{limit:?}");
+}
+
+#[test]
+fn the_out_of_memory_message_alone_is_not_a_breach() {
+    assert_eq!(
+        ok(
+            "local okay, err = pcall(error, 'not enough memory', 0) return tostring(okay) .. ' ' .. err"
+        ),
+        "false not enough memory"
+    );
+    assert_eq!(
+        ok(
+            "local okay, err = xpcall(function() error('not enough memory', 0) end, function(e) return e end) \
+             return tostring(okay) .. ' ' .. err"
+        ),
+        "false not enough memory"
+    );
+    assert_eq!(
+        ok(
+            "local okay, err = xpcall(error, function(e) error('not enough memory', 0) end, 'x') \
+             return tostring(okay) .. ' ' .. err"
+        ),
+        "false error in error handling"
+    );
+}
+
+#[test]
+fn an_xpcall_handler_does_not_run_after_a_memory_breach() {
+    let dir = install_dir();
+    let result = post_extract(
+        dir.path(),
+        "xpcall(function() return string.rep('x', 512 * 1024 * 1024) end, function(e) jtm.fs.remove('README') end)",
+    );
+    assert!(matches!(limit_of(result), Limit::Memory(_)));
+    assert!(dir.path().join("README").is_file());
+}
+
+#[test]
+fn pcall_and_xpcall_need_their_arguments() {
+    assert_eq!(ok("return tostring(pcall(pcall))"), "false");
+    assert_eq!(ok("return tostring(pcall(xpcall, error))"), "false");
+    assert_eq!(ok("return tostring(pcall(xpcall, error, 42))"), "false");
+}
+
+#[test]
+fn nothing_runs_after_a_caught_limit_breach() {
+    for body in [
+        // A file mode that would lock jtm out.
+        "pcall(jtm.fs.chmod, 'README', 0) jtm.fs.remove('README')",
+        "xpcall(jtm.fs.chmod, function(e) jtm.fs.remove('README') end, 'README', 0)",
+        // The time limit.
+        "xpcall(function() while true do end end, function(e) jtm.fs.remove('README') end)",
+        "pcall(function() while true do end end) jtm.fs.remove('README')",
+    ] {
+        let dir = install_dir();
+        let result = post_extract(dir.path(), body);
+        assert!(
+            matches!(result, Err(ScriptError::Limit { .. })),
+            "{body}: {result:?}"
+        );
+        assert!(dir.path().join("README").is_file(), "{body}");
+    }
+}
+
+#[test]
+fn nothing_runs_after_a_caught_containment_breach() {
+    for body in [
+        // Neither the handler nor the code after the call may touch the install dir.
+        "xpcall(jtm.fs.remove, function(e) jtm.fs.remove('README') end, '../victim')",
+        "xpcall(jtm.fs.remove, function(e) return e end, '../victim') jtm.fs.remove('README')",
+        "pcall(jtm.fs.remove, '../victim') jtm.fs.remove('README')",
+        "pcall(pcall, jtm.fs.remove, '../victim') jtm.fs.remove('README')",
+        "pcall(xpcall, jtm.fs.remove, function(e) return e end, '../victim') \
+         jtm.fs.remove('README')",
+        // A breach in the handler counts too.
+        "xpcall(function() error('x') end, function(e) jtm.fs.remove('../victim') end) \
+         jtm.fs.remove('README')",
+        // As does one inside a call that then succeeds.
+        "pcall(function() pcall(jtm.fs.remove, '../victim') return 1 end) \
+         jtm.fs.remove('README')",
+    ] {
+        let dir = install_dir();
+        let result = post_extract(dir.path(), body);
+        assert!(is_path_limit(result), "{body}");
+        assert!(dir.path().join("README").is_file(), "{body}");
+    }
+}
+
+#[test]
+fn a_memory_breach_after_another_limit_still_stops_the_script() {
+    let dir = install_dir();
+    let result = post_extract(
+        dir.path(),
+        "pcall(jtm.fs.remove, '../victim') \
+         xpcall(function() return string.rep('x', 512 * 1024 * 1024) end, function(e) error('hidden') end) \
+         jtm.fs.remove('README')",
+    );
+    assert!(is_path_limit(result));
+    assert!(dir.path().join("README").is_file());
 }
 
 #[test]
@@ -675,5 +1114,49 @@ fn pcall_and_xpcall_still_catch_ordinary_errors() {
             "local okay, v = xpcall(function() error('x') end, function(e) return 'handled' end) return tostring(okay) .. ' ' .. v"
         ),
         "false handled"
+    );
+}
+
+#[test]
+fn pcall_and_xpcall_take_any_value_like_lua() {
+    // A value that cannot be called is an ordinary caught error.
+    assert_eq!(
+        ok("local okay, err = pcall(nil) return tostring(okay) .. ' ' .. type(err)"),
+        "false string"
+    );
+    assert_eq!(
+        ok("local okay = pcall(42, 'x') return tostring(okay)"),
+        "false"
+    );
+    // A callable table is called.
+    assert_eq!(
+        ok(
+            "local t = setmetatable({}, { __call = function(_, x) return x * 2 end }) \
+             local okay, v = pcall(t, 21) return tostring(okay) .. ' ' .. v"
+        ),
+        "true 42"
+    );
+    // An error value that is not a string reaches the script unchanged.
+    assert_eq!(
+        ok("local okay, err = pcall(error, { code = 7 }) return tostring(okay) .. ' ' .. err.code"),
+        "false 7"
+    );
+    assert_eq!(
+        ok(
+            "local okay, v = xpcall(function() error({ code = 8 }) end, function(e) return e.code end) \
+             return tostring(okay) .. ' ' .. v"
+        ),
+        "false 8"
+    );
+    // A host error is still seen as its message.
+    assert_eq!(
+        ok(
+            "local okay, err = pcall(jtm.json.decode, '{') return type(err) .. ' ' .. tostring(err:find('invalid JSON') ~= nil)"
+        ),
+        "string true"
+    );
+    assert_eq!(
+        ok("local _, t = xpcall(jtm.json.decode, function(e) return type(e) end, '{') return t"),
+        "string"
     );
 }

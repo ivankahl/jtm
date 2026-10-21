@@ -168,6 +168,7 @@ impl Home {
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("JTM_SESSION_")
                 || key.to_string_lossy().starts_with("JTM_PROJECT_")
+                || key == "JTM_HOOK_DIR"
             {
                 cmd.env_remove(key);
             }
@@ -801,6 +802,116 @@ fn an_unmet_java_requirement_is_a_warning() {
     let project = h.project(&[(".sdkmanrc", "springboot=3.3.5\n")]);
     let (_, value) = h.json(&project, &["current"]);
     assert!(codes(&value).is_empty(), "{value}");
+}
+
+/// Makes `fp-<name>` a user default whose installs cannot be listed: `tools/fp-<name>` becomes
+/// a file. The defaults file is written directly, so no link or junction points into it.
+fn break_default(h: &Home, name: &str, selector: &str) {
+    let state = h.home.path().join("state");
+    fs::create_dir_all(&state).unwrap();
+    fs::write(
+        state.join("defaults.toml"),
+        format!("[defaults]\n{} = \"{selector}\"\n", test_name(name)),
+    )
+    .unwrap();
+    let tools = h.home.path().join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(tools.join(test_name(name)), "not a directory").unwrap();
+}
+
+/// Asserts that `value` is a failure because the installs of `fp-<name>` cannot be read.
+fn assert_unreadable(code: i32, value: &Value, name: &str, args: &[&str]) {
+    assert_eq!(code, 4, "{args:?}: {value}");
+    assert_eq!(value["ok"], false, "{args:?}: {value}");
+    assert_eq!(value["error"]["code"], "E_IO", "{args:?}: {value}");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&test_name(name)),
+        "{args:?}: {value}"
+    );
+}
+
+/// A shell command that does nothing and exits 0.
+fn noop() -> Vec<&'static str> {
+    if cfg!(windows) {
+        vec!["cmd", "/c", "echo"]
+    } else {
+        vec!["sh", "-c", "true"]
+    }
+}
+
+#[test]
+fn a_requiring_tool_whose_installs_cannot_be_read_fails_the_command() {
+    let mut h = Home::new();
+    with_java(&mut h);
+    with_any(&mut h, "spring-boot-cli", &[("3.3.5", &[])]);
+    with_any(&mut h, "kotlin", &[("2.0.21", &[])]);
+    h.ok(&[
+        "install",
+        "fp-java@zulu:11",
+        "fp-java@temurin:21",
+        "fp-spring-boot-cli@3.3.5",
+    ]);
+    // Kotlin has requirements of its own, and only the defaults set it.
+    break_default(&h, "kotlin", "2.0");
+    let project = h.project(&[(".sdkmanrc", "java=11.0.25-zulu\nspringboot=3.3.5\n")]);
+
+    // jtm cannot tell which Kotlin is active, so it fails rather than check the other
+    // requirements without it or show Kotlin as not installed.
+    let mut exec = vec!["exec", "fp-java@temurin:21", "--"];
+    exec.extend(noop());
+    for args in [
+        vec!["current"],
+        vec!["current", "fp-kotlin"],
+        vec!["env"],
+        vec!["hook-env", "--shell", "bash"],
+        vec!["use", "fp-java@zulu:11"],
+        exec,
+    ] {
+        let (code, value) = h.json(&project, &args);
+        assert_unreadable(code, &value, "kotlin", &args);
+    }
+
+    // The hook fails at every prompt, not only on the directory change that shows warnings.
+    #[cfg(unix)]
+    {
+        let cwd = fs::canonicalize(&project).unwrap();
+        let output = h
+            .jtm(&project)
+            .env("JTM_HOOK_DIR", &cwd)
+            .args(["--json", "hook-env", "--shell", "bash"])
+            .output()
+            .unwrap();
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let args = ["hook-env (same directory)"];
+        assert_unreadable(output.status.code().unwrap(), &value, "kotlin", &args);
+    }
+}
+
+#[test]
+fn a_required_tool_whose_installs_cannot_be_read_fails_the_command() {
+    let mut h = Home::new();
+    with_java(&mut h);
+    with_any(&mut h, "spring-boot-cli", &[("3.3.5", &[])]);
+    h.ok(&["install", "fp-spring-boot-cli@3.3.5"]);
+    // The Java that Spring Boot CLI needs comes from the defaults, and cannot be read.
+    break_default(&h, "java", "zulu:11");
+    let project = h.project(&[(".sdkmanrc", "springboot=3.3.5\n")]);
+
+    let mut exec = vec!["exec", "fp-spring-boot-cli@3.3.5", "--"];
+    exec.extend(noop());
+    for args in [
+        vec!["current"],
+        vec!["env"],
+        vec!["hook-env", "--shell", "bash"],
+        vec!["use", "fp-spring-boot-cli@3.3.5"],
+        exec,
+    ] {
+        let (code, value) = h.json(&project, &args);
+        assert_unreadable(code, &value, "java", &args);
+    }
 }
 
 // --- real tools ---

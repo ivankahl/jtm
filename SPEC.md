@@ -138,6 +138,8 @@ The active version of a tool comes from the first layer that sets it, in a fixed
 4. **User default:** set by `jtm default`, stored in user config.
 5. **None:** jtm does not manage the tool, and whatever is already on `PATH` runs.
 
+Any command that needs a tool's installs and cannot read them, such as for lack of permission, fails with `E_IO` or `E_PERMISSION`; jtm never treats an install dir it cannot read as "not installed", since that could silently run whatever is on `PATH` or report misleading state.
+
 ### Resolving a spec to a version
 
 1. Split the spec into variant, then version or alias. A missing variant uses the plugin's `default_variant`.
@@ -236,7 +238,7 @@ jtm-plugin-maven/
 | `[index]` | Yes | `url` template, `signing_keys` (Ed25519 public keys: the plugin's trust anchors), `threshold` (how many signing keys must sign; default 1), `keys_url` (optional `https` URL of a keys file signed by the signing keys), `format` |
 | `[layout]` | Yes | How to find the tool home inside the archive: `strip_components`, a number of leading directories to strip or `"auto"` (strip a single top-level directory, the default), per-OS `home_subdir` table keyed by `windows`, `macos` or `linux` (for example `home_subdir = { macos = "Contents/Home" }` for JDKs), `bin_dirs` |
 | `[env]` | No | Variables to set when active, using `{home}` and `{bin}` placeholders, for example `JAVA_HOME = "{home}"` |
-| `[requires]` | No | Runtime dependencies, for example Maven requires `java >= 8`; used for `W_REQUIRES_UNMET` warnings by `current`, `exec`, `env`, `use` and the shell hook, never auto-installs |
+| `[requires]` | No | Runtime dependencies, for example Maven requires `java >= 8`; used for `W_REQUIRES_UNMET` warnings by `current`, `exec`, `env`, `use` and the shell hook, never auto-installs; an unmet requirement only ever warns, but a tool whose installs cannot be read fails the command, as in every other command (section 5) |
 | `[[interop]]` | No | Pin files this plugin reads or writes, the parser (`keyvalue`, `tool-versions`, `single-line`, or the read-only `wrapper` with a `pattern` such as `gradle-{version}-*.zip` and an optional `sha256_key` naming the checksum property), the key, and a mapping table or script function. `keyvalue` maps a version suffix (`21.0.5-tem`); `tool-versions` and `single-line` take an optional variant prefix (`temurin-21`) |
 | `[hooks]` | No | Names of `plugin.lua` functions for `resolve_alias`, `parse_interop`, `format_interop`, `compare_versions`, `post_extract`, and `script_sha256`, the SHA-256 of `plugin.lua`, required whenever a hook is named. A script that does not match is refused (`E_PLUGIN_INVALID`), and a `plugin.lua` no hook names is never loaded |
 | `[ide]` | No | `maven_toolchain` (the `toolchains.xml` `<type>`, such as `jdk`) and `gradle_installations`, which tell `jtm ide sync` to offer this tool's installs to Maven and Gradle |
@@ -292,7 +294,7 @@ key = "maven"
 Plugin hooks are written in Lua, run by the Luau dialect through the `mlua` crate (features `luau` and `vendored`). Luau is used instead of stock Lua 5.4 because it has a built-in sandbox mode designed for untrusted scripts, and plugin authors still write familiar Lua 5.1-style code. Only the `base`, `string`, `table`, `math` and `utf8` libraries are loaded; `io`, `os`, `debug`, `package`, `require` and loading code from strings are unavailable. The trade-off is that building jtm needs a C++ compiler, which every CI runner already has.
 
 - **Host API, read-only by default:** version parsing and comparison, string and regex helpers, JSON parsing, the current platform, and the parsed manifest.
-- **`post_extract` only:** may rename, move, delete or `chmod` files, restricted to paths inside the temporary install dir. Any path that resolves outside it is rejected.
+- **`post_extract` only:** may rename, move, delete or `chmod` files, restricted to paths inside the temporary install dir. Any path that resolves outside it is rejected. A file keeps at least `0o400`, so jtm can still read it; any other mode fails the hook with `E_PLUGIN_SCRIPT_LIMIT`, even if the script catches the error. A directory may take any mode, and once the hook returns, even with an error, jtm gives every directory back `0o700` for its owner, so it can still check, move and remove it. The mode is checked on every OS; only applying it is skipped on Windows. After the hook, every link must resolve inside the install dir. A directory that cannot be read still fails that check, since a link could hide in it, with `E_IO` or `E_PERMISSION`, because it is a failure of the host, not of the plugin.
 - **Never available:** network access, process spawning, environment variables, or reading outside the install dir. All downloads go through the core so they are always verified.
 - **Limits:** 64 MiB of memory per hook (`set_memory_limit`), and a 2-second wall clock enforced through Luau's interrupt callback. Exceeding a limit fails the install with error `E_PLUGIN_SCRIPT_LIMIT`.
 

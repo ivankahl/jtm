@@ -395,7 +395,7 @@ impl<'a> Session<'a> {
         let dest = id.install_dir(&self.dirs)?;
         if options.dry_run {
             let installed =
-                !options.force && Receipt::read(&dest).is_some_and(|r| r.sha256 == entry.sha256);
+                !options.force && Receipt::load(&dest)?.is_some_and(|r| r.sha256 == entry.sha256);
             let status = if installed {
                 Status::AlreadyInstalled
             } else {
@@ -486,14 +486,11 @@ impl<'a> Session<'a> {
         let tools = self.dirs.tools();
         let plugin_dirs: Vec<PathBuf> = match tool {
             Some(tool) => vec![tools.join(dir_name(tool))],
-            None => read_dirs(&tools)?
-                .into_iter()
-                .filter(|p| !hidden(p))
-                .collect(),
+            None => read_dirs(&tools)?,
         };
         for plugin_dir in plugin_dirs {
             for dir in read_dirs(&plugin_dir)? {
-                let Some(receipt) = Receipt::read(&dir) else {
+                let Some(receipt) = Receipt::load(&dir)? else {
                     continue;
                 };
                 if tool.is_some_and(|t| t != receipt.plugin) {
@@ -588,17 +585,20 @@ impl<'a> Session<'a> {
         }
         let versions = chosen
             .into_iter()
-            .map(|e| AvailableItem {
-                variant: e.variant.clone(),
-                version: e.version.clone(),
-                tags: e.tags.clone(),
-                installed: VersionId::of(tool, e)
-                    .install_dir(&self.dirs)
-                    .ok()
-                    .and_then(|p| Receipt::read(&p))
-                    .is_some_and(|r| r.sha256 == e.sha256),
+            .map(|e| {
+                // A receipt that exists and cannot be read fails, rather than show "not installed".
+                let receipt = match VersionId::of(tool, e).install_dir(&self.dirs) {
+                    Ok(dir) => Receipt::load(&dir)?,
+                    Err(_) => None,
+                };
+                Ok(AvailableItem {
+                    variant: e.variant.clone(),
+                    version: e.version.clone(),
+                    tags: e.tags.clone(),
+                    installed: receipt.is_some_and(|r| r.sha256 == e.sha256),
+                })
             })
-            .collect();
+            .collect::<Result<_>>()?;
         let aliases = manifest
             .aliases
             .keys()
@@ -737,20 +737,19 @@ impl<'a> Session<'a> {
 
     /// The installed versions of `tool`, highest first per variant.
     pub fn installed(&self, tool: &str) -> Result<Vec<Installed>> {
-        Ok(self
-            .list(Some(tool))?
+        self.list(Some(tool))?
             .into_iter()
             .map(|item| {
                 let dir = PathBuf::from(&item.version.path);
-                let home = install_home(&dir);
-                Installed {
+                let home = install_home(&dir)?;
+                Ok(Installed {
                     variant: item.version.id.variant,
                     version: item.version.id.version,
                     dir,
                     home,
-                }
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// The installed version `selector` picks for `plugin`, as activation uses it.
@@ -789,7 +788,7 @@ impl<'a> Session<'a> {
         };
         let (item, warnings) = self.install(spec, install_options, progress)?;
         let dir = PathBuf::from(&item.version.path);
-        let home = install_home(&dir);
+        let home = install_home(&dir)?;
         let installed = Installed {
             variant: item.version.id.variant,
             version: item.version.id.version,
@@ -914,9 +913,10 @@ pub fn pin_warnings(pins: &ProjectPins) -> Vec<Warning> {
         .collect()
 }
 
-/// The tool home of the install at `dir`, from its receipt, or `dir` itself without one.
-pub fn install_home(dir: &Path) -> PathBuf {
-    Receipt::read(dir).map_or_else(|| dir.to_path_buf(), |r| home_dir(dir, &r.home))
+/// The tool home of the install at `dir`, from its receipt, or `dir` itself without one. A
+/// receipt that cannot be read is an error, never a fallback to `dir`.
+pub fn install_home(dir: &Path) -> Result<PathBuf> {
+    Ok(Receipt::load(dir)?.map_or_else(|| dir.to_path_buf(), |r| home_dir(dir, &r.home)))
 }
 
 /// The tool home of an install: `dir` plus the receipt's `/`-separated `home`.
@@ -999,18 +999,31 @@ fn hidden(path: &Path) -> bool {
         .is_some_and(|n| n.to_string_lossy().starts_with('.'))
 }
 
-/// The subdirectories of `dir`; none when it does not exist.
+/// The subdirectories of `dir` whose names do not start with `.`; none when it does not
+/// exist. An entry that cannot be read is an error, never skipped, so an install jtm cannot
+/// see is not passed off as missing.
 fn read_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(JtmError::io(dir, e)),
     };
-    let mut dirs: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .map(|e| e.path())
-        .collect();
+    let mut dirs = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| JtmError::io(dir, e))?;
+        let path = entry.path();
+        // Temp, trash and lock dirs are never installs, so they are skipped unread.
+        if hidden(&path) {
+            continue;
+        }
+        if entry
+            .file_type()
+            .map_err(|e| JtmError::io(&path, e))?
+            .is_dir()
+        {
+            dirs.push(path);
+        }
+    }
     dirs.sort();
     Ok(dirs)
 }

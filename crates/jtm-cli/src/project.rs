@@ -200,7 +200,7 @@ pub(crate) fn current(ctx: &Context, tool: Option<&str>) -> Result<Outcome<Curre
     let here = here(&session)?;
     let tools = here.current(tool)?;
     let mut found = here.warnings();
-    found.extend(here.requirement_warnings(&[])?);
+    found.extend(here.requirement_warnings(&[], &tools)?);
     Ok(Outcome {
         command: "current",
         changed: false,
@@ -250,7 +250,7 @@ pub(crate) fn exec(
         exec.push((spec.tool.clone(), found));
     }
     let (overrides, mut found) = here.overrides(&exec)?;
-    found.extend(here.requirement_warnings(&exec)?);
+    found.extend(here.requirement_warnings(&exec, &[])?);
     let changes = here.plan(&|key| std::env::var(key).ok(), &overrides);
     let mut child = build_command(&here, command, &changes)?;
     let outcome = |exit_code: i32, stdout: String, stderr: String| Outcome {
