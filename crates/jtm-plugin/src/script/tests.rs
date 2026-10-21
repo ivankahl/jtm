@@ -977,17 +977,23 @@ fn catching_a_memory_breach_does_not_help() {
         // So is one caught by nested protected calls.
         "function f() pcall(pcall, pcall, string.rep, 'x', 64 * 1024 * 1024) return '1' end",
         "function f() xpcall(pcall, function(e) return e end, string.rep, 'x', 64 * 1024 * 1024) return '1' end",
-        // And one in a host function.
-        "function f() local text = '[' .. string.rep('0,', 1000000) .. '0]' pcall(jtm.json.decode, text) return '1' end",
     ] {
-        assert!(
-            matches!(
-                limit_of(tight(source).format_interop("f", "f", "v", "1")),
-                Limit::Memory(_)
-            ),
-            "{source}"
-        );
+        let limit = limit_of(tight(source).format_interop("f", "f", "v", "1"));
+        assert!(matches!(limit, Limit::Memory(_)), "{source}: {limit:?}");
     }
+    // And one in a host function. Building and decoding the text takes long enough on a slow
+    // runner to pass a tight deadline first, so this case gets more time.
+    let source = "function f() local text = '[' .. string.rep('0,', 1000000) .. '0]' \
+                  pcall(jtm.json.decode, text) return '1' end";
+    let limit = limit_of(
+        script(source)
+            .with_limits(Limits {
+                memory: 8 * 1024 * 1024,
+                time: Duration::from_secs(30),
+            })
+            .format_interop("f", "f", "v", "1"),
+    );
+    assert!(matches!(limit, Limit::Memory(_)), "{limit:?}");
 }
 
 #[test]
