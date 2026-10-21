@@ -236,7 +236,7 @@ pub enum JtmError {
     PluginSigningKeys { plugin: String, message: String },
 
     /// An extracted archive does not have the layout the plugin's manifest describes, such as
-    /// a missing `home_subdir` or a declared executable that is not there.
+    /// a missing `home_subdir` or a bin dir with no files.
     #[error("the `{plugin}` archive does not match its manifest: {message}")]
     LayoutMismatch { plugin: String, message: String },
 
@@ -377,8 +377,22 @@ pub enum JtmError {
     #[error("{action} needs confirmation, but prompts are off; rerun with {resolve}")]
     InputRequired { action: String, resolve: String },
 
-    #[error("plugin `{plugin}` script exceeded its {limit} limit")]
-    PluginScriptLimit { plugin: String, limit: String },
+    /// A `plugin.lua` hook broke a sandbox limit: memory, time or install dir containment.
+    #[error("plugin `{plugin}` hook `{hook}` stopped at a sandbox limit: {limit}")]
+    PluginScriptLimit {
+        plugin: String,
+        hook: String,
+        limit: String,
+    },
+
+    /// A `plugin.lua` hook does not compile, is missing, raised an error or returned the wrong
+    /// thing.
+    #[error("plugin `{plugin}` hook `{hook}` failed: {message}")]
+    PluginScript {
+        plugin: String,
+        hook: String,
+        message: String,
+    },
 
     #[error("{} is in use", path.display())]
     InUse { path: PathBuf },
@@ -410,7 +424,10 @@ impl JtmError {
             JtmError::Usage { .. } | JtmError::InvalidSpec { .. } | JtmError::Config { .. } => {
                 ErrorCode::Usage
             }
+            // SPEC-QUESTION: section 12 has no code for a plugin script that fails without
+            // breaking a limit. The plugin is broken, so it is reported as an invalid plugin.
             JtmError::InvalidManifest { .. }
+            | JtmError::PluginScript { .. }
             | JtmError::PluginSigningKeys { .. }
             | JtmError::LayoutMismatch { .. } => ErrorCode::PluginInvalid,
             JtmError::ToolUnknown { .. } | JtmError::PinToolUnknown { .. } => {
@@ -607,9 +624,23 @@ impl JtmError {
                 ("action", action.as_str().into()),
                 ("resolve", resolve.as_str().into()),
             ]),
-            JtmError::PluginScriptLimit { plugin, limit } => obj([
+            JtmError::PluginScriptLimit {
+                plugin,
+                hook,
+                limit,
+            } => obj([
                 ("plugin", plugin.as_str().into()),
+                ("hook", hook.as_str().into()),
                 ("limit", limit.as_str().into()),
+            ]),
+            JtmError::PluginScript {
+                plugin,
+                hook,
+                message,
+            } => obj([
+                ("plugin", plugin.as_str().into()),
+                ("hook", hook.as_str().into()),
+                ("message", message.as_str().into()),
             ]),
             JtmError::InUse { path: p }
             | JtmError::Permission { path: p, .. }
@@ -651,6 +682,25 @@ fn key_prefix(key: &str) -> String {
         String::new()
     } else {
         format!("`{key}`: ")
+    }
+}
+
+impl JtmError {
+    /// The error for a failed hook of `plugin`.
+    pub fn script(plugin: &str, err: jtm_plugin::script::ScriptError) -> JtmError {
+        use jtm_plugin::script::ScriptError as S;
+        match err {
+            S::Limit { hook, limit } => JtmError::PluginScriptLimit {
+                plugin: plugin.to_owned(),
+                hook,
+                limit: limit.to_string(),
+            },
+            S::Invalid { hook, message } | S::Failed { hook, message } => JtmError::PluginScript {
+                plugin: plugin.to_owned(),
+                hook,
+                message,
+            },
+        }
     }
 }
 

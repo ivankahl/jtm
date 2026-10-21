@@ -1,4 +1,4 @@
-# expect: executables.unix[0]
+# expect: hooks.script_sha256
 schema = 1
 name = "demo"
 display_name = "Demo Tool"
@@ -22,9 +22,8 @@ format = 1
 strip_components = 1
 bin_dirs = ["bin"]
 
-[executables]
-unix = ["bin/demo"]
-windows = ["demo.exe"]
-
 [env]
 DEMO_HOME = "{home}"
+
+[hooks]
+script_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

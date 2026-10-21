@@ -113,10 +113,6 @@ format = 1
 [layout]
 bin_dirs = ["bin"]
 
-[executables]
-unix = ["demo"]
-windows = ["demo.cmd"]
-
 [env]
 DEMO_HOME = "{{home}}"
 

@@ -1,4 +1,4 @@
-# expect: executables
+# expect: hooks.script_sha256
 schema = 1
 name = "demo"
 display_name = "Demo Tool"
@@ -22,7 +22,9 @@ format = 1
 strip_components = 1
 bin_dirs = ["bin"]
 
-[executables]
-
 [env]
 DEMO_HOME = "{home}"
+
+[hooks]
+post_extract = "post"
+script_sha256 = "ABC"

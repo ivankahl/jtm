@@ -26,6 +26,8 @@ pub const RESERVED_NAMES: &[&str] = &["marketplace"];
 pub const ENV_PLACEHOLDERS: &[&str] = &["home", "bin"];
 /// OS names allowed as keys in per-OS tables.
 pub const OS_NAMES: &[&str] = &["windows", "macos", "linux"];
+/// The platform of an index whose artifacts run on every platform.
+pub const ANY_PLATFORM: &str = "any";
 
 /// A validated plugin manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -43,7 +45,6 @@ pub struct Manifest {
     pub aliases: BTreeMap<String, Alias>,
     pub index: Index,
     pub layout: Layout,
-    pub executables: Executables,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// Other tools this one needs at runtime, with a version requirement such as `>=8`.
@@ -130,6 +131,22 @@ impl Index {
     pub fn threshold(&self) -> u32 {
         self.threshold.unwrap_or(1)
     }
+
+    /// Whether the plugin publishes one index for every platform: its URL has neither `{os}`
+    /// nor `{arch}`, so it can only name one file. Such an index says `"platform": "any"`.
+    pub fn platform_independent(&self) -> bool {
+        !self.url.contains("{os}") && !self.url.contains("{arch}")
+    }
+
+    /// The platform to request this plugin's index for on `platform`: [`ANY_PLATFORM`] for a
+    /// platform-independent plugin, else `platform` itself.
+    pub fn index_platform<'a>(&self, platform: &'a str) -> &'a str {
+        if self.platform_independent() {
+            ANY_PLATFORM
+        } else {
+            platform
+        }
+    }
 }
 
 /// `[layout]`.
@@ -160,37 +177,6 @@ pub enum StripComponents {
     #[default]
     Auto,
     Count(u32),
-}
-
-/// `[executables]`: file names per OS. `macos` and `linux` take precedence over `unix`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Executables {
-    #[serde(default)]
-    pub windows: Vec<String>,
-    #[serde(default)]
-    pub unix: Vec<String>,
-    #[serde(default)]
-    pub macos: Vec<String>,
-    #[serde(default)]
-    pub linux: Vec<String>,
-}
-
-impl Executables {
-    /// The executables the tool provides on `os` (`windows`, `macos` or `linux`).
-    pub fn for_os(&self, os: &str) -> &[String] {
-        let specific = match os {
-            "windows" => return &self.windows,
-            "macos" => &self.macos,
-            "linux" => &self.linux,
-            _ => return &[],
-        };
-        if specific.is_empty() {
-            &self.unix
-        } else {
-            specific
-        }
-    }
 }
 
 /// One `[[interop]]` entry: a pin file this plugin reads and writes.
@@ -232,7 +218,7 @@ pub enum InteropParser {
     Wrapper,
 }
 
-/// `[hooks]`: names of `plugin.lua` functions.
+/// `[hooks]`: names of `plugin.lua` functions, and the script's hash.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Hooks {
@@ -241,6 +227,22 @@ pub struct Hooks {
     pub format_interop: Option<String>,
     pub compare_versions: Option<String>,
     pub post_extract: Option<String>,
+    /// Lowercase hex SHA-256 of `plugin.lua`, required when any hook is named. The manifest's
+    /// own hash is what receipts and `jtm.lock` record, so this pins the script too.
+    pub script_sha256: Option<String>,
+}
+
+impl Hooks {
+    /// Every hook as `(key, function)`, in manifest order.
+    pub fn named(&self) -> [(&'static str, Option<&str>); 5] {
+        [
+            ("resolve_alias", self.resolve_alias.as_deref()),
+            ("parse_interop", self.parse_interop.as_deref()),
+            ("format_interop", self.format_interop.as_deref()),
+            ("compare_versions", self.compare_versions.as_deref()),
+            ("post_extract", self.post_extract.as_deref()),
+        ]
+    }
 }
 
 /// `[ide]`: how `jtm ide sync` offers this tool's installs to build tools (SPEC.md section 7).
@@ -340,7 +342,6 @@ impl Manifest {
         self.validate_aliases(p);
         self.validate_index(p);
         self.validate_layout(p);
-        self.validate_executables(p);
         self.validate_env(p);
         self.validate_requires(p);
         self.validate_interop(p);
@@ -519,32 +520,6 @@ impl Manifest {
         }
     }
 
-    fn validate_executables(&self, p: &mut Problems) {
-        let exe = &self.executables;
-        let lists = [
-            ("windows", &exe.windows),
-            ("unix", &exe.unix),
-            ("macos", &exe.macos),
-            ("linux", &exe.linux),
-        ];
-        if lists.iter().all(|(_, list)| list.is_empty()) {
-            p.push("executables", "list at least one executable");
-        }
-        for (os, list) in lists {
-            for (i, name) in list.iter().enumerate() {
-                if !is_file_name(name) {
-                    p.push(
-                        format!("executables.{os}[{i}]"),
-                        format!(
-                            "`{name}` must be a plain file name not starting with `-`, such as \
-                             `mvn` or `mvn.cmd`"
-                        ),
-                    );
-                }
-            }
-        }
-    }
-
     fn validate_env(&self, p: &mut Problems) {
         // Windows compares variable names case-insensitively, so `JAVA_HOME` and `java_home`
         // would set the same variable.
@@ -678,14 +653,22 @@ impl Manifest {
     }
 
     fn validate_hooks(&self, p: &mut Problems) {
-        let hooks = &self.hooks;
-        for (name, function) in [
-            ("resolve_alias", &hooks.resolve_alias),
-            ("parse_interop", &hooks.parse_interop),
-            ("format_interop", &hooks.format_interop),
-            ("compare_versions", &hooks.compare_versions),
-            ("post_extract", &hooks.post_extract),
-        ] {
+        let named = self.hooks.named().iter().any(|(_, f)| f.is_some());
+        match (&self.hooks.script_sha256, named) {
+            (None, true) => p.push(
+                "hooks.script_sha256",
+                "hooks need the SHA-256 of plugin.lua, so a changed script is detected",
+            ),
+            (Some(_), false) => p.push(
+                "hooks.script_sha256",
+                "names no hooks, so there is no plugin.lua to check",
+            ),
+            (Some(hash), true) if !is_sha256_hex(hash) => {
+                p.push("hooks.script_sha256", "must be 64 lowercase hex characters")
+            }
+            _ => {}
+        }
+        for (name, function) in self.hooks.named() {
             if let Some(function) = function
                 && !is_lua_identifier(function)
             {
@@ -727,6 +710,20 @@ pub enum Comparator {
     Ge,
     Lt,
     Le,
+}
+
+impl Comparator {
+    /// Whether a version that compares as `order` against the requirement's version meets it.
+    pub fn holds(self, order: std::cmp::Ordering) -> bool {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        match self {
+            Comparator::Eq => order == Equal,
+            Comparator::Gt => order == Greater,
+            Comparator::Ge => order != Less,
+            Comparator::Lt => order == Less,
+            Comparator::Le => order != Greater,
+        }
+    }
 }
 
 /// Parses a requirement such as `>=8` or `>=17, <22` into comparisons that must all hold.
@@ -927,18 +924,6 @@ fn check_relative_path(p: &mut Problems, path: &str, value: &str, allow_dot: boo
     }
 }
 
-/// A plain file name. It cannot start with `-`, so it is never read as an option when it reaches
-/// a command line.
-fn is_file_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('-')
-        && name != "."
-        && name != ".."
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'))
-}
-
 fn is_interop_text(text: &str) -> bool {
     !text.is_empty()
         && text
@@ -968,6 +953,10 @@ fn reserved_env(name: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn is_sha256_hex(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn is_lua_identifier(name: &str) -> bool {

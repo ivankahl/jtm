@@ -52,8 +52,6 @@ fn spec_maven_example_parses() {
     assert_eq!(m.index.keys_url, None);
     assert_eq!(m.layout.strip_components, StripComponents::Count(1));
     assert_eq!(m.layout.bin_dirs, ["bin"]);
-    assert_eq!(m.executables.for_os("linux"), ["mvn", "mvnDebug"]);
-    assert_eq!(m.executables.for_os("windows"), ["mvn.cmd", "mvnDebug.cmd"]);
     assert_eq!(m.env["MAVEN_HOME"], "{home}");
     assert_eq!(m.requires["java"], ">=8");
     assert_eq!(m.interop[0].parser, InteropParser::Keyvalue);

@@ -27,7 +27,7 @@ use crate::install::{self, Archives, InstallRequest, Progress, Receipt, Status, 
 use crate::links;
 use crate::pins::{ProjectPins, W_PIN_CONFLICT};
 use crate::platform::Platform;
-use crate::plugins::{BUILTIN, Plugin, Registry};
+use crate::plugins::{Plugin, Registry};
 use crate::project::PROJECT_FILE;
 use crate::spec::{Selector, ToolSpec};
 
@@ -185,6 +185,10 @@ impl<'a> Session<'a> {
         let dirs = Dirs::for_context(ctx)?;
         let cwd = std::env::current_dir().ok();
         let config = load_config(&dirs, cwd.as_deref(), &|key| std::env::var_os(key))?;
+        // The working copy is only for reading, so failing to repair it never fails a command.
+        if let Err(err) = crate::plugins::sync_working_copy(&dirs, ctx.builtin) {
+            tracing::debug!(%err, "cannot update the builtin plugin working copy");
+        }
         Session::new(ctx, dirs, config.settings, Platform::detect()?)
     }
 
@@ -237,7 +241,7 @@ impl<'a> Session<'a> {
     pub fn registry(&self) -> Registry<'_> {
         Registry {
             dirs: &self.dirs,
-            builtin: BUILTIN,
+            builtin: self.ctx.builtin,
         }
     }
 
@@ -281,7 +285,7 @@ impl<'a> Session<'a> {
         let mut index = loader.load(
             &IndexSources {
                 plugin: name,
-                platform: platform.as_str(),
+                platform: manifest.index.index_platform(platform.as_str()),
                 remote_url: &remote_url,
                 override_url,
             },
@@ -296,7 +300,7 @@ impl<'a> Session<'a> {
     /// Whether a spec that local data cannot resolve may refresh the index (SPEC.md section
     /// 8): never offline, in JSON mode or under CI, and otherwise per `index.auto_refresh`,
     /// once the cached copy is older than `index.ttl_hours`.
-    fn may_auto_refresh(&self, plugin: &str, platform: Platform) -> bool {
+    fn may_auto_refresh(&self, plugin: &Plugin, platform: Platform) -> bool {
         if self.ctx.offline || self.ctx.json || self.ctx.ci {
             return false;
         }
@@ -306,7 +310,13 @@ impl<'a> Session<'a> {
             AutoRefresh::Tty => self.ctx.interactive,
         };
         let ttl = Duration::from_secs(u64::from(self.settings.index.ttl_hours) * 3600);
-        let stale = fs::metadata(cache_path(&self.dirs, plugin, platform.as_str()))
+        let index = &plugin.manifest.index;
+        let cached = cache_path(
+            &self.dirs,
+            &plugin.manifest.name,
+            index.index_platform(platform.as_str()),
+        );
+        let stale = fs::metadata(cached)
             .and_then(|m| m.modified())
             .map_or(true, |at| {
                 SystemTime::now().duration_since(at).unwrap_or_default() >= ttl
@@ -327,9 +337,7 @@ impl<'a> Session<'a> {
         match select(spec, plugin, &index.index.entries) {
             Ok(entry) => Ok((entry.clone(), index)),
             Err(err)
-                if !refresh
-                    && is_not_found(&err)
-                    && self.may_auto_refresh(&spec.tool, platform) =>
+                if !refresh && is_not_found(&err) && self.may_auto_refresh(plugin, platform) =>
             {
                 tracing::info!(tool = %spec.tool, "refreshing the index to resolve the spec");
                 let index = self.index(plugin, platform, true)?;
@@ -395,6 +403,10 @@ impl<'a> Session<'a> {
             };
             return Ok((item(status, &dest, &entry.url), warnings));
         }
+        let script = match plugin.manifest.hooks.post_extract {
+            Some(_) => plugin.script(self.platform)?,
+            None => None,
+        };
         let request = InstallRequest {
             manifest: &plugin.manifest,
             manifest_sha256: &plugin.sha256,
@@ -402,6 +414,7 @@ impl<'a> Session<'a> {
             platform: self.platform,
             index_sequence,
             force: options.force,
+            script: script.as_ref(),
         };
         let limits = jtm_archive::Limits {
             max_bytes: self.settings.extract.max_bytes,

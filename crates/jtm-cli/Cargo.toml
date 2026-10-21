@@ -24,7 +24,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 jtm-archive = { workspace = true, features = ["testing"] }
+tar.workspace = true
 tokio.workspace = true
 wiremock.workspace = true
 assert_cmd.workspace = true

@@ -38,8 +38,8 @@ pub enum ResolveError {
         value: String,
     },
 
-    /// Script aliases and script version schemes need the Luau engine, which is not available
-    /// yet.
+    /// Script aliases and script version schemes run the plugin's Lua hooks, which resolution
+    /// does not call yet (third-party script plugins arrive with the marketplace, M9).
     #[error("resolving `{spec}` for `{tool}` needs a plugin script, which this jtm cannot run yet")]
     ScriptUnsupported { tool: String, spec: String },
 }

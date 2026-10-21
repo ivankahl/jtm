@@ -17,9 +17,16 @@ signing_keys = ["{key}"]
 format = 1
 [layout]
 bin_dirs = ["bin"]
-[executables]
-unix = ["demo"]
 "#
+    )
+}
+
+/// The test manifest with a `post_extract` hook whose script is `source`.
+fn with_hook(source: &str) -> String {
+    format!(
+        "{}[hooks]\npost_extract = \"post\"\nscript_sha256 = \"{}\"\n",
+        manifest("acme/widget"),
+        jtm_security::sha256_hex(source.as_bytes())
     )
 }
 
@@ -56,7 +63,11 @@ fn builtin_manifests_win_and_are_preapproved() {
     let (_home, dirs) = dirs();
     add(&dirs, "demo@abc", &manifest("demo"));
     let text: &'static str = Box::leak(manifest("demo").into_boxed_str());
-    let builtin = [BuiltinManifest { name: "demo", text }];
+    let builtin = [BuiltinManifest {
+        name: "demo",
+        text,
+        script: None,
+    }];
     let registry = Registry {
         dirs: &dirs,
         builtin: &builtin,
@@ -104,4 +115,113 @@ fn several_revisions_are_refused() {
         builtin: &[],
     };
     assert_eq!(registry.find("demo").unwrap_err().code(), "E_USAGE");
+}
+
+#[test]
+fn external_plugins_read_their_script() {
+    let (_home, dirs) = dirs();
+    let source = "function post() end";
+    add(&dirs, "acme--widget@abc123", &with_hook(source));
+    let registry = Registry {
+        dirs: &dirs,
+        builtin: &[],
+    };
+    let err = registry.find("acme/widget").unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    assert!(err.to_string().contains("plugin.lua"), "{err}");
+
+    fs::write(
+        dirs.plugins().join("acme--widget@abc123/plugin.lua"),
+        source,
+    )
+    .unwrap();
+    let plugin = registry.find("acme/widget").unwrap();
+    assert_eq!(plugin.script.as_deref(), Some(source));
+    assert!(
+        plugin
+            .script(crate::platform::Platform::LinuxX64)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn a_script_that_does_not_compile_is_an_invalid_plugin() {
+    let (_home, dirs) = dirs();
+    add(&dirs, "acme--widget@abc123", &with_hook("function ("));
+    fs::write(
+        dirs.plugins().join("acme--widget@abc123/plugin.lua"),
+        "function (",
+    )
+    .unwrap();
+    let registry = Registry {
+        dirs: &dirs,
+        builtin: &[],
+    };
+    let plugin = registry.find("acme/widget").unwrap();
+    let err = plugin
+        .script(crate::platform::Platform::LinuxX64)
+        .unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+}
+
+#[test]
+fn a_script_that_is_not_utf8_or_too_large_is_an_invalid_plugin() {
+    let (_home, dirs) = dirs();
+    add(&dirs, "acme--widget@abc123", &manifest("acme/widget"));
+    let script = dirs.plugins().join("acme--widget@abc123/plugin.lua");
+    let registry = Registry {
+        dirs: &dirs,
+        builtin: &[],
+    };
+    for bytes in [vec![0xff, 0xfe], vec![b'-'; 1024 * 1024 + 1]] {
+        fs::write(&script, bytes).unwrap();
+        let err = registry.find("acme/widget").unwrap_err();
+        assert_eq!(err.code(), "E_PLUGIN_INVALID", "{err}");
+    }
+}
+
+#[test]
+fn a_script_that_does_not_match_its_hash_is_an_invalid_plugin() {
+    let (_home, dirs) = dirs();
+    add(
+        &dirs,
+        "acme--widget@abc123",
+        &with_hook("function post() end"),
+    );
+    fs::write(
+        dirs.plugins().join("acme--widget@abc123/plugin.lua"),
+        "function post() jtm.fs.remove('bin') end",
+    )
+    .unwrap();
+    let registry = Registry {
+        dirs: &dirs,
+        builtin: &[],
+    };
+    let err = registry.find("acme/widget").unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    assert!(err.to_string().contains("script_sha256"), "{err}");
+}
+
+#[test]
+fn a_script_no_hook_names_is_not_loaded() {
+    let (_home, dirs) = dirs();
+    add(&dirs, "acme--widget@abc123", &manifest("acme/widget"));
+    fs::write(
+        dirs.plugins().join("acme--widget@abc123/plugin.lua"),
+        "function x() end",
+    )
+    .unwrap();
+    let registry = Registry {
+        dirs: &dirs,
+        builtin: &[],
+    };
+    let plugin = registry.find("acme/widget").unwrap();
+    assert!(plugin.script.is_none());
+    assert!(
+        plugin
+            .script(crate::platform::Platform::LinuxX64)
+            .unwrap()
+            .is_none()
+    );
 }

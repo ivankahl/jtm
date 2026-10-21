@@ -17,7 +17,7 @@ Do not start a ticket until the tickets it depends on are closed. The suggested 
 
 1. One ticket per pull request, on its own branch. Reference the issue (`Closes #<n>`) in the PR description. Each PR includes tests and passes CI on Windows, macOS and Linux (x64 and aarch64 where runners exist).
 2. Test-first where practical. Unit tests never touch the real network: mock HTTP with `wiremock`, and generate signing keys inside the test. Unit tests go in their own file, declared as `#[cfg(test)] mod tests;` (so `foo.rs` keeps its tests in `foo/tests.rs`), never inline, so SonarQube can tell test code from source.
-3. No tool-specific logic in core crates. Strings like `"java"` or `JAVA_HOME` may appear only in plugin manifests, fixtures and tests.
+3. No tool-specific logic in core crates. Strings like `"java"` or `JAVA_HOME` may appear only in plugin manifests, fixtures and tests. `cargo xtask check-tool-names` enforces this for the library crates, taking the names from the first-party manifests in `crates/jtm-cli/plugins/`.
 4. Every user-facing failure has an `E_` code (section 12). Every command supports `--json` from the moment it exists.
 5. When the spec is ambiguous, implement the most secure reading, leave a `// SPEC-QUESTION:` comment, and list it in the PR description.
 
@@ -44,6 +44,7 @@ Run these before every push; CI runs the same:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo xtask check-tool-names
 ```
 
 ## Commit messages

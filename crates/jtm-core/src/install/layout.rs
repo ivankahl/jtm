@@ -1,5 +1,5 @@
 //! Finding the tool home inside an extracted archive (SPEC.md section 10, step 8) and checking
-//! that the declared executables are there (step 10).
+//! that its bin dirs hold files (step 10).
 //!
 //! `strip_components = <n>` is applied while extracting; `"auto"` strips a single top-level
 //! directory afterwards, when the archive has exactly one. The per-OS `home_subdir` then names
@@ -10,7 +10,7 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use jtm_plugin::manifest::{Executables, Layout, StripComponents};
+use jtm_plugin::manifest::{Layout, StripComponents};
 
 use crate::error::{JtmError, Result};
 use crate::platform::Os;
@@ -87,31 +87,28 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
     Ok(Placed { root, home })
 }
 
-/// Checks that every executable the manifest declares for `os` is a file in one of the bin
-/// dirs. Nothing is executed.
-pub fn check_executables(
-    plugin: &str,
-    placed: &Placed,
-    layout: &Layout,
-    executables: &Executables,
-    os: Os,
-) -> Result<()> {
+/// Checks that every bin dir is a directory inside the install holding at least one file, so a
+/// wrong `strip_components` or `home_subdir` fails the install instead of committing a tool
+/// with nothing to run. Plugins name no executables, so a vendor can rename or add commands in
+/// any version; whatever is in the bin dirs goes on `PATH`. Nothing is executed.
+pub fn check_bin_dirs(plugin: &str, placed: &Placed, layout: &Layout) -> Result<()> {
     let home = placed.home_dir();
-    for exe in executables.for_os(os.as_str()) {
-        let found = layout.bin_dirs.iter().any(|bin| {
-            relative(bin).is_some_and(|bin| {
-                let path = home.join(bin).join(exe);
-                fs::metadata(&path).is_ok_and(|m| m.is_file())
-                    && inside(&placed.root, &path).unwrap_or(false)
-            })
+    for bin in &layout.bin_dirs {
+        let dir = relative(bin).map(|bin| home.join(bin));
+        let has_file = dir.as_ref().is_some_and(|dir| {
+            inside(&placed.root, dir).unwrap_or(false)
+                && fs::read_dir(dir).is_ok_and(|entries| {
+                    entries.flatten().any(|e| {
+                        let path = e.path();
+                        fs::metadata(&path).is_ok_and(|m| m.is_file())
+                            && inside(&placed.root, &path).unwrap_or(false)
+                    })
+                })
         });
-        if !found {
+        if !has_file {
             return Err(JtmError::LayoutMismatch {
                 plugin: plugin.to_owned(),
-                message: format!(
-                    "executable `{exe}` is not in any of the bin dirs ({})",
-                    layout.bin_dirs.join(", ")
-                ),
+                message: format!("bin dir `{bin}` is missing or has no files"),
             });
         }
     }

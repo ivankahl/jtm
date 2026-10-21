@@ -16,6 +16,8 @@ fn plugin(text: &str) -> Plugin {
         sha256: String::new(),
         origin: ManifestOrigin::External,
         location: "test".to_owned(),
+        text: String::new(),
+        script: None,
     }
 }
 

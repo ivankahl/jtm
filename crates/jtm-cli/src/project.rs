@@ -199,11 +199,13 @@ pub(crate) fn current(ctx: &Context, tool: Option<&str>) -> Result<Outcome<Curre
     let session = Session::open(ctx)?;
     let here = here(&session)?;
     let tools = here.current(tool)?;
+    let mut found = here.warnings();
+    found.extend(here.requirement_warnings(&[])?);
     Ok(Outcome {
         command: "current",
         changed: false,
         data: CurrentData { tools },
-        warnings: warnings_with(here.warnings(), &here.pins.conflicts),
+        warnings: warnings_with(found, &here.pins.conflicts),
     })
 }
 
@@ -247,7 +249,8 @@ pub(crate) fn exec(
         })?;
         exec.push((spec.tool.clone(), found));
     }
-    let (overrides, found) = here.overrides(&exec)?;
+    let (overrides, mut found) = here.overrides(&exec)?;
+    found.extend(here.requirement_warnings(&exec)?);
     let changes = here.plan(&|key| std::env::var(key).ok(), &overrides);
     let mut child = build_command(&here, command, &changes)?;
     let outcome = |exit_code: i32, stdout: String, stderr: String| Outcome {

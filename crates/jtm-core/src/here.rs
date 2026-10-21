@@ -19,6 +19,10 @@ use crate::session::{PATH_SEPARATOR, Session, pin_warnings};
 use crate::spec::Selector;
 use crate::sync::apply_lock;
 
+/// Warning code when an active tool's `[requires]` entry is not met by the active version of
+/// the tool it needs, such as a build tool that needs a newer Java than the one active.
+pub const W_REQUIRES_UNMET: &str = "W_REQUIRES_UNMET";
+
 /// The plugins, pins, session versions and defaults that apply in one directory.
 #[derive(Debug)]
 pub struct Here<'s, 'c> {
@@ -200,6 +204,47 @@ impl<'s, 'c> Here<'s, 'c> {
         Ok((overrides, warnings))
     }
 
+    /// A [`W_REQUIRES_UNMET`] warning for each `[requires]` entry of an active tool that the
+    /// active version of the required tool does not meet, with `exec` versions taking
+    /// precedence. A required tool jtm does not manage here is not checked, since whatever is
+    /// on `PATH` may meet it. Requirements are only ever warnings; nothing is installed.
+    pub fn requirement_warnings(&self, exec: &[(String, Installed)]) -> Result<Vec<Warning>> {
+        let mut active: BTreeMap<String, (String, String)> = BTreeMap::new();
+        for item in self.current(None)? {
+            if let Some(version) = item.version {
+                let origin = item.origin.unwrap_or_default();
+                active.insert(item.tool, (version, origin));
+            }
+        }
+        for (tool, found) in exec {
+            active.insert(tool.clone(), (found.version.clone(), "jtm exec".to_owned()));
+        }
+        let mut warnings = Vec::new();
+        for plugin in &self.plugins {
+            let tool = plugin.manifest.name.as_str();
+            let Some((version, _)) = active.get(tool) else {
+                continue;
+            };
+            for (needed, requirement) in &plugin.manifest.requires {
+                let (Some((have, origin)), Ok(needed_plugin)) =
+                    (active.get(needed), self.plugin(needed))
+                else {
+                    continue;
+                };
+                if meets(&needed_plugin.manifest, have, requirement) == Some(false) {
+                    warnings.push(Warning {
+                        code: W_REQUIRES_UNMET,
+                        message: format!(
+                            "`{tool}` {version} needs `{needed}` {requirement}, but the active \
+                             `{needed}` is {have} (set by {origin})"
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(warnings)
+    }
+
     /// The changes that make `env` match the overrides.
     pub fn plan(
         &self,
@@ -215,48 +260,25 @@ impl<'s, 'c> Here<'s, 'c> {
         )
     }
 
-    /// The executable `command` runs here. A command a plugin declares comes from that tool's
-    /// active install; anything else is looked up on `path`.
+    /// The executable `command` runs here: the first active install whose bin dirs hold it, so
+    /// any file a tool ships maps to that tool, whatever the version calls it; anything else is
+    /// looked up on `path`.
     pub fn which(&self, command: &str, os: Os, path: Option<&str>) -> Result<WhichItem> {
         for plugin in &self.plugins {
             let tool = plugin.manifest.name.as_str();
-            let Some(file) = plugin
-                .manifest
-                .executables
-                .for_os(os.as_str())
-                .iter()
-                .find(|e| *e == command || file_stem(e) == command)
-            else {
-                continue;
-            };
             let Some(choice) = self.layers().choose(tool) else {
                 continue;
             };
-            let found = self
+            let Some(found) = self
                 .session
                 .installed_match(plugin, choice.selector.as_ref())?
-                .ok_or_else(|| JtmError::VersionNotFound {
-                    tool: tool.to_owned(),
-                    spec: format!(
-                        "{} (set by {}, not installed)",
-                        choice
-                            .selector
-                            .as_ref()
-                            .map(ToString::to_string)
-                            .unwrap_or_default(),
-                        choice.origin
-                    ),
-                })?;
+            else {
+                continue;
+            };
             let env = tool_env(&plugin.manifest, &found.home);
-            let path = env
-                .path
-                .iter()
-                .map(|dir| dir.join(file))
-                .find(|p| p.is_file())
-                .ok_or_else(|| JtmError::LayoutMismatch {
-                    plugin: tool.to_owned(),
-                    message: format!("`{file}` is missing from {}", found.home.display()),
-                })?;
+            let Some(path) = find_in_dirs(command, &env.path, os) else {
+                continue;
+            };
             return Ok(WhichItem {
                 command: command.to_owned(),
                 tool: Some(tool.to_owned()),
@@ -278,12 +300,32 @@ impl<'s, 'c> Here<'s, 'c> {
     }
 }
 
-fn file_stem(name: &str) -> &str {
-    name.rsplit_once('.').map_or(name, |(stem, _)| stem)
+/// Whether `version` meets every clause of `requirement` under `manifest`'s scheme; `None`
+/// when that cannot be decided, such as for a version the scheme cannot parse.
+fn meets(manifest: &jtm_plugin::Manifest, version: &str, requirement: &str) -> Option<bool> {
+    let scheme = manifest.versions.scheme.builtin()?;
+    let have = scheme.parse(version).ok()?;
+    for (op, wanted) in jtm_plugin::manifest::parse_requirement(requirement).ok()? {
+        if !op.holds(have.cmp_precedence(&scheme.parse(&wanted).ok()?)) {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 /// The first file named `command` in `path`, trying Windows executable extensions on Windows.
 pub fn find_on_path(command: &str, path: Option<&str>, os: Os) -> Option<PathBuf> {
+    let separator = if os == Os::Windows { ';' } else { ':' };
+    let dirs: Vec<PathBuf> = path?
+        .split(separator)
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    find_in_dirs(command, &dirs, os)
+}
+
+/// The first file named `command` in `dirs`, trying Windows executable extensions on Windows.
+pub fn find_in_dirs(command: &str, dirs: &[PathBuf], os: Os) -> Option<PathBuf> {
     let candidates: Vec<String> = if os == Os::Windows && !command.contains('.') {
         let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
         pathext
@@ -295,10 +337,7 @@ pub fn find_on_path(command: &str, path: Option<&str>, os: Os) -> Option<PathBuf
     } else {
         vec![command.to_owned()]
     };
-    let separator = if os == Os::Windows { ';' } else { ':' };
-    path?
-        .split(separator)
-        .filter(|dir| !dir.is_empty())
-        .flat_map(|dir| candidates.iter().map(move |c| Path::new(dir).join(c)))
+    dirs.iter()
+        .flat_map(|dir| candidates.iter().map(move |c| dir.join(c)))
         .find(|p| p.is_file())
 }

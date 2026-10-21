@@ -159,8 +159,14 @@ fn current_reports_the_winning_layer() {
     let f = ready();
     let project = tempfile::tempdir().unwrap();
     let (_, value) = json_in(&f, project.path(), &["current"]);
-    assert_eq!(value["data"]["tools"][0]["tool"], "demo");
-    assert!(value["data"]["tools"][0]["layer"].is_null(), "{value}");
+    // The builtin plugins are listed too.
+    let demo = value["data"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["tool"] == "demo")
+        .unwrap();
+    assert!(demo["layer"].is_null(), "{value}");
 
     f.json(&["default", "demo@1.0.0"]);
     let (_, value) = json_in(&f, project.path(), &["current", "demo"]);

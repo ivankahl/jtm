@@ -33,10 +33,6 @@ strip_components = "auto"
 home_subdir = {{ macos = "Contents/Home" }}
 bin_dirs = ["bin"]
 
-[executables]
-unix = ["java", "javac"]
-windows = ["java.exe", "javac.exe"]
-
 [env]
 JAVA_HOME = "{{home}}"
 "#
@@ -76,14 +72,7 @@ fn macos_jdk_resolves_to_contents_home() {
     assert_eq!(placed.home, std::path::Path::new("Contents/Home"));
     assert!(placed.home_dir().join("bin/java").is_file());
     assert!(placed.root.join("Contents/MacOS/libjli.dylib").is_file());
-    layout::check_executables(
-        "java",
-        &placed,
-        &manifest.layout,
-        &manifest.executables,
-        Os::Macos,
-    )
-    .unwrap();
+    layout::check_bin_dirs("java", &placed, &manifest.layout).unwrap();
 
     // The same archive on Linux has no home_subdir, so the home is the stripped root.
     let linux = layout::apply("java", &out, &manifest.layout, Os::Linux).unwrap();

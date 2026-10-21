@@ -1,0 +1,51 @@
+# A first-party plugin, compiled into jtm (SPEC.md section 15). Its signing keys are jtm's
+# root keys and are pre-approved only because this file is embedded in the binary.
+#
+# The root keys below are placeholders whose private keys were never kept, so nothing can sign
+# for them; the root key ceremony (T6.5) replaces them in every first-party manifest at once.
+
+schema = 1
+name = "spring-boot-cli"
+display_name = "Spring Boot CLI"
+description = "The Spring Boot command-line interface"
+homepage = "https://spring.io/projects/spring-boot"
+license = "Apache-2.0"
+min_jtm = "0.1.0"
+
+[versions]
+scheme = "semver-loose"
+default_alias = "latest"
+
+[aliases]
+latest = { kind = "highest" }
+
+# The CLI runs on any platform, so one index with `"platform": "any"` serves them all.
+[index]
+url = "https://github.com/jtm-dev/index/releases/download/spring-boot-cli-{index_version}/spring-boot-cli-any.json"
+signing_keys = [
+  "RWRysDZolh28UjrMjL/6mCMDPnqfDtDj5Al+TxN8z6RkXGawmRo1ob7K",
+  "RWTzLKb42g206mejNh0fzVSVIUErPPx9vwRRSf+bTzSu3b21Ok57nca0",
+  "RWSNUwyhcXRhYMqQR0mQfp48nxBnT4qSHl01yqJKVPSJEIFmmj+XtONm",
+]
+threshold = 2
+keys_url = "https://github.com/jtm-dev/index/releases/latest/download/keys.json"
+format = 1
+
+[layout]
+strip_components = "auto"
+bin_dirs = ["bin"]
+
+# Spring Boot 3 needs Java 17.
+[requires]
+java = ">=17"
+
+# SDKMAN calls the candidate `springboot`, and asdf calls its plugin `spring-boot`.
+[[interop]]
+file = ".sdkmanrc"
+parser = "keyvalue"
+key = "springboot"
+
+[[interop]]
+file = ".tool-versions"
+parser = "tool-versions"
+key = "spring-boot"
