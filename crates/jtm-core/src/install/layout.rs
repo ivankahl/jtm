@@ -78,8 +78,18 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
             home: PathBuf::new(),
         });
     }
+    // A lone home only has to exist: its bin dirs are checked after `post_extract`, which may
+    // fill them. Choosing between candidates needs the bin dirs to hold files already.
+    if let [only] = candidates {
+        return match find_home(&root, only, None)? {
+            Some(home) => Ok(Placed { root, home }),
+            None => Err(mismatch(format!(
+                "home `{only}` is not a directory inside the archive"
+            ))),
+        };
+    }
     for candidate in candidates {
-        if let Some(home) = find_home(&root, candidate, &layout.bin_dirs)? {
+        if let Some(home) = find_home(&root, candidate, Some(&layout.bin_dirs))? {
             return Ok(Placed { root, home });
         }
     }
@@ -91,9 +101,9 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
 }
 
 /// The home `candidate` names inside `root`, relative to it, when it is a directory inside
-/// `root` whose `bin_dirs` hold files. A `*` segment matches any one real directory, never a
-/// link, and the candidate matches only when exactly one directory fits it.
-fn find_home(root: &Path, candidate: &str, bin_dirs: &[String]) -> Result<Option<PathBuf>> {
+/// `root` whose `bin_dirs`, if given, hold files. A `*` segment matches any one real
+/// directory, never a link, and the candidate matches only when exactly one directory fits it.
+fn find_home(root: &Path, candidate: &str, bin_dirs: Option<&[String]>) -> Result<Option<PathBuf>> {
     let Some(rel) = relative(candidate) else {
         return Ok(None);
     };
@@ -135,7 +145,10 @@ fn find_home(root: &Path, candidate: &str, bin_dirs: &[String]) -> Result<Option
         }
     }
     match <[PathBuf; 1]>::try_from(homes) {
-        Ok([home]) if missing_bin_dir(root, &root.join(&home), bin_dirs).is_none() => {
+        Ok([home])
+            if bin_dirs
+                .is_none_or(|bins| missing_bin_dir(root, &root.join(&home), bins).is_none()) =>
+        {
             Ok(Some(home))
         }
         _ => Ok(None),

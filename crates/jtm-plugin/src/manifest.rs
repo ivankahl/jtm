@@ -205,7 +205,8 @@ pub struct VariantLayout {
 }
 
 /// The tool home candidates for one OS, written as one path or a list of paths and tried in
-/// order: the first that is a directory inside the archive whose bin dirs hold files wins.
+/// order. A lone path need only be a directory inside the archive; from a list, the first
+/// that is one whose bin dirs already hold files wins.
 /// `""` is the archive root, and a `*` segment matches any one directory (never a link); a
 /// candidate with a `*` matches only when exactly one directory fits it.
 #[derive(Debug, Clone, PartialEq, Eq)]

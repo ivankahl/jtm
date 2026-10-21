@@ -211,6 +211,18 @@ fn a_star_never_matches_a_link() {
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
 }
 
+/// `post_extract` runs between `apply` and `check_bin_dirs` and may fill the bin dirs, so a
+/// lone home only has to exist.
+#[test]
+fn a_lone_home_is_chosen_before_its_bin_dirs_hold_files() {
+    let l = layout("bin_dirs = [\"bin\"]\nhome_subdir = { macos = \"Contents/Home\" }");
+    let dir = tree(&["t/Contents/Home/bin/"]);
+    let placed = apply("demo", dir.path(), &l, Os::Macos).unwrap();
+    assert_eq!(placed.home, PathBuf::from("Contents/Home"));
+    let err = check_bin_dirs("demo", &placed, &l).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+}
+
 #[test]
 fn a_variant_override_replaces_the_home() {
     let base = layout(
