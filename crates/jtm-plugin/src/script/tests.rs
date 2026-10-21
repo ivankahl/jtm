@@ -145,6 +145,7 @@ fn resolve_alias_must_pick_one_of_the_candidates() {
         match result {
             Err(ScriptError::Invalid { message, .. }) => {
                 assert!(message.contains(picked), "{message}");
+                assert!(message.contains("is not the version of any"), "{message}");
             }
             other => panic!("`{picked}` should be refused, got {other:?}"),
         }

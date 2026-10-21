@@ -229,7 +229,8 @@ impl Script {
         match out {
             Json::Null => Ok(None),
             Json::String(version) => {
-                // Checked first so the message below never echoes an arbitrary script string.
+                // A malformed value gets the shape error; only well-formed ones reach the
+                // membership test, so its message quotes a plain version string.
                 check_version(HOOK, &version)?;
                 if candidates
                     .iter()
