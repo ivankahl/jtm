@@ -39,6 +39,14 @@ bin_dirs = ["bin"]
 # A macOS JDK is an app bundle; its home is inside it.
 home_subdir = { macos = "Contents/Home" }
 
+# Zulu's macOS archive holds its bundle beside links to the bundle's home, and Liberica's holds
+# no bundle at all, so both are used from the top directory, as every OS uses the others.
+[layout.variants.zulu]
+home_subdir = {}
+
+[layout.variants.liberica]
+home_subdir = {}
+
 [env]
 JAVA_HOME = "{home}"
 

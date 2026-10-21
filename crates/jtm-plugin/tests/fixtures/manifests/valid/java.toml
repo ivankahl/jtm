@@ -33,6 +33,14 @@ bin_dirs = ["bin"]
 [layout.home_subdir]
 macos = "Contents/Home"
 
+# Zulu's macOS archive links its home into the top directory; Liberica's has no bundle.
+[layout.variants.zulu]
+home_subdir = {}
+
+[layout.variants.liberica]
+strip_components = 1
+home_subdir = { windows = "jdk" }
+
 [env]
 JAVA_HOME = "{home}"
 

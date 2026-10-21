@@ -160,6 +160,10 @@ pub struct Layout {
     #[serde(default)]
     pub home_subdir: BTreeMap<String, String>,
     pub bin_dirs: Vec<String>,
+    /// `[layout.variants.<variant>]`: how one variant's archives differ, for vendors that
+    /// package the same tool differently, such as a JDK that is no app bundle on macOS.
+    #[serde(default)]
+    pub variants: BTreeMap<String, VariantLayout>,
 }
 
 impl Layout {
@@ -167,6 +171,34 @@ impl Layout {
     pub fn home_subdir_for(&self, os: &str) -> Option<&str> {
         self.home_subdir.get(os).map(String::as_str)
     }
+
+    /// The layout of `variant`'s archives: `[layout]` with each field the variant's override
+    /// sets replaced as a whole. The result has no overrides of its own.
+    pub fn for_variant(&self, variant: &str) -> Layout {
+        let mut layout = Layout {
+            variants: BTreeMap::new(),
+            ..self.clone()
+        };
+        if let Some(over) = self.variants.get(variant) {
+            if let Some(strip) = over.strip_components {
+                layout.strip_components = strip;
+            }
+            if let Some(home) = &over.home_subdir {
+                layout.home_subdir.clone_from(home);
+            }
+        }
+        layout
+    }
+}
+
+/// One `[layout.variants.<variant>]` table. Only the shape of the archive can differ; `bin_dirs`
+/// cannot, since `PATH` reaches a tool through its current link whichever variant that is.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VariantLayout {
+    pub strip_components: Option<StripComponents>,
+    /// Replaces `[layout] home_subdir` whole, so `{}` means the archive root on every OS.
+    pub home_subdir: Option<BTreeMap<String, String>>,
 }
 
 /// How many leading path components to remove from every archive entry, written
@@ -504,12 +536,13 @@ impl Manifest {
 
     fn validate_layout(&self, p: &mut Problems) {
         let layout = &self.layout;
-        for (os, dir) in &layout.home_subdir {
-            let path = format!("layout.home_subdir.{}", quote_key(os));
-            if OS_NAMES.contains(&os.as_str()) {
-                check_relative_path(p, &path, dir, false);
-            } else {
-                p.push(path, unknown_os(os));
+        check_home_subdir(p, "layout.home_subdir", &layout.home_subdir);
+        for (variant, over) in &layout.variants {
+            let path = format!("layout.variants.{}", quote_key(variant));
+            if !self.has_variant(variant) {
+                p.push(path, format!("`{variant}` is not a variant of this plugin"));
+            } else if let Some(home) = &over.home_subdir {
+                check_home_subdir(p, &format!("{path}.home_subdir"), home);
             }
         }
         if layout.bin_dirs.is_empty() {
@@ -818,12 +851,26 @@ fn toml_error(text: &str, error: &toml::de::Error, path: &str) -> ManifestError 
         }
         _ => path.to_owned(),
     };
-    let message = if path == "layout.home_subdir" {
+    let message = if path == "layout.home_subdir"
+        || (path.starts_with("layout.variants.") && path.ends_with(".home_subdir"))
+    {
         format!("{message}; set it per OS, such as `home_subdir = {{ macos = \"Contents/Home\" }}`")
     } else {
         message
     };
     single(&path, message, line)
+}
+
+/// Checks a per-OS `home_subdir` table at `path`.
+fn check_home_subdir(p: &mut Problems, path: &str, home: &BTreeMap<String, String>) {
+    for (os, dir) in home {
+        let path = format!("{path}.{}", quote_key(os));
+        if OS_NAMES.contains(&os.as_str()) {
+            check_relative_path(p, &path, dir, false);
+        } else {
+            p.push(path, unknown_os(os));
+        }
+    }
 }
 
 /// Quotes a table key for a field path when it is not a bare TOML key.

@@ -72,6 +72,19 @@ fn java_style_manifest_uses_variants_and_per_os_layout() {
     assert_eq!(m.layout.strip_components, StripComponents::Auto);
     assert_eq!(m.layout.home_subdir_for("macos"), Some("Contents/Home"));
     assert_eq!(m.layout.home_subdir_for("linux"), None);
+    // A variant without an override takes `[layout]` as it is.
+    let temurin = m.layout.for_variant("temurin");
+    assert_eq!(temurin.home_subdir_for("macos"), Some("Contents/Home"));
+    assert_eq!(temurin.strip_components, StripComponents::Auto);
+    // An override replaces only the fields it sets, each as a whole.
+    let zulu = m.layout.for_variant("zulu");
+    assert_eq!(zulu.home_subdir_for("macos"), None);
+    assert_eq!(zulu.strip_components, StripComponents::Auto);
+    assert_eq!(zulu.bin_dirs, ["bin"]);
+    let liberica = m.layout.for_variant("liberica");
+    assert_eq!(liberica.strip_components, StripComponents::Count(1));
+    assert_eq!(liberica.home_subdir_for("macos"), None);
+    assert_eq!(liberica.home_subdir_for("windows"), Some("jdk"));
     assert_eq!(m.interop[0].mapping["tem"], "temurin");
     assert_eq!(m.interop[2].parser, InteropParser::SingleLine);
     assert_eq!(m.hooks.post_extract.as_deref(), Some("fix_permissions"));
