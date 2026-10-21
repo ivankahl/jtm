@@ -228,11 +228,11 @@ fn a_script_no_hook_names_is_not_loaded() {
 
 // --- the builtin working copy ---
 
-/// Builtin manifests with large files, so each repair takes long enough to overlap.
-fn big_builtin() -> &'static [BuiltinManifest] {
+/// Two builtin manifests whose files are padded by about `pad` bytes.
+fn builtin_set(pad: usize) -> &'static [BuiltinManifest] {
     let text: &'static str =
-        Box::leak(format!("{}# {}\n", manifest("demo"), "x".repeat(1 << 20)).into_boxed_str());
-    let script: &'static str = Box::leak("-- y\n".repeat(1 << 18).into_boxed_str());
+        Box::leak(format!("{}# {}\n", manifest("demo"), "x".repeat(pad)).into_boxed_str());
+    let script: &'static str = Box::leak("-- y\n".repeat(pad / 4 + 1).into_boxed_str());
     Box::leak(Box::new([
         BuiltinManifest {
             name: "demo",
@@ -247,10 +247,24 @@ fn big_builtin() -> &'static [BuiltinManifest] {
     ]))
 }
 
+/// Builtin manifests with large files, so each repair takes long enough to overlap.
+fn big_builtin() -> &'static [BuiltinManifest] {
+    builtin_set(1 << 20)
+}
+
+/// The names of the repair's temporary files left in `<data>/plugins`.
+fn temp_files(dirs: &Dirs) -> Vec<String> {
+    fs::read_dir(dirs.plugins())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(TEMP_PREFIX))
+        .collect()
+}
+
 #[test]
 fn a_context_without_builtin_manifests_leaves_the_working_copy_alone() {
     let (_home, dirs) = dirs();
-    sync_working_copy(&dirs, big_builtin()).unwrap();
+    sync_working_copy(&dirs, builtin_set(0)).unwrap();
     let copy = dirs.builtin_plugins().join("demo").join("plugin.toml");
     assert!(copy.is_file());
     assert_eq!(
@@ -286,8 +300,9 @@ fn concurrent_repairs_never_remove_each_others_files() {
                 found.text.as_bytes()
             );
         }
-        // No temporary file is left anywhere in the working copy.
+        // No temporary file is left in the working copy or beside it.
         assert!(sync_working_copy(&dirs, builtin).unwrap().is_empty());
+        assert_eq!(temp_files(&dirs), Vec::<String>::new());
     }
 }
 
@@ -308,7 +323,7 @@ fn temporary_files_a_killed_process_left_are_swept() {
         .unwrap()
         .set_modified(old)
         .unwrap();
-    sync_working_copy(&dirs, big_builtin()).unwrap();
+    sync_working_copy(&dirs, builtin_set(0)).unwrap();
     assert!(!stale.exists(), "a stale temporary file is removed");
     assert!(
         fresh.exists(),

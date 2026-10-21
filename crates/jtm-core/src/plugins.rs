@@ -105,15 +105,35 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
 /// Writes `bytes` to a new file in `scratch`, on the same file system, and renames it over
 /// `path`. A rename replaces a link rather than writing through it, so a link planted in the
 /// working copy is never followed.
+///
+/// Windows refuses a rename onto a file that another process is renaming over at the same
+/// moment, so a failed rename is retried a few times, and counts as done once `path` is a
+/// regular file holding `bytes`, which means another repair got there first.
 fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
+    const ATTEMPTS: u32 = 6;
     let mut file = tempfile::Builder::new()
         .prefix(TEMP_PREFIX)
         .tempfile_in(scratch)
         .map_err(|e| JtmError::io(scratch, e))?;
     io::Write::write_all(&mut file, bytes).map_err(|e| JtmError::io(file.path(), e))?;
-    file.persist(path)
-        .map_err(|e| JtmError::io(path, e.error))?;
-    Ok(())
+    let mut attempt = 1;
+    loop {
+        let failed = match file.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(failed) => failed,
+        };
+        let done = fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
+            && fs::read(path).is_ok_and(|current| current == bytes);
+        if done {
+            return Ok(());
+        }
+        if attempt == ATTEMPTS {
+            return Err(JtmError::io(path, failed.error));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5 << attempt));
+        attempt += 1;
+        file = failed.file;
+    }
 }
 
 /// Removes the repair's temporary files in `scratch` older than [`TEMP_MAX_AGE`], which a
@@ -123,14 +143,16 @@ fn sweep_temp_files(scratch: &Path) {
         return;
     };
     for entry in entries.flatten() {
-        let ours = entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX);
+        if !entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
+            continue;
+        }
         let stale = entry
             .metadata()
             .and_then(|m| m.modified())
             .ok()
             .and_then(|modified| modified.elapsed().ok())
             .is_some_and(|age| age > TEMP_MAX_AGE);
-        if ours && stale && entry.file_type().is_ok_and(|t| t.is_file()) {
+        if stale && entry.file_type().is_ok_and(|t| t.is_file()) {
             let _ = fs::remove_file(entry.path());
         }
     }
