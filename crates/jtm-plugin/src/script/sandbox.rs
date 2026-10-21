@@ -198,7 +198,11 @@ fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> 
                     "invalid argument #2 to 'xpcall' (function expected)",
                 ));
             }
-            None => return Err(mlua::Error::runtime("missing argument #2 to 'xpcall'")),
+            None => {
+                return Err(mlua::Error::runtime(
+                    "missing argument #2 to 'xpcall' (function expected)",
+                ));
+            }
         };
         let error = match protected_call(lua, &s, args)? {
             Outcome::Returned(mut values) => {
@@ -223,8 +227,11 @@ fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> 
 /// Calls the first of `args` with the rest, protected. A refused allocation, in Lua code or
 /// reported by a host function, is recorded and raised again.
 fn protected_call(lua: &Lua, shared: &Shared, args: MultiValue) -> mlua::Result<Outcome> {
+    if args.is_empty() {
+        return Err(mlua::Error::runtime("nothing to call"));
+    }
     let mut status = ffi::LUA_OK;
-    // SAFETY: `exec_raw` pushes `args` and runs the closure in a fresh C frame holding exactly
+    // SAFETY: `args` holds at least the function. `exec_raw` pushes `args` and runs the closure in a fresh C frame holding exactly
     // those values. `lua_pcall` pops the function and its arguments and leaves either all its
     // results, for which Luau makes room under `LUA_MULTRET`, or the single error value in the
     // function's slot. Nothing escapes `lua_pcall`, so the closure returns normally, and
