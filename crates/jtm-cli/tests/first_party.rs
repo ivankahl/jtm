@@ -168,6 +168,7 @@ impl Home {
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("JTM_SESSION_")
                 || key.to_string_lossy().starts_with("JTM_PROJECT_")
+                || key == "JTM_HOOK_DIR"
             {
                 cmd.env_remove(key);
             }
@@ -801,6 +802,163 @@ fn an_unmet_java_requirement_is_a_warning() {
     let project = h.project(&[(".sdkmanrc", "springboot=3.3.5\n")]);
     let (_, value) = h.json(&project, &["current"]);
     assert!(codes(&value).is_empty(), "{value}");
+}
+
+/// Makes `fp-<name>` a user default whose installs cannot be listed: `tools/fp-<name>` becomes
+/// a file. The defaults file is written directly, so no link or junction points into it.
+fn break_default(h: &Home, name: &str, selector: &str) {
+    let state = h.home.path().join("state");
+    fs::create_dir_all(&state).unwrap();
+    fs::write(
+        state.join("defaults.toml"),
+        format!("[defaults]\n{} = \"{selector}\"\n", test_name(name)),
+    )
+    .unwrap();
+    let tools = h.home.path().join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(tools.join(test_name(name)), "not a directory").unwrap();
+}
+
+/// The `W_REQUIRES_*` and `W_INSTALLS_UNREADABLE` warnings of `value`, sorted.
+fn check_codes(value: &Value) -> Vec<String> {
+    let mut codes: Vec<String> = value["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["code"].as_str().unwrap().to_owned())
+        .filter(|code| code.starts_with("W_REQUIRES_") || code == "W_INSTALLS_UNREADABLE")
+        .collect();
+    codes.sort();
+    codes
+}
+
+/// A shell command that does nothing and exits 0.
+fn noop() -> Vec<&'static str> {
+    if cfg!(windows) {
+        vec!["cmd", "/c", "echo"]
+    } else {
+        vec!["sh", "-c", "true"]
+    }
+}
+
+#[test]
+fn an_unreadable_tool_skips_only_the_requirements_involving_it() {
+    let mut h = Home::new();
+    with_java(&mut h);
+    with_any(&mut h, "spring-boot-cli", &[("3.3.5", &[])]);
+    with_any(&mut h, "kotlin", &[("2.0.21", &[])]);
+    h.ok(&[
+        "install",
+        "fp-java@zulu:11",
+        "fp-java@temurin:21",
+        "fp-spring-boot-cli@3.3.5",
+    ]);
+    // Kotlin has requirements of its own, and only the defaults set it.
+    break_default(&h, "kotlin", "2.0");
+    let project = h.project(&[(".sdkmanrc", "java=11.0.25-zulu\nspringboot=3.3.5\n")]);
+    let (code, value) = h.json(&project, &["current", "fp-kotlin"]);
+    assert_eq!(code, 4, "{value}");
+    assert_eq!(value["error"]["code"], "E_IO", "{value}");
+    let kotlin_unchecked = |value: &Value| {
+        value["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == "W_REQUIRES_UNCHECKED")
+            .all(|w| w["message"].as_str().unwrap().contains("`fp-kotlin`"))
+    };
+
+    // Spring Boot CLI 3 needs Java 17 and the project pins 11: that is still reported, next to
+    // one warning that the Kotlin entries were not checked.
+    let unmet = ["W_REQUIRES_UNCHECKED", "W_REQUIRES_UNMET"];
+    for args in [
+        vec!["env"],
+        vec!["hook-env", "--shell", "bash"],
+        vec!["use", "fp-java@zulu:11"],
+    ] {
+        let (code, value) = h.json(&project, &args);
+        assert_eq!(code, 0, "{args:?}: {value}");
+        assert_eq!(value["ok"], true, "{args:?}: {value}");
+        assert_eq!(check_codes(&value), unmet, "{args:?}: {value}");
+        assert!(kotlin_unchecked(&value), "{args:?}: {value}");
+        assert!(
+            !value["data"]["changes"].as_array().unwrap().is_empty(),
+            "{args:?}: {value}"
+        );
+    }
+    let (code, value) = h.json(&project, &["current"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(
+        check_codes(&value),
+        [
+            "W_INSTALLS_UNREADABLE",
+            "W_REQUIRES_UNCHECKED",
+            "W_REQUIRES_UNMET"
+        ],
+        "{value}"
+    );
+    assert!(kotlin_unchecked(&value), "{value}");
+
+    let mut old = vec!["exec", "fp-java@zulu:11", "--"];
+    old.extend(noop());
+    let (code, value) = h.json(&project, &old);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["data"]["exit_code"], 0, "{value}");
+    assert_eq!(check_codes(&value), unmet, "{value}");
+    let mut new = vec!["exec", "fp-java@temurin:21", "--"];
+    new.extend(noop());
+    let (code, value) = h.json(&project, &new);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(check_codes(&value), ["W_REQUIRES_UNCHECKED"], "{value}");
+    assert!(kotlin_unchecked(&value), "{value}");
+}
+
+#[test]
+fn an_unreadable_required_tool_is_reported_as_unchecked() {
+    let mut h = Home::new();
+    with_java(&mut h);
+    with_any(&mut h, "spring-boot-cli", &[("3.3.5", &[])]);
+    h.ok(&["install", "fp-spring-boot-cli@3.3.5"]);
+    // The Java that Spring Boot CLI needs comes from the defaults, and cannot be read.
+    break_default(&h, "java", "zulu:11");
+    let project = h.project(&[(".sdkmanrc", "springboot=3.3.5\n")]);
+    let java_unchecked = |value: &Value| {
+        let messages: Vec<&str> = value["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == "W_REQUIRES_UNCHECKED")
+            .map(|w| w["message"].as_str().unwrap())
+            .collect();
+        messages.len() == 1 && messages[0].contains("`fp-java`")
+    };
+
+    let mut exec = vec!["exec", "fp-spring-boot-cli@3.3.5", "--"];
+    exec.extend(noop());
+    for args in [
+        vec!["env"],
+        vec!["hook-env", "--shell", "bash"],
+        vec!["use", "fp-spring-boot-cli@3.3.5"],
+        exec,
+    ] {
+        let (code, value) = h.json(&project, &args);
+        assert_eq!(code, 0, "{args:?}: {value}");
+        assert_eq!(value["ok"], true, "{args:?}: {value}");
+        assert_eq!(
+            check_codes(&value),
+            ["W_REQUIRES_UNCHECKED"],
+            "{args:?}: {value}"
+        );
+        assert!(java_unchecked(&value), "{args:?}: {value}");
+    }
+    let (code, value) = h.json(&project, &["current"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(
+        check_codes(&value),
+        ["W_INSTALLS_UNREADABLE", "W_REQUIRES_UNCHECKED"],
+        "{value}"
+    );
+    assert!(java_unchecked(&value), "{value}");
 }
 
 // --- real tools ---
