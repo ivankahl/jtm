@@ -109,6 +109,14 @@ fn find_home(plugin: &str, root: &Path, candidate: &str, rel: &Path) -> Result<O
         plugin: plugin.to_owned(),
         message,
     };
+    // Archive names in messages are escaped, including in I/O errors.
+    let unreadable = |path: &Path, e: &io::Error| {
+        mismatch(format!(
+            "home candidate `{candidate}` could not read `{}`: {}",
+            shown(path),
+            e.kind()
+        ))
+    };
     // Whether `path` is a directory inside the archive; a link on the way that is broken or
     // leads out of the archive fails the install rather than reading as "no match".
     let probe = |path: &Path| -> Result<bool> {
@@ -118,7 +126,7 @@ fn find_home(plugin: &str, root: &Path, candidate: &str, rel: &Path) -> Result<O
                 shown(path)
             ))
         };
-        match walk(root, path)? {
+        match walk(root, path).map_err(|e| unreadable(path, &e))? {
             Walk::Absent => Ok(false),
             Walk::Dir => Ok(true),
             Walk::Broken => Err(bad("is broken")),
@@ -144,12 +152,12 @@ fn find_home(plugin: &str, root: &Path, candidate: &str, rel: &Path) -> Result<O
                 continue;
             }
             let dir = root.join(path);
-            for entry in fs::read_dir(&dir).map_err(|e| JtmError::io(&dir, e))? {
-                let entry = entry.map_err(|e| JtmError::io(&dir, e))?;
+            for entry in fs::read_dir(&dir).map_err(|e| unreadable(path, &e))? {
+                let entry = entry.map_err(|e| unreadable(path, &e))?;
                 // `DirEntry::file_type` does not follow links.
                 let kind = entry
                     .file_type()
-                    .map_err(|e| JtmError::io(entry.path(), e))?;
+                    .map_err(|e| unreadable(&path.join(entry.file_name()), &e))?;
                 if kind.is_dir() {
                     next.push(path.join(entry.file_name()));
                 }
@@ -206,10 +214,11 @@ enum Walk {
 }
 
 /// Walks `rel` under `root` one component at a time, checking every link on the way, so a
-/// broken link or one out of the archive is told apart from a path that is simply missing.
-/// Any other failure to read the tree is an error.
-fn walk(root: &Path, rel: &Path) -> Result<Walk> {
-    let real_root = fs::canonicalize(root).map_err(|e| JtmError::io(root, e))?;
+/// broken link (one that cannot be resolved, a loop included) or one out of the archive is
+/// told apart from a path that is simply missing. Any other failure to read the tree is an
+/// error.
+fn walk(root: &Path, rel: &Path) -> io::Result<Walk> {
+    let real_root = fs::canonicalize(root)?;
     let absent = |e: &io::Error| {
         matches!(
             e.kind(),
@@ -222,14 +231,13 @@ fn walk(root: &Path, rel: &Path) -> Result<Walk> {
         let meta = match fs::symlink_metadata(&path) {
             Ok(meta) => meta,
             Err(e) if absent(&e) => return Ok(Walk::Absent),
-            Err(e) => return Err(JtmError::io(&path, e)),
+            Err(e) => return Err(e),
         };
         if meta.file_type().is_symlink() {
             match fs::canonicalize(&path) {
                 Ok(real) if real.starts_with(&real_root) => {}
                 Ok(_) => return Ok(Walk::Escapes),
-                Err(e) if absent(&e) => return Ok(Walk::Broken),
-                Err(e) => return Err(JtmError::io(&path, e)),
+                Err(_) => return Ok(Walk::Broken),
             }
         }
     }
@@ -237,7 +245,7 @@ fn walk(root: &Path, rel: &Path) -> Result<Walk> {
         Ok(meta) if meta.is_dir() => Ok(Walk::Dir),
         Ok(_) => Ok(Walk::Absent),
         Err(e) if absent(&e) => Ok(Walk::Absent),
-        Err(e) => Err(JtmError::io(&path, e)),
+        Err(e) => Err(e),
     }
 }
 

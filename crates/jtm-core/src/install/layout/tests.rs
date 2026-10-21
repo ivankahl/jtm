@@ -263,8 +263,8 @@ fn a_star_never_matches_a_link() {
     );
 }
 
-/// A link that is broken, or leads out of the archive to a place where the rest of the path
-/// is missing, fails the install instead of reading as "no match".
+/// A link that is broken (a loop included), or leads out of the archive to a place where the
+/// rest of the path is missing, fails the install instead of reading as "no match".
 #[cfg(unix)]
 #[test]
 fn a_broken_or_escaping_link_never_hands_over_to_the_next_candidate() {
@@ -272,6 +272,8 @@ fn a_broken_or_escaping_link_never_hands_over_to_the_next_candidate() {
         ("/", "leads out of the archive"),
         ("/nonexistent-jtm-target", "is broken"),
         ("missing", "is broken"),
+        // A link to itself never resolves.
+        ("Contents", "is broken"),
     ] {
         let dir = tree(&["t/bin/java"]);
         std::os::unix::fs::symlink(target, dir.path().join("t/Contents")).unwrap();

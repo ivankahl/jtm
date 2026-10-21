@@ -867,6 +867,11 @@ fn check_home_subdir(p: &mut Problems, path: &str, home: &BTreeMap<String, HomeC
         }
         match candidates.0.as_slice() {
             [] => p.push(path, "list at least one candidate home"),
+            // The archive root is the default; `""` only makes sense as a last resort.
+            [only] if only.is_empty() => p.push(
+                path,
+                "cannot be empty; leave the OS out to use the archive root",
+            ),
             [only] => check_home_candidate(p, &path, only),
             all => {
                 for (i, candidate) in all.iter().enumerate() {
