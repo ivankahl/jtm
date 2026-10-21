@@ -161,6 +161,14 @@ fn the_first_candidate_home_with_bin_files_wins() {
     // A `Contents/Home` without bin files is passed over.
     let home = mac_home(&["t/Contents/Home/README", "t/bin/java"]).unwrap();
     assert_eq!(home, PathBuf::new());
+    // So is a stray directory beside the bundle that `*` also reaches.
+    let home = mac_home(&[
+        "t/zulu-17.jdk/Contents/Home/bin/java",
+        "t/zulu-17.jdk.orig/Contents/Home/legal/LICENSE",
+        "t/bin/java",
+    ])
+    .unwrap();
+    assert_eq!(home, PathBuf::from("zulu-17.jdk/Contents/Home"));
 }
 
 #[test]
