@@ -81,22 +81,21 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
     // A single candidate, alone or in a one-item list, only has to exist: its bin dirs are
     // checked after `post_extract`, which may fill them. Choosing between candidates needs the
     // bin dirs to hold files already.
-    if let [only] = candidates {
-        return match find_home(&root, only, None)? {
-            Some(home) => Ok(Placed { root, home }),
-            None => Err(mismatch(format!(
-                "home `{only}` is not a directory inside the archive"
-            ))),
-        };
-    }
+    let bin_dirs = (candidates.len() > 1).then_some(layout.bin_dirs.as_slice());
     for candidate in candidates {
-        if let Some(home) = find_home(&root, candidate, Some(&layout.bin_dirs))? {
+        if let Some(home) = find_home(&root, candidate, bin_dirs)? {
             return Ok(Placed { root, home });
         }
     }
     let tried: Vec<String> = candidates.iter().map(|c| format!("`{c}`")).collect();
+    let needs = if bin_dirs.is_some() {
+        " whose bin dirs hold files"
+    } else {
+        ""
+    };
     Err(mismatch(format!(
-        "no home candidate is a directory inside the archive whose bin dirs hold files; tried {}",
+        "no home candidate is a directory inside the archive{needs} (a `*` must match exactly \
+         one); tried {}",
         tried.join(", ")
     )))
 }
