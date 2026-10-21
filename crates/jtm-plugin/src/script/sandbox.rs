@@ -174,54 +174,70 @@ enum Outcome {
 /// without the debug library.
 fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> {
     let s = Arc::clone(shared);
-    let pcall = lua.create_function(move |lua, args: MultiValue| {
-        if args.is_empty() {
-            return Err(mlua::Error::runtime("missing argument #1 to 'pcall'"));
-        }
-        Ok(match protected_call(lua, &s, args)? {
-            Outcome::Returned(mut values) => {
-                values.push_front(Value::Boolean(true));
-                values
-            }
-            Outcome::Raised(error) => {
-                MultiValue::from_iter([Value::Boolean(false), seen(lua, error)?])
-            }
-        })
-    })?;
-
+    let pcall =
+        lua.create_function(move |lua, args: MultiValue| recorded(&s, pcall(lua, &s, args)))?;
     let s = Arc::clone(shared);
-    let xpcall = lua.create_function(move |lua, mut args: MultiValue| {
-        let handler = match args.remove(1) {
-            Some(Value::Function(handler)) => handler,
-            Some(_) => {
-                return Err(mlua::Error::runtime(
-                    "invalid argument #2 to 'xpcall' (function expected)",
-                ));
-            }
-            None => {
-                return Err(mlua::Error::runtime(
-                    "missing argument #2 to 'xpcall' (function expected)",
-                ));
-            }
-        };
-        let error = match protected_call(lua, &s, args)? {
-            Outcome::Returned(mut values) => {
-                values.push_front(Value::Boolean(true));
-                return Ok(values);
-            }
-            Outcome::Raised(error) => seen(lua, error)?,
-        };
-        let call = MultiValue::from_iter([Value::Function(handler), error]);
-        let handled = match protected_call(lua, &s, call)? {
-            Outcome::Returned(values) => values.into_iter().next().unwrap_or(Value::Nil),
-            Outcome::Raised(_) => Value::String(lua.create_string(HANDLER_ERROR)?),
-        };
-        Ok(MultiValue::from_iter([Value::Boolean(false), handled]))
-    })?;
+    let xpcall =
+        lua.create_function(move |lua, args: MultiValue| recorded(&s, xpcall(lua, &s, args)))?;
 
     let globals = lua.globals();
     globals.raw_set("pcall", pcall)?;
     globals.raw_set("xpcall", xpcall)
+}
+
+/// Records a memory breach raised anywhere in a protected call, its own work included.
+fn recorded<T>(shared: &Shared, result: mlua::Result<T>) -> mlua::Result<T> {
+    if let Err(e) = &result
+        && matches!(classify(e), Failure::Memory)
+    {
+        shared.record(Limit::Memory(shared.limits.memory));
+    }
+    result
+}
+
+fn pcall(lua: &Lua, s: &Shared, args: MultiValue) -> mlua::Result<MultiValue> {
+    if args.is_empty() {
+        return Err(mlua::Error::runtime("missing argument #1 to 'pcall'"));
+    }
+    Ok(match protected_call(lua, s, args)? {
+        Outcome::Returned(mut values) => {
+            values.push_front(Value::Boolean(true));
+            values
+        }
+        Outcome::Raised(error) => MultiValue::from_iter([Value::Boolean(false), seen(lua, error)?]),
+    })
+}
+
+fn xpcall(lua: &Lua, s: &Shared, mut args: MultiValue) -> mlua::Result<MultiValue> {
+    if args.is_empty() {
+        return Err(mlua::Error::runtime("missing argument #1 to 'xpcall'"));
+    }
+    let handler = match args.remove(1) {
+        Some(Value::Function(handler)) => handler,
+        Some(_) => {
+            return Err(mlua::Error::runtime(
+                "invalid argument #2 to 'xpcall' (function expected)",
+            ));
+        }
+        None => {
+            return Err(mlua::Error::runtime(
+                "missing argument #2 to 'xpcall' (function expected)",
+            ));
+        }
+    };
+    let error = match protected_call(lua, s, args)? {
+        Outcome::Returned(mut values) => {
+            values.push_front(Value::Boolean(true));
+            return Ok(values);
+        }
+        Outcome::Raised(error) => seen(lua, error)?,
+    };
+    let call = MultiValue::from_iter([Value::Function(handler), error]);
+    let handled = match protected_call(lua, s, call)? {
+        Outcome::Returned(values) => values.into_iter().next().unwrap_or(Value::Nil),
+        Outcome::Raised(_) => Value::String(lua.create_string(HANDLER_ERROR)?),
+    };
+    Ok(MultiValue::from_iter([Value::Boolean(false), handled]))
 }
 
 /// Calls the first of `args` with the rest, protected. A refused allocation, in Lua code or
@@ -231,11 +247,12 @@ fn protected_call(lua: &Lua, shared: &Shared, args: MultiValue) -> mlua::Result<
         return Err(mlua::Error::runtime("nothing to call"));
     }
     let mut status = ffi::LUA_OK;
-    // SAFETY: `args` holds at least the function. `exec_raw` pushes `args` and runs the closure in a fresh C frame holding exactly
-    // those values. `lua_pcall` pops the function and its arguments and leaves either all its
-    // results, for which Luau makes room under `LUA_MULTRET`, or the single error value in the
-    // function's slot. Nothing escapes `lua_pcall`, so the closure returns normally, and
-    // `exec_raw` reads what is left as the frame's results.
+    // SAFETY: `args` holds at least the function. `exec_raw` pushes `args` and runs the
+    // closure in a fresh C frame holding exactly those values. `lua_pcall` pops the function
+    // and its arguments and leaves either all its results, for which Luau makes room under
+    // `LUA_MULTRET`, or the single error value in the function's slot. Nothing escapes
+    // `lua_pcall`, so the closure returns normally, and `exec_raw` reads what is left as the
+    // frame's results.
     #[allow(unsafe_code)]
     let values: MultiValue = unsafe {
         lua.exec_raw(args, |state| {
