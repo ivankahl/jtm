@@ -873,6 +873,21 @@ fn a_requiring_tool_whose_installs_cannot_be_read_fails_the_command() {
         let (code, value) = h.json(&project, &args);
         assert_unreadable(code, &value, "kotlin", &args);
     }
+
+    // The hook fails at every prompt, not only on the directory change that shows warnings.
+    #[cfg(unix)]
+    {
+        let cwd = fs::canonicalize(&project).unwrap();
+        let output = h
+            .jtm(&project)
+            .env("JTM_HOOK_DIR", &cwd)
+            .args(["--json", "hook-env", "--shell", "bash"])
+            .output()
+            .unwrap();
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let args = ["hook-env (same directory)"];
+        assert_unreadable(output.status.code().unwrap(), &value, "kotlin", &args);
+    }
 }
 
 #[test]
