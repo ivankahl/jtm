@@ -35,8 +35,7 @@ impl Receipt {
     /// The receipt in `install_dir`, or `None` when it is missing or unreadable. A directory
     /// without a valid receipt is not an install.
     pub fn read(install_dir: &Path) -> Option<Receipt> {
-        let bytes = fs::read(install_dir.join(RECEIPT_FILE)).ok()?;
-        serde_json::from_slice(&bytes).ok()
+        Receipt::load(install_dir).ok().flatten()
     }
 
     /// Like [`Receipt::read`], but a receipt that exists and cannot be read, such as for lack

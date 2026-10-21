@@ -398,6 +398,18 @@ fn a_directory_without_a_receipt_is_not_an_install() {
 }
 
 #[test]
+fn a_receipt_that_cannot_be_read_fails_rather_than_reinstall() {
+    let f = Fixture::new();
+    let entry = f.seed(&good_archive());
+    // A receipt path that is a directory exists but cannot be read as a file, on every OS.
+    fs::create_dir_all(f.dest().join(RECEIPT_FILE)).unwrap();
+    fs::write(f.dest().join("kept"), "live install").unwrap();
+    let err = f.install(&entry, false).unwrap_err();
+    assert!(matches!(err.code(), "E_IO" | "E_PERMISSION"), "{err}");
+    assert!(f.dest().join("kept").is_file());
+}
+
+#[test]
 fn offline_without_a_cached_archive_fails() {
     let f = Fixture::new();
     let entry = entry(&"a".repeat(64), 10);

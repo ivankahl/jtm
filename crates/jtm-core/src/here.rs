@@ -267,10 +267,8 @@ impl<'s, 'c> Here<'s, 'c> {
         }
         let found = if let Some((_, found)) = exec.iter().find(|(t, _)| t == tool) {
             Some((found.version.clone(), "jtm exec".to_owned()))
-        } else if let Some(item) = known
-            .iter()
-            .find(|i| i.tool == tool && (i.version.is_some() || i.layer.is_none()))
-        {
+        } else if let Some(item) = known.iter().find(|i| i.tool == tool) {
+            // `current` already read its installs: a set tool with no version has none.
             item.version
                 .clone()
                 .map(|version| (version, item.origin.clone().unwrap_or_default()))
