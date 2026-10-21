@@ -15,6 +15,7 @@
 use std::cmp::Ordering;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::Instant;
 
 use mlua::chunk::ChunkMode;
@@ -180,19 +181,32 @@ fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> 
     let s = Arc::clone(shared);
     let xpcall = lua.create_function(move |lua, mut args: MultiValue| {
         // The handler runs inside the failed call, so the breach is recorded before it does.
-        // Luau itself refuses a handler that is not a function.
+        // Luau itself refuses a handler that is not a function. The flag is this call's own:
+        // a limit recorded earlier must not stop a breach here from being raised again.
+        let breached = Arc::new(AtomicBool::new(false));
         if let Some(Value::Function(handler)) = args.get(1).cloned() {
             let s = Arc::clone(&s);
+            let flag = Arc::clone(&breached);
             let wrapped = lua.create_function(move |lua, error: Value| {
-                handler.call::<MultiValue>(caught(lua, &s, error)?)
+                let result =
+                    caught(lua, &s, error).and_then(|error| handler.call::<MultiValue>(error));
+                // Luau reports a failing handler as an ordinary error, so a breach in the
+                // handler itself is recorded here.
+                if let Err(e) = &result
+                    && matches!(classify(e), Failure::Memory)
+                {
+                    s.record(Limit::Memory(s.limits.memory));
+                    flag.store(true, AtomicOrdering::SeqCst);
+                }
+                result
             })?;
             if let Some(slot) = args.get_mut(1) {
                 *slot = Value::Function(wrapped);
             }
         }
         let out: MultiValue = native_xpcall.call(args)?;
-        // A handler that raised again replaced the error, but not the record.
-        if matches!(s.violation(), Some(Limit::Memory(_))) {
+        // A handler that raised again replaced the error, but not the breach.
+        if breached.load(AtomicOrdering::SeqCst) {
             return Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned()));
         }
         Ok(out)

@@ -683,6 +683,8 @@ fn catching_a_memory_breach_does_not_help() {
         // A handler that raises again must not replace the breach with its own error.
         "function f() xpcall(function() return string.rep('x', 64 * 1024 * 1024) end, function(e) error('hidden') end) return '1' end",
         "function f() pcall(xpcall, function() return string.rep('x', 64 * 1024 * 1024) end, function(e) error({}) end) return '1' end",
+        // Running out of memory in the handler is a breach too.
+        "function f() xpcall(function() error('x') end, function(e) return string.rep('x', 64 * 1024 * 1024) end) return '1' end",
     ] {
         assert!(
             matches!(
@@ -692,6 +694,34 @@ fn catching_a_memory_breach_does_not_help() {
             "{source}"
         );
     }
+}
+
+#[test]
+fn a_caught_containment_error_is_a_message_and_still_fails_the_hook() {
+    let dir = install_dir();
+    // The script removes README only if a handler saw something other than a string.
+    let result = post_extract(
+        dir.path(),
+        "local a, b \
+         xpcall(jtm.fs.remove, function(e) a = type(e) end, '../victim') \
+         local _, e = pcall(jtm.fs.remove, '../victim') b = type(e) \
+         if a ~= 'string' or b ~= 'string' then jtm.fs.remove('README') end",
+    );
+    assert!(is_path_limit(result));
+    assert!(dir.path().join("README").is_file());
+}
+
+#[test]
+fn a_memory_breach_after_another_limit_still_stops_the_script() {
+    let dir = install_dir();
+    let result = post_extract(
+        dir.path(),
+        "pcall(jtm.fs.remove, '../victim') \
+         xpcall(function() return string.rep('x', 512 * 1024 * 1024) end, function(e) error('hidden') end) \
+         jtm.fs.remove('README')",
+    );
+    assert!(is_path_limit(result));
+    assert!(dir.path().join("README").is_file());
 }
 
 #[test]
