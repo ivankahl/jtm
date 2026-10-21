@@ -52,7 +52,9 @@ fn main() {
     }
 }
 
+/// Fails the build with `message` as a cargo error. Only the two-colon form is an error
+/// instruction; `cargo:error=` is read as `links` metadata and never shown as one.
 fn fail(message: &str) -> ! {
-    println!("cargo:error={message}");
+    println!("cargo::error={message}");
     std::process::exit(1)
 }
