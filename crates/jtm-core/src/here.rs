@@ -23,9 +23,13 @@ use crate::sync::apply_lock;
 /// the tool it needs, such as a build tool that needs a newer Java than the one active.
 pub const W_REQUIRES_UNMET: &str = "W_REQUIRES_UNMET";
 
-/// Warning code when the requirements involving a tool cannot be checked, because its
-/// installs cannot be read; the command itself still succeeds.
+/// Warning code when `[requires]` entries are not checked, because the installs of a tool they
+/// involve cannot be read.
 pub const W_REQUIRES_UNCHECKED: &str = "W_REQUIRES_UNCHECKED";
+
+/// Warning code when `jtm current` cannot read a tool's installs, so it shows the tool as not
+/// installed.
+pub const W_INSTALLS_UNREADABLE: &str = "W_INSTALLS_UNREADABLE";
 
 /// The active version and what set it, by tool, as far as the requirements check has looked
 /// them up; `None` when the tool has no active version.
@@ -135,20 +139,42 @@ impl<'s, 'c> Here<'s, 'c> {
         }
     }
 
-    /// The active version of each tool, or of `only`.
-    pub fn current(&self, only: Option<&str>) -> Result<Vec<CurrentItem>> {
-        match only {
-            Some(tool) => Ok(vec![self.current_item(self.plugin(tool)?)?]),
-            None => self.plugins.iter().map(|p| self.current_item(p)).collect(),
+    /// The active version of each tool, or of `only`. A tool whose installs cannot be read is
+    /// shown as not installed, with a [`W_INSTALLS_UNREADABLE`] warning, so one broken tool does
+    /// not hide the others; when it is `only`, the read error is returned instead.
+    pub fn current(&self, only: Option<&str>) -> Result<(Vec<CurrentItem>, Vec<Warning>)> {
+        if let Some(tool) = only {
+            return match self.current_item(self.plugin(tool)?) {
+                (item, None) => Ok((vec![item], Vec::new())),
+                (_, Some(err)) => Err(err),
+            };
         }
+        let mut items = Vec::new();
+        let mut warnings = Vec::new();
+        for plugin in &self.plugins {
+            let (item, err) = self.current_item(plugin);
+            if let Some(err) = err {
+                warnings.push(Warning {
+                    code: W_INSTALLS_UNREADABLE,
+                    message: format!(
+                        "`{}` is shown as not installed, because its installs cannot be read: {}",
+                        item.tool,
+                        unreadable(err)?
+                    ),
+                });
+            }
+            items.push(item);
+        }
+        Ok((items, warnings))
     }
 
     /// The active version of `plugin`'s tool. This is the one rule for which version is
-    /// active, which the requirements check follows too.
-    fn current_item(&self, plugin: &Plugin) -> Result<CurrentItem> {
+    /// active, which the requirements check follows too. When the installs cannot be read, the
+    /// item shows the tool as not installed and the read error comes with it.
+    fn current_item(&self, plugin: &Plugin) -> (CurrentItem, Option<JtmError>) {
         let tool = plugin.manifest.name.as_str();
         let Some(choice) = self.layers().choose(tool) else {
-            return Ok(CurrentItem {
+            let item = CurrentItem {
                 tool: tool.to_owned(),
                 layer: None,
                 origin: None,
@@ -157,12 +183,17 @@ impl<'s, 'c> Here<'s, 'c> {
                 version: None,
                 path: None,
                 installed: false,
-            });
+            };
+            return (item, None);
         };
-        let found = self
+        let (found, err) = match self
             .session
-            .installed_match(plugin, choice.selector.as_ref())?;
-        Ok(CurrentItem {
+            .installed_match(plugin, choice.selector.as_ref())
+        {
+            Ok(found) => (found, None),
+            Err(err) => (None, Some(err)),
+        };
+        let item = CurrentItem {
             tool: tool.to_owned(),
             layer: Some(choice.layer),
             origin: Some(choice.origin),
@@ -175,7 +206,8 @@ impl<'s, 'c> Here<'s, 'c> {
             version: found.as_ref().map(|f| f.version.clone()),
             path: found.as_ref().map(|f| f.dir.display().to_string()),
             installed: found.is_some(),
-        })
+        };
+        (item, err)
     }
 
     /// The tools to take from real install dirs: `exec` first, then session and project
@@ -212,13 +244,16 @@ impl<'s, 'c> Here<'s, 'c> {
     }
 
     /// A [`W_REQUIRES_UNMET`] warning for each `[requires]` entry of an active tool that the
-    /// active version of the required tool does not meet. The `overrides`, as
-    /// [`Here::overrides`] returned them, give the active versions they cover; any other tool
-    /// a requirement involves is looked up as [`Here::current`] does. A required tool jtm does
-    /// not manage here is not checked, since whatever is on `PATH` may meet it. Requirements
-    /// are only ever warnings: nothing is installed, and installs that cannot be read give a
-    /// [`W_REQUIRES_UNCHECKED`] warning, so the check never fails a command.
-    pub fn requirement_warnings(&self, overrides: &[Override]) -> Vec<Warning> {
+    /// active version of the required tool does not meet. A required tool jtm does not manage
+    /// here is not checked, since whatever is on `PATH` may meet it. Requirements are only ever
+    /// warnings; nothing is installed.
+    ///
+    /// The `overrides`, as [`Here::overrides`] returned them, give the active versions they
+    /// cover; any other tool a requirement involves is looked up as [`Here::current`] does, at
+    /// most once. When a tool's installs cannot be read, the entries involving it get one
+    /// [`W_REQUIRES_UNCHECKED`] warning and the others are still checked. Any other error is
+    /// returned.
+    pub fn requirement_warnings(&self, overrides: &[Override]) -> Result<Vec<Warning>> {
         let known = overrides
             .iter()
             .map(|o| {
@@ -230,14 +265,17 @@ impl<'s, 'c> Here<'s, 'c> {
     }
 
     /// [`Here::requirement_warnings`] for `jtm current`, given the `items` it found, limited to
-    /// the requirements of `only` and the requirements on it when one tool was asked for.
+    /// the requirements of `only` and the requirements on it when one tool was asked for. An
+    /// item that is chosen but not installed is looked up again, so installs `current` could
+    /// not read still give their [`W_REQUIRES_UNCHECKED`] warning.
     pub fn current_requirement_warnings(
         &self,
         items: &[CurrentItem],
         only: Option<&str>,
-    ) -> Vec<Warning> {
+    ) -> Result<Vec<Warning>> {
         let known = items
             .iter()
+            .filter(|i| i.version.is_some() || i.layer.is_none())
             .map(|i| {
                 let active = i
                     .version
@@ -251,7 +289,7 @@ impl<'s, 'c> Here<'s, 'c> {
 
     /// The warnings for the requirements involving `only`, or all of them, looking up each tool
     /// they involve that `known` does not cover at most once.
-    fn unmet_requirements(&self, mut known: Known, only: Option<&str>) -> Vec<Warning> {
+    fn unmet_requirements(&self, mut known: Known, only: Option<&str>) -> Result<Vec<Warning>> {
         let mut warnings = Vec::new();
         for plugin in &self.plugins {
             let tool = plugin.manifest.name.as_str();
@@ -262,10 +300,10 @@ impl<'s, 'c> Here<'s, 'c> {
                 let Ok(needed_plugin) = self.plugin(needed) else {
                     continue;
                 };
-                let Some((version, _)) = self.active(&mut known, plugin, &mut warnings) else {
+                let Some((version, _)) = self.active(&mut known, plugin, &mut warnings)? else {
                     break;
                 };
-                let Some((have, origin)) = self.active(&mut known, needed_plugin, &mut warnings)
+                let Some((have, origin)) = self.active(&mut known, needed_plugin, &mut warnings)?
                 else {
                     continue;
                 };
@@ -280,7 +318,7 @@ impl<'s, 'c> Here<'s, 'c> {
                 }
             }
         }
-        warnings
+        Ok(warnings)
     }
 
     /// The active version and origin of `plugin`'s tool, from `known` or else looked up and
@@ -290,25 +328,27 @@ impl<'s, 'c> Here<'s, 'c> {
         known: &mut Known,
         plugin: &Plugin,
         warnings: &mut Vec<Warning>,
-    ) -> Option<(String, String)> {
+    ) -> Result<Option<(String, String)>> {
         let tool = &plugin.manifest.name;
         if let Some(active) = known.get(tool) {
-            return active.clone();
+            return Ok(active.clone());
         }
-        let active = match self.current_item(plugin) {
-            Ok(item) => item
-                .version
-                .map(|version| (version, item.origin.unwrap_or_default())),
-            Err(err) => {
-                warnings.push(Warning {
-                    code: W_REQUIRES_UNCHECKED,
-                    message: format!("cannot check the requirements involving `{tool}`: {err}"),
-                });
-                None
-            }
-        };
+        let (item, err) = self.current_item(plugin);
+        if let Some(err) = err {
+            warnings.push(Warning {
+                code: W_REQUIRES_UNCHECKED,
+                message: format!(
+                    "the requirements involving `{tool}` were not checked, because its installs \
+                     cannot be read: {}",
+                    unreadable(err)?
+                ),
+            });
+        }
+        let active = item
+            .version
+            .map(|version| (version, item.origin.unwrap_or_default()));
         known.insert(tool.clone(), active.clone());
-        active
+        Ok(active)
     }
 
     /// The changes that make `env` match the overrides.
@@ -407,3 +447,16 @@ pub fn find_in_dirs(command: &str, dirs: &[PathBuf], os: Os) -> Option<PathBuf> 
         .flat_map(|dir| candidates.iter().map(move |c| dir.join(c)))
         .find(|p| p.is_file())
 }
+
+/// The message of `err` when it is an I/O or permission error, as reading a tool's installs
+/// fails with, so a caller can report it as a warning and carry on. Any other error is
+/// returned unchanged, so a bug or a bad config is never hidden behind a warning.
+fn unreadable(err: JtmError) -> Result<String> {
+    match err {
+        JtmError::Io { .. } | JtmError::Permission { .. } => Ok(err.to_string()),
+        other => Err(other),
+    }
+}
+
+#[cfg(test)]
+mod tests;

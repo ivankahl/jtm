@@ -127,7 +127,7 @@ pub(crate) fn env_data(
     shell: Option<Shell>,
 ) -> Result<(EnvData, Vec<jtm_security::Warning>)> {
     let (overrides, mut found) = here.overrides(&[])?;
-    found.extend(here.requirement_warnings(&overrides));
+    found.extend(here.requirement_warnings(&overrides)?);
     let changes = here.plan(&|key| std::env::var(key).ok(), &overrides);
     let script = match shell {
         Some(shell) => shell::render(shell, &changes, PATH_SEPARATOR)?,
@@ -295,7 +295,7 @@ pub(crate) fn hook_env(ctx: &Context, shell: &str) -> Result<Outcome<EnvData>> {
         // Shown once per directory, not at every prompt.
         warnings: if moved {
             let mut found = found;
-            found.extend(here.requirement_warnings(&overrides));
+            found.extend(here.requirement_warnings(&overrides)?);
             warnings_with(found, &here.pins.conflicts)
         } else {
             Vec::new()
