@@ -197,6 +197,7 @@ impl<'s, 'c> Here<'s, 'c> {
                         variant: Some(found.variant.clone()),
                         value: found.version.clone(),
                     },
+                    origin: "jtm exec".to_owned(),
                     env: tool_env(&plugin.manifest, &found.home),
                 },
             );
@@ -205,41 +206,53 @@ impl<'s, 'c> Here<'s, 'c> {
     }
 
     /// A [`W_REQUIRES_UNMET`] warning for each `[requires]` entry of an active tool that the
-    /// active version of the required tool does not meet, with `exec` versions taking
-    /// precedence. A required tool jtm does not manage here is not checked, since whatever is
-    /// on `PATH` may meet it. Requirements are only ever warnings; nothing is installed, and a
-    /// failure to read the installs only skips the check, so it never fails a command.
-    pub fn requirement_warnings(&self, exec: &[(String, Installed)]) -> Vec<Warning> {
-        let items = match self.current(None) {
-            Ok(items) => items,
-            Err(err) => {
-                tracing::debug!(%err, "cannot check the active tools' requirements");
-                return Vec::new();
-            }
-        };
-        let mut active: BTreeMap<String, (String, String)> = BTreeMap::new();
-        for item in items {
-            if let Some(version) = item.version {
-                let origin = item.origin.unwrap_or_default();
-                active.insert(item.tool, (version, origin));
-            }
-        }
-        for (tool, found) in exec {
-            active.insert(tool.clone(), (found.version.clone(), "jtm exec".to_owned()));
-        }
+    /// active version of the required tool does not meet. The active versions are the
+    /// `overrides`, as [`Here::overrides`] returned them, and for any other tool its default. A
+    /// required tool jtm does not manage here is not checked, since whatever is on `PATH` may
+    /// meet it. Requirements are only ever warnings; nothing is installed, and a failure to
+    /// read a default's installs only skips that tool, so it never fails a command.
+    pub fn requirement_warnings(&self, overrides: &[Override]) -> Vec<Warning> {
+        self.unmet_requirements(|tool| match overrides.iter().find(|o| o.tool == tool) {
+            Some(found) => Some((found.selector.value.clone(), found.origin.clone())),
+            None => self.default_version(tool),
+        })
+    }
+
+    /// [`Here::requirement_warnings`] for the active versions `jtm current` found, which must
+    /// cover every tool.
+    pub fn current_requirement_warnings(&self, items: &[CurrentItem]) -> Vec<Warning> {
+        self.unmet_requirements(|tool| {
+            let item = items.iter().find(|i| i.tool == tool)?;
+            Some((
+                item.version.clone()?,
+                item.origin.clone().unwrap_or_default(),
+            ))
+        })
+    }
+
+    /// The warnings for the active `(version, origin)` of each tool that `active` gives. It is
+    /// asked only about tools that are active or required, so the lookups stay few.
+    fn unmet_requirements(
+        &self,
+        active: impl Fn(&str) -> Option<(String, String)>,
+    ) -> Vec<Warning> {
         let mut warnings = Vec::new();
         for plugin in &self.plugins {
+            if plugin.manifest.requires.is_empty() {
+                continue;
+            }
             let tool = plugin.manifest.name.as_str();
-            let Some((version, _)) = active.get(tool) else {
+            let Some((version, _)) = active(tool) else {
                 continue;
             };
             for (needed, requirement) in &plugin.manifest.requires {
-                let (Some((have, origin)), Ok(needed_plugin)) =
-                    (active.get(needed), self.plugin(needed))
-                else {
+                let Ok(needed_plugin) = self.plugin(needed) else {
                     continue;
                 };
-                if meets(&needed_plugin.manifest, have, requirement) == Some(false) {
+                let Some((have, origin)) = active(needed) else {
+                    continue;
+                };
+                if meets(&needed_plugin.manifest, &have, requirement) == Some(false) {
                     warnings.push(Warning {
                         code: W_REQUIRES_UNMET,
                         message: format!(
@@ -251,6 +264,21 @@ impl<'s, 'c> Here<'s, 'c> {
             }
         }
         warnings
+    }
+
+    /// The installed version `tool`'s default picks, with the defaults file as its origin.
+    fn default_version(&self, tool: &str) -> Option<(String, String)> {
+        let selector = self.defaults.get(tool)?;
+        let plugin = self.plugin(tool).ok()?;
+        match self.session.installed_match(plugin, Some(selector)) {
+            Ok(found) => {
+                found.map(|found| (found.version, self.defaults.path().display().to_string()))
+            }
+            Err(err) => {
+                tracing::debug!(%err, tool, "cannot read the default's installs");
+                None
+            }
+        }
     }
 
     /// The changes that make `env` match the overrides.

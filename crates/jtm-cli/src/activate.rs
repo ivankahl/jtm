@@ -126,7 +126,8 @@ pub(crate) fn env_data(
     here: &Here<'_, '_>,
     shell: Option<Shell>,
 ) -> Result<(EnvData, Vec<jtm_security::Warning>)> {
-    let (overrides, found) = here.overrides(&[])?;
+    let (overrides, mut found) = here.overrides(&[])?;
+    found.extend(here.requirement_warnings(&overrides));
     let changes = here.plan(&|key| std::env::var(key).ok(), &overrides);
     let script = match shell {
         Some(shell) => shell::render(shell, &changes, PATH_SEPARATOR)?,
@@ -156,8 +157,7 @@ pub(crate) fn env(ctx: &Context, shell: Option<&str>) -> Result<Outcome<EnvData>
     };
     let session = Session::open(ctx)?;
     let here = here(&session)?;
-    let (data, mut found) = env_data(&here, shell)?;
-    found.extend(here.requirement_warnings(&[]));
+    let (data, found) = env_data(&here, shell)?;
     Ok(Outcome {
         command: "env",
         changed: false,
@@ -225,8 +225,7 @@ pub(crate) fn use_version(
             path: found.dir.display().to_string(),
         })
     };
-    let (env, mut found) = env_data(&here, shell)?;
-    found.extend(here.requirement_warnings(&[]));
+    let (env, found) = env_data(&here, shell)?;
     Ok(Outcome {
         command: "use",
         changed: !env.changes.is_empty(),
@@ -296,7 +295,7 @@ pub(crate) fn hook_env(ctx: &Context, shell: &str) -> Result<Outcome<EnvData>> {
         // Shown once per directory, not at every prompt.
         warnings: if moved {
             let mut found = found;
-            found.extend(here.requirement_warnings(&[]));
+            found.extend(here.requirement_warnings(&overrides));
             warnings_with(found, &here.pins.conflicts)
         } else {
             Vec::new()

@@ -801,6 +801,16 @@ fn an_unmet_java_requirement_is_a_warning() {
     let project = h.project(&[(".sdkmanrc", "springboot=3.3.5\n")]);
     let (_, value) = h.json(&project, &["current"]);
     assert!(codes(&value).is_empty(), "{value}");
+    let (_, value) = h.json(&project, &["env"]);
+    assert!(codes(&value).is_empty(), "{value}");
+
+    // A Java only the defaults set counts too, in `current` and in `env`.
+    h.ok(&["default", "fp-java@zulu:11"]);
+    for args in [&["current"][..], &["env"]] {
+        let (code, value) = h.json(&project, args);
+        assert_eq!(code, 0, "{value}");
+        assert_eq!(codes(&value), ["W_REQUIRES_UNMET"], "{args:?}: {value}");
+    }
 }
 
 // --- real tools ---

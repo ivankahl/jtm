@@ -137,6 +137,8 @@ pub struct Override {
     pub layer: Layer,
     /// The exact version, as `variant:version`.
     pub selector: Selector,
+    /// What set it: `jtm exec`, the session variable or the pin file.
+    pub origin: String,
     pub env: ToolEnv,
 }
 
