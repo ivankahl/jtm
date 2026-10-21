@@ -384,3 +384,54 @@ fn exit_code_converts_to_process_exit_code() {
         std::process::ExitCode::from(7)
     );
 }
+
+#[test]
+fn script_errors_blame_the_plugin_only_for_what_it_did() {
+    use jtm_plugin::script::ScriptError as S;
+    let hook = || "post_extract".to_owned();
+    let code = |err: S| JtmError::script("demo", err).code();
+    assert_eq!(
+        code(S::Invalid {
+            hook: hook(),
+            message: "no function".to_owned()
+        }),
+        "E_PLUGIN_INVALID"
+    );
+    assert_eq!(
+        code(S::Failed {
+            hook: hook(),
+            message: "boom".to_owned()
+        }),
+        "E_PLUGIN_INVALID"
+    );
+    assert_eq!(
+        code(S::Io {
+            hook: hook(),
+            path: PathBuf::from("/data/tools/.tmp/x"),
+            kind: std::io::ErrorKind::NotFound,
+            message: "gone".to_owned()
+        }),
+        "E_IO"
+    );
+    assert_eq!(
+        code(S::Io {
+            hook: hook(),
+            path: PathBuf::from("/data/tools/.tmp/x"),
+            kind: std::io::ErrorKind::PermissionDenied,
+            message: "denied".to_owned()
+        }),
+        "E_PERMISSION"
+    );
+    let host = JtmError::script(
+        "demo",
+        S::Host {
+            hook: hook(),
+            message: "the script engine stopped".to_owned(),
+        },
+    );
+    assert_eq!(host.code(), "E_INTERNAL");
+    assert!(
+        host.to_string().contains("the script engine stopped"),
+        "{host}"
+    );
+}

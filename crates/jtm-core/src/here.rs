@@ -23,6 +23,14 @@ use crate::sync::apply_lock;
 /// the tool it needs, such as a build tool that needs a newer Java than the one active.
 pub const W_REQUIRES_UNMET: &str = "W_REQUIRES_UNMET";
 
+/// Warning code when `[requires]` entries are not checked, because the installs of a tool they
+/// involve cannot be read.
+pub const W_REQUIRES_UNCHECKED: &str = "W_REQUIRES_UNCHECKED";
+
+/// Warning code when `jtm current` cannot read a tool's installs, so it shows the tool as not
+/// installed.
+pub const W_INSTALLS_UNREADABLE: &str = "W_INSTALLS_UNREADABLE";
+
 /// The plugins, pins, session versions and defaults that apply in one directory.
 #[derive(Debug)]
 pub struct Here<'s, 'c> {
@@ -127,12 +135,15 @@ impl<'s, 'c> Here<'s, 'c> {
         }
     }
 
-    /// The active version of each tool, or of `only`.
-    pub fn current(&self, only: Option<&str>) -> Result<Vec<CurrentItem>> {
+    /// The active version of each tool, or of `only`. A tool whose installs cannot be read is
+    /// shown as not installed, with a [`W_INSTALLS_UNREADABLE`] warning, so one broken tool does
+    /// not hide the others; when it is `only`, the read error is returned instead.
+    pub fn current(&self, only: Option<&str>) -> Result<(Vec<CurrentItem>, Vec<Warning>)> {
         if let Some(tool) = only {
             self.plugin(tool)?;
         }
         let mut items = Vec::new();
+        let mut warnings = Vec::new();
         for plugin in &self.plugins {
             let tool = plugin.manifest.name.as_str();
             if only.is_some_and(|o| o != tool) {
@@ -151,9 +162,24 @@ impl<'s, 'c> Here<'s, 'c> {
                 });
                 continue;
             };
-            let found = self
+            let found = match self
                 .session
-                .installed_match(plugin, choice.selector.as_ref())?;
+                .installed_match(plugin, choice.selector.as_ref())
+            {
+                Ok(found) => found,
+                Err(err) if only.is_none() => {
+                    warnings.push(Warning {
+                        code: W_INSTALLS_UNREADABLE,
+                        message: format!(
+                            "`{tool}` is shown as not installed, because its installs cannot be \
+                             read: {}",
+                            unreadable(err)?
+                        ),
+                    });
+                    None
+                }
+                Err(err) => return Err(err),
+            };
             items.push(CurrentItem {
                 tool: tool.to_owned(),
                 layer: Some(choice.layer),
@@ -169,7 +195,7 @@ impl<'s, 'c> Here<'s, 'c> {
                 installed: found.is_some(),
             });
         }
-        Ok(items)
+        Ok((items, warnings))
     }
 
     /// The tools to take from real install dirs: `exec` first, then session and project
@@ -205,33 +231,41 @@ impl<'s, 'c> Here<'s, 'c> {
     }
 
     /// A [`W_REQUIRES_UNMET`] warning for each `[requires]` entry of an active tool that the
-    /// active version of the required tool does not meet, with `exec` versions taking
-    /// precedence. A required tool jtm does not manage here is not checked, since whatever is
-    /// on `PATH` may meet it. Requirements are only ever warnings; nothing is installed.
-    pub fn requirement_warnings(&self, exec: &[(String, Installed)]) -> Result<Vec<Warning>> {
-        let mut active: BTreeMap<String, (String, String)> = BTreeMap::new();
-        for item in self.current(None)? {
-            if let Some(version) = item.version {
-                let origin = item.origin.unwrap_or_default();
-                active.insert(item.tool, (version, origin));
-            }
-        }
-        for (tool, found) in exec {
-            active.insert(tool.clone(), (found.version.clone(), "jtm exec".to_owned()));
-        }
+    /// active version of the required tool does not meet. A required tool jtm does not manage
+    /// here is not checked, since whatever is on `PATH` may meet it. Requirements are only ever
+    /// warnings; nothing is installed.
+    ///
+    /// Active versions come from `exec` first, then from `known`, the items [`Here::current`]
+    /// already resolved, so only the remaining tools that have requirements or are required
+    /// have their installs read, each at most once. When a tool's installs cannot be read, the
+    /// entries involving it get one [`W_REQUIRES_UNCHECKED`] warning and the others are still
+    /// checked. Any other error is returned.
+    pub fn requirement_warnings(
+        &self,
+        exec: &[(String, Installed)],
+        known: &[CurrentItem],
+    ) -> Result<Vec<Warning>> {
+        let mut active = BTreeMap::new();
         let mut warnings = Vec::new();
         for plugin in &self.plugins {
+            if plugin.manifest.requires.is_empty() {
+                continue;
+            }
             let tool = plugin.manifest.name.as_str();
-            let Some((version, _)) = active.get(tool) else {
+            let Some((version, _)) = self.active(tool, exec, known, &mut active, &mut warnings)?
+            else {
                 continue;
             };
             for (needed, requirement) in &plugin.manifest.requires {
-                let (Some((have, origin)), Ok(needed_plugin)) =
-                    (active.get(needed), self.plugin(needed))
+                let Ok(needed_plugin) = self.plugin(needed) else {
+                    continue;
+                };
+                let Some((have, origin)) =
+                    self.active(needed, exec, known, &mut active, &mut warnings)?
                 else {
                     continue;
                 };
-                if meets(&needed_plugin.manifest, have, requirement) == Some(false) {
+                if meets(&needed_plugin.manifest, &have, requirement) == Some(false) {
                     warnings.push(Warning {
                         code: W_REQUIRES_UNMET,
                         message: format!(
@@ -243,6 +277,54 @@ impl<'s, 'c> Here<'s, 'c> {
             }
         }
         Ok(warnings)
+    }
+
+    /// The active version of `tool` and what set it, for [`Here::requirement_warnings`]: from
+    /// `exec`, then a `known` item that settles it, then its installs. Each tool is resolved
+    /// once into `cache`; an unreadable one adds its [`W_REQUIRES_UNCHECKED`] warning then.
+    fn active(
+        &self,
+        tool: &str,
+        exec: &[(String, Installed)],
+        known: &[CurrentItem],
+        cache: &mut BTreeMap<String, Option<(String, String)>>,
+        warnings: &mut Vec<Warning>,
+    ) -> Result<Option<(String, String)>> {
+        if let Some(found) = cache.get(tool) {
+            return Ok(found.clone());
+        }
+        let found = if let Some((_, found)) = exec.iter().find(|(t, _)| t == tool) {
+            Some((found.version.clone(), "jtm exec".to_owned()))
+        } else if let Some(item) = known
+            .iter()
+            .find(|i| i.tool == tool && (i.version.is_some() || i.layer.is_none()))
+        {
+            item.version
+                .clone()
+                .map(|version| (version, item.origin.clone().unwrap_or_default()))
+        } else if let Some(choice) = self.layers().choose(tool) {
+            match self
+                .session
+                .installed_match(self.plugin(tool)?, choice.selector.as_ref())
+            {
+                Ok(found) => found.map(|f| (f.version, choice.origin)),
+                Err(err) => {
+                    warnings.push(Warning {
+                        code: W_REQUIRES_UNCHECKED,
+                        message: format!(
+                            "the requirements involving `{tool}` were not checked, because its \
+                             installs cannot be read: {}",
+                            unreadable(err)?
+                        ),
+                    });
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        cache.insert(tool.to_owned(), found.clone());
+        Ok(found)
     }
 
     /// The changes that make `env` match the overrides.
@@ -325,7 +407,12 @@ pub fn find_on_path(command: &str, path: Option<&str>, os: Os) -> Option<PathBuf
 }
 
 /// The first file named `command` in `dirs`, trying Windows executable extensions on Windows.
+/// A `command` that is not a bare file name, such as an absolute path or one with `..`, is
+/// never joined onto `dirs`, so it cannot name a file outside them.
 pub fn find_in_dirs(command: &str, dirs: &[PathBuf], os: Os) -> Option<PathBuf> {
+    if !is_bare_name(command) {
+        return None;
+    }
     let candidates: Vec<String> = if os == Os::Windows && !command.contains('.') {
         let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
         pathext
@@ -341,3 +428,26 @@ pub fn find_in_dirs(command: &str, dirs: &[PathBuf], os: Os) -> Option<PathBuf> 
         .flat_map(|dir| candidates.iter().map(move |c| dir.join(c)))
         .find(|p| p.is_file())
 }
+
+/// Whether `command` is one plain file name on every OS: not empty, not `.` or `..`, and free
+/// of `/`, `\`, `:` (a drive or stream) and control characters.
+fn is_bare_name(command: &str) -> bool {
+    !command.is_empty()
+        && command != "."
+        && command != ".."
+        && !command.contains(['/', '\\', ':'])
+        && !command.chars().any(char::is_control)
+}
+
+/// The message of `err` when it is an I/O or permission error, as reading a tool's installs
+/// fails with, so a caller can report it as a warning and carry on. Any other error is
+/// returned unchanged, so a bug or a bad config is never hidden behind a warning.
+fn unreadable(err: JtmError) -> Result<String> {
+    match err {
+        JtmError::Io { .. } | JtmError::Permission { .. } => Ok(err.to_string()),
+        other => Err(other),
+    }
+}
+
+#[cfg(test)]
+mod tests;

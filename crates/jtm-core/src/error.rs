@@ -706,6 +706,9 @@ impl JtmError {
                 message,
                 ..
             } => JtmError::io(path, std::io::Error::new(kind, message)),
+            S::Host { hook, message } => {
+                JtmError::internal(format!("plugin `{plugin}` hook `{hook}`: {message}"))
+            }
         }
     }
 }
