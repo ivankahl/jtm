@@ -290,3 +290,29 @@ fn concurrent_repairs_never_remove_each_others_files() {
         assert!(sync_working_copy(&dirs, builtin).unwrap().is_empty());
     }
 }
+
+#[test]
+fn temporary_files_a_killed_process_left_are_swept() {
+    let (_home, dirs) = dirs();
+    fs::create_dir_all(dirs.plugins()).unwrap();
+    let stale = dirs.plugins().join(format!("{TEMP_PREFIX}stale"));
+    let fresh = dirs.plugins().join(format!("{TEMP_PREFIX}fresh"));
+    let other = dirs.plugins().join(".tmp-not-ours");
+    for path in [&stale, &fresh, &other] {
+        fs::write(path, "partial").unwrap();
+    }
+    let old = std::time::SystemTime::now() - TEMP_MAX_AGE * 2;
+    fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    sync_working_copy(&dirs, big_builtin()).unwrap();
+    assert!(!stale.exists(), "a stale temporary file is removed");
+    assert!(
+        fresh.exists(),
+        "another process may still be writing a fresh one"
+    );
+    assert!(other.exists(), "only jtm's own temporary files are touched");
+}

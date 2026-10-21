@@ -18,6 +18,12 @@ use crate::error::{JtmError, Result};
 use crate::indices::ManifestOrigin;
 use crate::platform::Platform;
 
+/// The name prefix of the files the working copy repair writes in `<data>/plugins`.
+const TEMP_PREFIX: &str = ".jtm-builtin-";
+/// How old a repair's temporary file must be before the sync takes it for one a killed process
+/// left behind. A repair writes for well under a second.
+const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// The working copy files of one builtin plugin, as `(file name, bytes)`.
 fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> {
     let mut files = vec![("plugin.toml", found.text.as_bytes())];
@@ -49,6 +55,7 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
     let scratch = dirs.plugins();
     let mut repaired = Vec::new();
     ensure_dir(&root, &mut repaired)?;
+    sweep_temp_files(&scratch);
     let wanted: Vec<(String, &BuiltinManifest)> =
         builtin.iter().map(|b| (dir_name(b.name), b)).collect();
     for entry in read_entries(&root)? {
@@ -99,12 +106,34 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
 /// `path`. A rename replaces a link rather than writing through it, so a link planted in the
 /// working copy is never followed.
 fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut file =
-        tempfile::NamedTempFile::new_in(scratch).map_err(|e| JtmError::io(scratch, e))?;
+    let mut file = tempfile::Builder::new()
+        .prefix(TEMP_PREFIX)
+        .tempfile_in(scratch)
+        .map_err(|e| JtmError::io(scratch, e))?;
     io::Write::write_all(&mut file, bytes).map_err(|e| JtmError::io(file.path(), e))?;
     file.persist(path)
         .map_err(|e| JtmError::io(path, e.error))?;
     Ok(())
+}
+
+/// Removes the repair's temporary files in `scratch` older than [`TEMP_MAX_AGE`], which a
+/// process killed mid-repair left behind. Failures are ignored; the next sync tries again.
+fn sweep_temp_files(scratch: &Path) {
+    let Ok(entries) = fs::read_dir(scratch) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let ours = entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX);
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > TEMP_MAX_AGE);
+        if ours && stale && entry.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Makes `dir` a real directory, replacing a file or link in its place.
