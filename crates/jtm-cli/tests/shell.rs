@@ -399,3 +399,92 @@ fn hook_env_honours_json() {
         "{value}"
     );
 }
+
+/// A fixture whose user default is `demo@1.0` while `tools/demo` is a file, so its installs
+/// cannot be listed. The defaults file is written directly and nothing is installed, so no
+/// link or junction points into the tools tree.
+fn unreadable_default() -> Fixture {
+    let f = Fixture::new(false);
+    f.trust();
+    let state = f.home.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("defaults.toml"), "[defaults]\ndemo = \"1.0\"\n").unwrap();
+    let tools = f.home.path().join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::fs::write(tools.join("demo"), "not a directory").unwrap();
+    f
+}
+
+/// Runs `args` in an empty directory, outside any session or hook; returns the exit code and
+/// the one envelope.
+fn json_in(f: &Fixture, cwd: &Path, args: &[&str]) -> (i32, Value) {
+    let output = f
+        .jtm()
+        .current_dir(cwd)
+        .env_remove("JTM_SESSION_DEMO")
+        .env_remove("JTM_PROJECT_DEMO")
+        .env_remove("JTM_HOOK_DIR")
+        .arg("--json")
+        .args(args)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "{args:?}: one envelope: {stdout}"
+    );
+    (
+        output.status.code().unwrap(),
+        serde_json::from_str(&stdout).unwrap(),
+    )
+}
+
+fn warning_codes(value: &Value) -> Vec<&str> {
+    value["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["code"].as_str().unwrap())
+        .collect()
+}
+
+#[test]
+fn unreadable_installs_of_a_tool_without_requirements_are_not_read() {
+    let f = unreadable_default();
+    let project = tempfile::tempdir().unwrap();
+
+    // The read really fails, so the commands below get past it rather than never meeting it.
+    let (code, value) = json_in(&f, project.path(), &["current", "demo"]);
+    assert_eq!(code, 4, "{value}");
+    assert_eq!(value["error"]["code"], "E_IO", "{value}");
+
+    // `demo` has no `[requires]`, so neither the requirements check nor anything else in `env`
+    // or the hook reads its installs.
+    let (code, value) = json_in(&f, project.path(), &["env"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["ok"], true, "{value}");
+    assert!(warning_codes(&value).is_empty(), "{value}");
+
+    let (code, value) = json_in(&f, project.path(), &["hook-env", "--shell", "bash"]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["ok"], true, "{value}");
+    assert!(warning_codes(&value).is_empty(), "{value}");
+    assert!(
+        change(&value["data"]["changes"], "JTM_HOOK_DIR").is_some(),
+        "{value}"
+    );
+
+    // `current` still lists every tool, showing the broken one as not installed with a warning.
+    let (code, value) = json_in(&f, project.path(), &["current"]);
+    assert_eq!(code, 0, "{value}");
+    let demo = value["data"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["tool"] == "demo")
+        .unwrap();
+    assert_eq!(demo["layer"], "default", "{value}");
+    assert_eq!(demo["installed"], false, "{value}");
+    assert_eq!(warning_codes(&value), ["W_INSTALLS_UNREADABLE"], "{value}");
+}
