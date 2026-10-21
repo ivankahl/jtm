@@ -15,5 +15,6 @@ expression: value
       "url": "https://example.test/a.zip"
     }
   },
+  "warnings": [],
   "jtm_version": "[version]"
 }

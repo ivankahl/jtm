@@ -78,3 +78,26 @@ fn human_failure_goes_to_stderr_with_its_code() {
     assert!(out.is_empty());
     assert_eq!(err, "error[E_USAGE]: bad flag\n");
 }
+
+#[test]
+fn a_failure_carries_the_warnings_collected_before_it() {
+    let error = JtmError::usage("bad flag");
+    let warnings = outcome().warnings;
+    let (out, err) = render(Format::Json, |r| {
+        r.failure_with("install", &error, Map::new(), &warnings)
+            .unwrap()
+    });
+    assert!(err.is_empty());
+    let value: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(value["warnings"][0]["code"], "W_TEST", "{value}");
+
+    let (out, err) = render(Format::Human, |r| {
+        r.failure_with("install", &error, Map::new(), &warnings)
+            .unwrap()
+    });
+    assert!(out.is_empty());
+    assert_eq!(
+        err,
+        "warning[W_TEST]: something to note\nerror[E_USAGE]: bad flag\n"
+    );
+}

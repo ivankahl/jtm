@@ -268,15 +268,19 @@ impl<'s, 'c> Here<'s, 'c> {
     /// The executable `command` resolves to among the active installs: the first whose bin
     /// dirs hold it, so any file a tool ships maps to that tool, whatever the version calls it.
     /// Only installs jtm manages are searched, never `PATH`, so the answer is always a jtm
-    /// install. Each tool counts only in the version its highest layer chooses: a session or
-    /// project version that is not installed gets a `W_NOT_INSTALLED` warning and never falls
-    /// back to the default.
+    /// install. Each tool counts only in the version its highest layer chooses, and an active
+    /// version that is not installed never falls back to a lower layer.
     ///
     /// A tool whose installs cannot be read is skipped with a [`W_TOOL_SKIPPED`] warning, so
     /// one broken tool does not hide the others. A command in no active install is
-    /// `E_TOOL_UNKNOWN`.
-    pub fn which(&self, command: &str, os: Os) -> Result<(WhichItem, Vec<Warning>)> {
+    /// `E_TOOL_UNKNOWN`, with a `W_NOT_INSTALLED` warning for every active version that is not
+    /// installed, since any of them might hold it. A command that is found gets that warning
+    /// only for the tools its tool `[requires]`, since those are the ones it would run with.
+    ///
+    /// The warnings come back whether or not the command is found.
+    pub fn which(&self, command: &str, os: Os) -> (Result<WhichItem>, Vec<Warning>) {
         let mut warnings = Vec::new();
+        let mut missing = Vec::new();
         for plugin in &self.plugins {
             let tool = plugin.manifest.name.as_str();
             let Some(choice) = self.layers().choose(tool) else {
@@ -288,7 +292,7 @@ impl<'s, 'c> Here<'s, 'c> {
             {
                 Ok(Some(found)) => found,
                 Ok(None) => {
-                    warnings.push(not_installed_warning(&choice));
+                    missing.push(not_installed_warning(&choice));
                     continue;
                 }
                 Err(err) => {
@@ -310,11 +314,35 @@ impl<'s, 'c> Here<'s, 'c> {
                 version: format!("{}:{}", found.variant, found.version),
                 path: path.display().to_string(),
             };
-            return Ok((item, warnings));
+            warnings.extend(self.required_not_installed(plugin));
+            return (Ok(item), warnings);
         }
-        Err(JtmError::CommandUnknown {
+        warnings.extend(missing);
+        let err = JtmError::CommandUnknown {
             command: command.to_owned(),
-        })
+        };
+        (Err(err), warnings)
+    }
+
+    /// A `W_NOT_INSTALLED` warning for each tool `plugin` `[requires]` whose active version is
+    /// not installed. A required tool jtm does not manage, or whose installs cannot be read,
+    /// is left out.
+    fn required_not_installed(&self, plugin: &Plugin) -> Vec<Warning> {
+        let mut warnings = Vec::new();
+        for needed in plugin.manifest.requires.keys() {
+            let (Ok(needed_plugin), Some(choice)) =
+                (self.plugin(needed), self.layers().choose(needed))
+            else {
+                continue;
+            };
+            if let Ok(None) = self
+                .session
+                .installed_match(needed_plugin, choice.selector.as_ref())
+            {
+                warnings.push(not_installed_warning(&choice));
+            }
+        }
+        warnings
     }
 }
 
