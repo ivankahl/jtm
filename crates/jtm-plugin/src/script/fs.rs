@@ -5,23 +5,30 @@
 //! archive rules refuse them, and so is any path whose parent directories include a link, so
 //! no operation can reach outside the install dir. Operations act on links themselves, never
 //! on their targets, and `chmod` refuses links. Moving a link can change where it points, so
-//! once the hook returns, [`check_links`] fails it if any link points outside.
+//! once the hook returns, [`check_links`] fails it if any link points outside. A directory the
+//! check cannot read fails it too, since a link could hide in it, but as a host I/O error
+//! rather than a limit breach.
 //!
 //! - `exists(path)` and `is_dir(path)`, without following links.
 //! - `list(dir)`: the sorted names in a directory.
 //! - `rename(from, to)`, also named `move`: `to` must not exist yet.
 //! - `remove(path)`: a file, a link or a whole directory.
-//! - `chmod(path, mode)`: permission bits from `0` to `0o777`; a no-op on Windows.
+//! - `chmod(path, mode)`: permission bits from `0` to `0o777`. A file keeps at least `0o400`,
+//!   so jtm can still read it. A directory may take any mode during the hook, and once the
+//!   hook returns, even with an error, [`restore_dirs`] gives every directory back `0o700`
+//!   for its owner, so jtm can still check, move and remove it. The mode is checked on every
+//!   OS, so a hook fails the same way everywhere, and only applying it is skipped on Windows.
 //!
 //! Failed operations, such as a missing file, raise ordinary errors the script may catch. A
-//! path that leaves the install dir is recorded as a limit breach and fails the hook even if
-//! the script catches it.
+//! path that leaves the install dir, or a file mode jtm could not read, is recorded as a
+//! limit breach and fails the hook even if the script catches it.
 
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, MutexGuard};
 
+use jtm_archive::tree::{self, ReadError, display_rel};
 use mlua::{Lua, Table};
 
 use super::sandbox::refuse;
@@ -29,6 +36,11 @@ use super::{Limit, Shared};
 
 /// The highest mode `chmod` accepts: permission bits only, never setuid, setgid or sticky.
 const MAX_MODE: u32 = 0o777;
+/// The bits a file's mode must keep: read for its owner.
+const FILE_MODE: u32 = 0o400;
+/// The bits every directory gets back after the hook: read, write and search for its owner.
+#[cfg(unix)]
+const DIR_MODE: u32 = 0o700;
 
 /// A directory the script may change, and nothing outside it.
 #[derive(Debug, Clone)]
@@ -184,6 +196,9 @@ pub(super) fn api(lua: &Lua, dir: PathBuf, shared: Arc<Shared>) -> mlua::Result<
                     "`{path}` is a link; chmod does not follow links"
                 )));
             }
+            if !meta.is_dir() && mode & FILE_MODE != FILE_MODE {
+                return Err(refuse(&r.shared, Limit::Mode { path, mode }));
+            }
             set_mode(&target, mode).map_err(|e| io_error(&path, &e))
         })?,
     )?;
@@ -191,44 +206,84 @@ pub(super) fn api(lua: &Lua, dir: PathBuf, shared: Arc<Shared>) -> mlua::Result<
     Ok(t)
 }
 
-/// Checks that every link under `root` still points inside it.
-pub(super) fn check_links(root: &Path) -> Result<(), Limit> {
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
-                pending.push(path);
-            } else if kind.is_symlink() {
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                let target = fs::read_link(&path).map_err(|e| Limit::Path {
-                    path: rel.clone(),
-                    reason: format!("is a link that cannot be read: {e}"),
-                })?;
-                let parent = path.parent().unwrap_or(root);
-                if !stays_inside(root, parent, &target) {
-                    return Err(Limit::Path {
-                        path: rel,
-                        reason: format!(
-                            "is a link to `{}`, outside the install dir",
-                            target.display()
-                        ),
-                    });
-                }
-            }
+/// Why a check after the hook failed.
+#[derive(Debug)]
+pub(super) enum Failure {
+    /// A link points outside the install dir.
+    Limit(Limit),
+    /// The install dir could not be read or changed, which is the host's problem.
+    Io { path: PathBuf, source: io::Error },
+}
+
+impl From<ReadError> for Failure {
+    fn from(e: ReadError) -> Self {
+        Failure::Io {
+            path: e.path,
+            source: e.source,
         }
     }
+}
+
+/// Gives every directory under `root`, and `root` itself, read, write and search for its
+/// owner, whatever mode the hook left it with. Each directory is fixed before it is read, so
+/// a locked directory inside another is reached too.
+#[cfg(unix)]
+pub(super) fn restore_dirs(root: &Path) -> Result<(), Failure> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let restore = |path: &Path| {
+        let failed = |source| Failure::Io {
+            path: path.to_path_buf(),
+            source,
+        };
+        let mode = fs::symlink_metadata(path)
+            .map_err(failed)?
+            .permissions()
+            .mode()
+            & 0o7777;
+        if mode & DIR_MODE == DIR_MODE {
+            return Ok(());
+        }
+        set_mode(path, mode | DIR_MODE).map_err(failed)
+    };
+    restore(root)?;
+    tree::walk(root, |entry| {
+        if entry.kind.is_dir() {
+            restore(&entry.path)?;
+        }
+        Ok(())
+    })
+}
+
+/// Windows ignores the modes a hook sets, so there is nothing to restore.
+#[cfg(not(unix))]
+pub(super) fn restore_dirs(_root: &Path) -> Result<(), Failure> {
     Ok(())
+}
+
+/// Checks that every link under `root` still points inside it. A directory or entry that
+/// cannot be read fails the check, since a link the check cannot see could point anywhere.
+pub(super) fn check_links(root: &Path) -> Result<(), Failure> {
+    tree::walk(root, |entry| {
+        if !entry.kind.is_symlink() {
+            return Ok(());
+        }
+        let path = &entry.path;
+        let target = fs::read_link(path).map_err(|source| Failure::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let parent = path.parent().unwrap_or(root);
+        if stays_inside(root, parent, &target) {
+            return Ok(());
+        }
+        Err(Failure::Limit(Limit::Path {
+            path: display_rel(root, path),
+            reason: format!(
+                "is a link to `{}`, outside the install dir",
+                target.display()
+            ),
+        }))
+    })
 }
 
 /// Whether the link `target`, in the real directory `from` under `root`, resolves inside

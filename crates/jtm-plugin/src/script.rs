@@ -90,6 +90,11 @@ pub enum Limit {
         path: String,
         reason: String,
     },
+    /// A `jtm.fs.chmod` that would leave a file its owner cannot read.
+    Mode {
+        path: String,
+        mode: u32,
+    },
     /// The hook was not started because this many abandoned hooks are still running.
     Stuck(usize),
 }
@@ -102,6 +107,11 @@ impl fmt::Display for Limit {
             Limit::Path { path, reason } => {
                 write!(f, "install dir containment: `{path}` {reason}")
             }
+            Limit::Mode { path, mode } => write!(
+                f,
+                "file mode: {mode:#o} would leave jtm unable to read `{path}`; a file keeps at \
+                 least 0o400"
+            ),
             Limit::Stuck(count) => write!(
                 f,
                 "{count} earlier hooks, of any plugin, are still running past their time limit"
@@ -232,7 +242,8 @@ impl Script {
     }
 
     /// `resolve_alias(alias, variant, candidates)`: returns the version `alias` selects among
-    /// `candidates` (each `{ variant, version, tags }`), or `nil` when none matches.
+    /// `candidates` (each `{ variant, version, tags }`), or `nil` when none matches. Anything
+    /// but the version of a candidate of `variant`, such as another alias, is refused.
     pub fn resolve_alias<C: Candidate>(
         &self,
         function: &str,
@@ -253,7 +264,25 @@ impl Script {
         )?;
         match out {
             Json::Null => Ok(None),
-            Json::String(version) => check_version(HOOK, &version).map(|()| Some(version)),
+            Json::String(version) => {
+                // A malformed value gets the shape error; only well-formed ones reach the
+                // membership test, so its message quotes a plain version string.
+                check_version(HOOK, &version)?;
+                if candidates
+                    .iter()
+                    .any(|c| c.variant() == variant && c.version() == version)
+                {
+                    Ok(Some(version))
+                } else {
+                    Err(ScriptError::Invalid {
+                        hook: HOOK.to_owned(),
+                        message: format!(
+                            "returned `{version}`, which is not the version of any `{variant}` \
+                             candidate"
+                        ),
+                    })
+                }
+            }
             other => Err(wrong_return(HOOK, "a version string or nil", &other)),
         }
     }
@@ -333,8 +362,9 @@ impl Script {
     }
 
     /// `post_extract(context)` with `jtm.fs` confined to `root`, the temporary install dir.
-    /// `context` is `{ variant, version, home }`. Once the hook returns, every link in `root`
-    /// must still point inside it.
+    /// `context` is `{ variant, version, home }`. Once the hook returns, even with an error,
+    /// every directory in `root` gets back `0o700` for its owner, and on success every link
+    /// in `root` must still point inside it.
     pub fn post_extract(
         &self,
         function: &str,
@@ -353,11 +383,24 @@ impl Script {
             "version": context.version,
             "home": context.home,
         });
-        self.call(HOOK, function, vec![arg], Some(root.clone()))?;
-        fs::check_links(&root).map_err(|limit| ScriptError::Limit {
-            hook: HOOK.to_owned(),
-            limit,
-        })
+        let called = self.call(HOOK, function, vec![arg], Some(root.clone()));
+        // Restored even when the hook failed, so jtm can still remove what it left behind.
+        let restored = fs::restore_dirs(&root);
+        called?;
+        restored
+            .and_then(|()| fs::check_links(&root))
+            .map_err(|failure| match failure {
+                fs::Failure::Limit(limit) => ScriptError::Limit {
+                    hook: HOOK.to_owned(),
+                    limit,
+                },
+                fs::Failure::Io { path, source } => ScriptError::Io {
+                    hook: HOOK.to_owned(),
+                    path,
+                    kind: source.kind(),
+                    message: source.to_string(),
+                },
+            })
     }
 
     /// Runs `function` on its own thread with a fresh sandboxed state and returns its first

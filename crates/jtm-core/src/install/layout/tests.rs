@@ -136,3 +136,56 @@ fn every_bin_dir_must_hold_a_file() {
         assert_eq!(err.code(), "E_PLUGIN_INVALID", "{files:?}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn a_bin_dir_that_cannot_be_read_is_an_io_error_not_a_mismatch() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let l = layout("bin_dirs = [\"bin\"]");
+    let dir = tree(&["t/bin/tool"]);
+    let bin = dir.path().join("t/bin");
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o300)).unwrap();
+    let readable = fs::read_dir(&bin).is_ok();
+    let placed = apply("demo", dir.path(), &l, Os::Linux).unwrap();
+    let checked = check_bin_dirs("demo", &placed, &l);
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        // Running as root, permissions do not stop the read.
+        checked.unwrap();
+    } else {
+        assert_eq!(checked.unwrap_err().code(), "E_PERMISSION");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_looping_link_in_a_bin_dir_is_not_a_file_and_not_an_error() {
+    let l = layout("bin_dirs = [\"bin\"]");
+    let dir = tree(&["t/bin/zz-tool"]);
+    std::os::unix::fs::symlink("loop", dir.path().join("t/bin/loop")).unwrap();
+    let placed = apply("demo", dir.path(), &l, Os::Linux).unwrap();
+    check_bin_dirs("demo", &placed, &l).unwrap();
+    fs::remove_file(placed.home_dir().join("bin/zz-tool")).unwrap();
+    let err = check_bin_dirs("demo", &placed, &l).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_bin_dir_whose_parent_cannot_be_searched_is_an_io_error_not_a_mismatch() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let l = layout("bin_dirs = [\"sub/bin\"]");
+    let dir = tree(&["t/sub/bin/tool", "t/other"]);
+    let placed = apply("demo", dir.path(), &l, Os::Linux).unwrap();
+    let sub = placed.home_dir().join("sub");
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o600)).unwrap();
+    let searchable = fs::metadata(sub.join("bin")).is_ok();
+    let checked = check_bin_dirs("demo", &placed, &l);
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+    if searchable {
+        // Running as root, permissions do not stop the lookup.
+        checked.unwrap();
+    } else {
+        assert_eq!(checked.unwrap_err().code(), "E_PERMISSION");
+    }
+}
