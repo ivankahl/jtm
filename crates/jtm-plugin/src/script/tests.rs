@@ -357,6 +357,13 @@ fn deep_recursion_fails_without_crashing() {
         eval("local function f(n) return f(n + 1) + 1 end return tostring(f(1))"),
         Err(ScriptError::Failed { .. })
     ));
+    // Each protected call goes through the host, so nesting them is bounded too.
+    for source in [
+        "local function f() return pcall(f) end return tostring((f()))",
+        "local function f() return xpcall(f, f) end return tostring((f()))",
+    ] {
+        let _ = eval(source);
+    }
 }
 
 #[test]
@@ -685,6 +692,11 @@ fn catching_a_memory_breach_does_not_help() {
         "function f() pcall(xpcall, function() return string.rep('x', 64 * 1024 * 1024) end, function(e) error({}) end) return '1' end",
         // Running out of memory in the handler is a breach too.
         "function f() xpcall(function() error('x') end, function(e) return string.rep('x', 64 * 1024 * 1024) end) return '1' end",
+        // So is one caught by nested protected calls.
+        "function f() pcall(pcall, pcall, string.rep, 'x', 64 * 1024 * 1024) return '1' end",
+        "function f() xpcall(pcall, function(e) return e end, string.rep, 'x', 64 * 1024 * 1024) return '1' end",
+        // And one in a host function.
+        "function f() local text = '[' .. string.rep('0,', 1000000) .. '0]' pcall(jtm.json.decode, text) return '1' end",
     ] {
         assert!(
             matches!(
@@ -694,6 +706,48 @@ fn catching_a_memory_breach_does_not_help() {
             "{source}"
         );
     }
+}
+
+#[test]
+fn the_out_of_memory_message_alone_is_not_a_breach() {
+    assert_eq!(
+        ok(
+            "local okay, err = pcall(error, 'not enough memory', 0) return tostring(okay) .. ' ' .. err"
+        ),
+        "false not enough memory"
+    );
+    assert_eq!(
+        ok(
+            "local okay, err = xpcall(function() error('not enough memory', 0) end, function(e) return e end) \
+             return tostring(okay) .. ' ' .. err"
+        ),
+        "false not enough memory"
+    );
+    assert_eq!(
+        ok(
+            "local okay, err = xpcall(error, function(e) error('not enough memory', 0) end, 'x') \
+             return tostring(okay) .. ' ' .. err"
+        ),
+        "false error in error handling"
+    );
+}
+
+#[test]
+fn an_xpcall_handler_does_not_run_after_a_memory_breach() {
+    let dir = install_dir();
+    let result = post_extract(
+        dir.path(),
+        "xpcall(function() return string.rep('x', 512 * 1024 * 1024) end, function(e) jtm.fs.remove('README') end)",
+    );
+    assert!(matches!(limit_of(result), Limit::Memory(_)));
+    assert!(dir.path().join("README").is_file());
+}
+
+#[test]
+fn pcall_and_xpcall_need_their_arguments() {
+    assert_eq!(ok("return tostring(pcall(pcall))"), "false");
+    assert_eq!(ok("return tostring(pcall(xpcall, error))"), "false");
+    assert_eq!(ok("return tostring(pcall(xpcall, error, 42))"), "false");
 }
 
 #[test]

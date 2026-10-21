@@ -12,15 +12,14 @@
 //!   `ends_with`.
 //! - `jtm.fs`, during `post_extract` only (see [`super::fs`]).
 
-use std::cell::Cell;
 use std::cmp::Ordering;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
 use mlua::chunk::ChunkMode;
-use mlua::{Function, Lua, LuaOptions, MultiValue, StdLib, Table, Value, VmState};
+use mlua::ffi;
+use mlua::{Lua, LuaOptions, MultiValue, StdLib, Table, Value, VmState};
 use serde_json::Value as Json;
 
 use super::convert::{json_to_lua, lua_to_json};
@@ -152,94 +151,106 @@ pub(super) fn run(job: Job) -> Result<Json, Failure> {
     lua_to_json(&out).map_err(Failure::Invalid)
 }
 
-/// Luau's error message for a failed allocation, which is what a protected call returns
-/// when a hook runs out of memory in Lua code.
+/// The message of the error that stops a hook which ran out of memory.
 const MEMORY_ERROR: &str = "not enough memory";
+/// What Luau's `xpcall` returns when its handler fails too.
+const HANDLER_ERROR: &str = "error in error handling";
 
-/// Wraps `pcall` and `xpcall` so a memory breach is recorded before the script sees the
-/// error, and catching it cannot hide it. Time and containment breaches are recorded where
-/// they are raised. Luau's own functions still do the calling, so any callable value works and
-/// an error value the script raised reaches it unchanged; an error from the host is seen as
-/// its message. A script raising the memory error's message itself counts as a breach.
+/// How a protected call ended, when it did not run out of memory.
+enum Outcome {
+    Returned(MultiValue),
+    Raised(Value),
+}
+
+/// Replaces `pcall` and `xpcall` with versions that make the call through Luau's
+/// `lua_pcall`, whose status says whether an allocation was refused. A memory breach is
+/// recorded and raised again, so catching it cannot hide it. The error's text plays no part,
+/// so a script raising the same message raises an ordinary error. Time and containment
+/// breaches are recorded where they are raised.
+///
+/// Otherwise they behave as Luau's own: any callable value works, an error value the script
+/// raised reaches it unchanged, and an error from the host is seen as its message. `xpcall`
+/// calls its handler once the failed call has unwound, which a script cannot tell apart
+/// without the debug library.
 fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> {
-    let globals = lua.globals();
-    let native_pcall: Function = globals.raw_get("pcall")?;
-    let native_xpcall: Function = globals.raw_get("xpcall")?;
-
     let s = Arc::clone(shared);
     let pcall = lua.create_function(move |lua, args: MultiValue| {
-        let mut out: MultiValue = native_pcall.call(args)?;
-        if matches!(out.front(), Some(Value::Boolean(false))) {
-            let error = out.get(1).cloned().unwrap_or(Value::Nil);
-            let seen = caught(lua, &s, error)?;
-            if let Some(slot) = out.get_mut(1) {
-                *slot = seen;
-            }
+        if args.is_empty() {
+            return Err(mlua::Error::runtime("missing argument #1 to 'pcall'"));
         }
-        Ok(out)
+        Ok(match protected_call(lua, &s, args)? {
+            Outcome::Returned(mut values) => {
+                values.push_front(Value::Boolean(true));
+                values
+            }
+            Outcome::Raised(error) => {
+                MultiValue::from_iter([Value::Boolean(false), seen(lua, error)?])
+            }
+        })
     })?;
 
     let s = Arc::clone(shared);
     let xpcall = lua.create_function(move |lua, mut args: MultiValue| {
-        // The handler runs inside the failed call, so the breach is recorded before it does.
-        // Luau itself refuses a handler that is not a function. The flag is this call's own:
-        // a limit recorded earlier must not stop a breach here from being raised again.
-        let breached = Rc::new(Cell::new(false));
-        if let Some(Value::Function(handler)) = args.get(1).cloned() {
-            let s = Arc::clone(&s);
-            let flag = Rc::clone(&breached);
-            let wrapped = lua.create_function(move |lua, error: Value| {
-                let result =
-                    caught(lua, &s, error).and_then(|error| handler.call::<MultiValue>(error));
-                // Luau reports a failing handler as an ordinary error, so a breach in the
-                // handler itself is recorded here.
-                if let Err(e) = &result
-                    && matches!(classify(e), Failure::Memory)
-                {
-                    s.record(Limit::Memory(s.limits.memory));
-                    flag.set(true);
-                }
-                result
-            })?;
-            if let Some(slot) = args.get_mut(1) {
-                *slot = Value::Function(wrapped);
+        let Some(Value::Function(handler)) = args.get(1).cloned() else {
+            return Err(mlua::Error::runtime(
+                "invalid argument #2 to 'xpcall' (function expected)",
+            ));
+        };
+        args.remove(1);
+        let error = match protected_call(lua, &s, args)? {
+            Outcome::Returned(mut values) => {
+                values.push_front(Value::Boolean(true));
+                return Ok(values);
             }
-        }
-        let out: MultiValue = native_xpcall.call(args)?;
-        // A handler that raised again replaced the error, but not the breach. Luau may also
-        // fail to call the handler at all when memory is short, and return its message.
-        let unhandled =
-            matches!(out.front(), Some(Value::Boolean(false))) && out.get(1).is_some_and(is_memory);
-        if breached.get() || unhandled {
-            s.record(Limit::Memory(s.limits.memory));
-            return Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned()));
-        }
-        Ok(out)
+            Outcome::Raised(error) => seen(lua, error)?,
+        };
+        let call = MultiValue::from_iter([Value::Function(handler), error]);
+        let handled = match protected_call(lua, &s, call)? {
+            Outcome::Returned(values) => values.into_iter().next().unwrap_or(Value::Nil),
+            Outcome::Raised(_) => Value::String(lua.create_string(HANDLER_ERROR)?),
+        };
+        Ok(MultiValue::from_iter([Value::Boolean(false), handled]))
     })?;
+
+    let globals = lua.globals();
     globals.raw_set("pcall", pcall)?;
     globals.raw_set("xpcall", xpcall)
 }
 
-/// The error value a script's caller or handler sees for `error`: a memory breach is recorded
-/// and raised again, a host error becomes its message, and any other value is unchanged.
-fn caught(lua: &Lua, shared: &Shared, error: Value) -> mlua::Result<Value> {
-    if is_memory(&error) {
+/// Calls the first of `args` with the rest, protected. A refused allocation, in Lua code or
+/// reported by a host function, is recorded and raised again.
+fn protected_call(lua: &Lua, shared: &Shared, args: MultiValue) -> mlua::Result<Outcome> {
+    let mut status = ffi::LUA_OK;
+    // SAFETY: `exec_raw` pushes `args` and runs the closure in a fresh C frame holding exactly
+    // those values. `lua_pcall` pops the function and its arguments and leaves either all its
+    // results, for which Luau makes room under `LUA_MULTRET`, or the single error value in the
+    // function's slot. Nothing escapes `lua_pcall`, so the closure returns normally, and
+    // `exec_raw` reads what is left as the frame's results.
+    #[allow(unsafe_code)]
+    let values: MultiValue = unsafe {
+        lua.exec_raw(args, |state| {
+            status = ffi::lua_pcall(state, ffi::lua_gettop(state) - 1, ffi::LUA_MULTRET, 0);
+        })
+    }?;
+    if status == ffi::LUA_OK {
+        return Ok(Outcome::Returned(values));
+    }
+    let error = values.into_iter().next().unwrap_or(Value::Nil);
+    let refused = status == ffi::LUA_ERRMEM
+        || matches!(&error, Value::Error(e) if matches!(classify(e), Failure::Memory));
+    if refused {
         shared.record(Limit::Memory(shared.limits.memory));
         return Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned()));
     }
+    Ok(Outcome::Raised(error))
+}
+
+/// The error value a script sees: a host error becomes its message, and any other value is
+/// unchanged.
+fn seen(lua: &Lua, error: Value) -> mlua::Result<Value> {
     match error {
         Value::Error(e) => Ok(Value::String(lua.create_string(message(&e))?)),
         other => Ok(other),
-    }
-}
-
-/// Whether a caught error value is a memory breach: an mlua memory error, or Luau's message
-/// for one.
-fn is_memory(error: &Value) -> bool {
-    match error {
-        Value::Error(e) => matches!(classify(e), Failure::Memory),
-        Value::String(text) => text.to_str().is_ok_and(|text| *text == *MEMORY_ERROR),
-        _ => false,
     }
 }
 
