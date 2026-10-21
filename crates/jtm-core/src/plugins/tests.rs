@@ -284,7 +284,12 @@ fn concurrent_repairs_never_remove_each_others_files() {
             let dir = dirs.builtin_plugins().join(name);
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("plugin.toml"), format!("stale {round}")).unwrap();
+            fs::write(dir.join("plugin.toml~"), "backup").unwrap();
         }
+        // And unknown entries, so every process tries to remove the same ones.
+        let stray = dirs.builtin_plugins().join("stray");
+        fs::create_dir_all(stray.join("nested")).unwrap();
+        fs::write(stray.join("nested").join("file"), "x").unwrap();
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..8)
                 .map(|_| scope.spawn(|| sync_working_copy(&dirs, builtin)))
@@ -299,7 +304,9 @@ fn concurrent_repairs_never_remove_each_others_files() {
                 fs::read(dir.join("plugin.toml")).unwrap(),
                 found.text.as_bytes()
             );
+            assert!(!dir.join("plugin.toml~").exists());
         }
+        assert!(!stray.exists());
         // No temporary file is left in the working copy or beside it.
         assert!(sync_working_copy(&dirs, builtin).unwrap().is_empty());
         assert_eq!(temp_files(&dirs), Vec::<String>::new());

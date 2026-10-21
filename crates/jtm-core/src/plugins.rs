@@ -42,15 +42,17 @@ fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> 
 /// The working copy is for people and tools to read. jtm never reads it, so a modified copy
 /// cannot change a trust decision; [`Registry`] reads only the compiled-in manifests.
 ///
-/// Several jtm processes may repair the copy at once, such as two shells' prompt hooks. New
-/// files are written in `<data>/plugins`, outside the copy, and renamed into place, so one
-/// process never takes another's half-written file for an unknown entry and removes it.
+/// Several jtm processes may start a repair at once, such as two shells' prompt hooks, so a
+/// repair holds an exclusive lock in `<data>/locks` and the others wait for it. New files are
+/// also written in `<data>/plugins`, outside the copy, and renamed into place, so nothing that
+/// does not take the lock sees a half-written file in the copy.
 /// Without any `builtin` manifests, such as from a context that embeds none, there is nothing
 /// to compare against, so the copy is left alone.
 pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec<PathBuf>> {
     if builtin.is_empty() {
         return Ok(Vec::new());
     }
+    let _lock = lock_working_copy(dirs)?;
     let root = dirs.builtin_plugins();
     let scratch = dirs.plugins();
     let mut repaired = Vec::new();
@@ -106,11 +108,11 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
 /// `path`. A rename replaces a link rather than writing through it, so a link planted in the
 /// working copy is never followed.
 ///
-/// Windows refuses a rename onto a file that another process is renaming over at the same
-/// moment, so a failed rename is retried a few times, and counts as done once `path` is a
-/// regular file holding `bytes`, which means another repair got there first.
+/// Windows briefly refuses a rename onto a file another program has open, such as a virus
+/// scanner or an editor, so there a refused rename is retried a few times. Any other failure
+/// is returned at once.
 fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
-    const ATTEMPTS: u32 = 6;
+    const ATTEMPTS: u32 = 5;
     let mut file = tempfile::Builder::new()
         .prefix(TEMP_PREFIX)
         .tempfile_in(scratch)
@@ -122,18 +124,30 @@ fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
             Ok(_) => return Ok(()),
             Err(failed) => failed,
         };
-        let done = fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
-            && fs::read(path).is_ok_and(|current| current == bytes);
-        if done {
-            return Ok(());
-        }
-        if attempt == ATTEMPTS {
+        let transient = cfg!(windows) && failed.error.kind() == io::ErrorKind::PermissionDenied;
+        if !transient || attempt == ATTEMPTS {
             return Err(JtmError::io(path, failed.error));
         }
-        std::thread::sleep(std::time::Duration::from_millis(5 << attempt));
+        std::thread::sleep(std::time::Duration::from_millis(10 << attempt));
         attempt += 1;
         file = failed.file;
     }
+}
+
+/// Takes the exclusive lock on the working copy, waiting for any other repair to finish.
+fn lock_working_copy(dirs: &Dirs) -> Result<fs::File> {
+    let locks = dirs.locks();
+    fs::create_dir_all(&locks).map_err(|e| JtmError::io(&locks, e))?;
+    // A leading `.` keeps this apart from every install lock, which starts with a plugin name.
+    let path = locks.join(".builtin-working-copy.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| JtmError::io(&path, e))?;
+    file.lock().map_err(|e| JtmError::io(&path, e))?;
+    Ok(file)
 }
 
 /// Removes the repair's temporary files in `scratch` older than [`TEMP_MAX_AGE`], which a
