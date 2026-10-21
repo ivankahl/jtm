@@ -221,7 +221,7 @@ pub(crate) fn sync(ctx: &Context, options: IdeOptions) -> Result<crate::output::
         };
         let ide = &plugin.manifest.ide;
         let dir = PathBuf::from(&item.version.path);
-        let jdk_home = install_home(&dir);
+        let jdk_home = install_home(&dir)?;
         if let Some(kind) = &ide.maven_toolchain {
             toolchains.push(Toolchain {
                 id: item.version.id.to_string(),
