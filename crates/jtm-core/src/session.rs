@@ -395,7 +395,7 @@ impl<'a> Session<'a> {
         let dest = id.install_dir(&self.dirs)?;
         if options.dry_run {
             let installed =
-                !options.force && Receipt::read(&dest).is_some_and(|r| r.sha256 == entry.sha256);
+                !options.force && Receipt::load(&dest)?.is_some_and(|r| r.sha256 == entry.sha256);
             let status = if installed {
                 Status::AlreadyInstalled
             } else {
@@ -588,17 +588,20 @@ impl<'a> Session<'a> {
         }
         let versions = chosen
             .into_iter()
-            .map(|e| AvailableItem {
-                variant: e.variant.clone(),
-                version: e.version.clone(),
-                tags: e.tags.clone(),
-                installed: VersionId::of(tool, e)
-                    .install_dir(&self.dirs)
-                    .ok()
-                    .and_then(|p| Receipt::read(&p))
-                    .is_some_and(|r| r.sha256 == e.sha256),
+            .map(|e| {
+                // A receipt that exists and cannot be read fails, rather than show "not installed".
+                let receipt = match VersionId::of(tool, e).install_dir(&self.dirs) {
+                    Ok(dir) => Receipt::load(&dir)?,
+                    Err(_) => None,
+                };
+                Ok(AvailableItem {
+                    variant: e.variant.clone(),
+                    version: e.version.clone(),
+                    tags: e.tags.clone(),
+                    installed: receipt.is_some_and(|r| r.sha256 == e.sha256),
+                })
             })
-            .collect();
+            .collect::<Result<_>>()?;
         let aliases = manifest
             .aliases
             .keys()
