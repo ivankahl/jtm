@@ -5,13 +5,15 @@
 //! archive rules refuse them, and so is any path whose parent directories include a link, so
 //! no operation can reach outside the install dir. Operations act on links themselves, never
 //! on their targets, and `chmod` refuses links. Moving a link can change where it points, so
-//! once the hook returns, [`check_links`] fails it if any link points outside.
+//! once the hook returns, [`check_links`] fails it if any link points outside, or if any
+//! directory cannot be read, since a link could hide in it.
 //!
 //! - `exists(path)` and `is_dir(path)`, without following links.
 //! - `list(dir)`: the sorted names in a directory.
 //! - `rename(from, to)`, also named `move`: `to` must not exist yet.
 //! - `remove(path)`: a file, a link or a whole directory.
-//! - `chmod(path, mode)`: permission bits from `0` to `0o777`; a no-op on Windows.
+//! - `chmod(path, mode)`: permission bits from `0` to `0o777`; a no-op on Windows. A
+//!   directory keeps at least `0o700`, so jtm can still check, move and remove it.
 //!
 //! Failed operations, such as a missing file, raise ordinary errors the script may catch. A
 //! path that leaves the install dir is recorded as a limit breach and fails the hook even if
@@ -29,6 +31,8 @@ use super::{Limit, Shared};
 
 /// The highest mode `chmod` accepts: permission bits only, never setuid, setgid or sticky.
 const MAX_MODE: u32 = 0o777;
+/// The bits a directory's mode must keep: read, write and search for its owner.
+const DIR_MODE: u32 = 0o700;
 
 /// A directory the script may change, and nothing outside it.
 #[derive(Debug, Clone)]
@@ -173,6 +177,12 @@ pub(super) fn api(lua: &Lua, dir: PathBuf, shared: Arc<Shared>) -> mlua::Result<
                     "`{path}` is a link; chmod does not follow links"
                 )));
             }
+            if meta.is_dir() && mode & DIR_MODE != DIR_MODE {
+                return Err(mlua::Error::runtime(format!(
+                    "mode {mode:#o} would lock jtm out of the directory `{path}`; a directory \
+                     keeps at least 0o700"
+                )));
+            }
             set_mode(&target, mode).map_err(|e| io_error(&path, &e))
         })?,
     )?;
@@ -180,26 +190,29 @@ pub(super) fn api(lua: &Lua, dir: PathBuf, shared: Arc<Shared>) -> mlua::Result<
     Ok(t)
 }
 
-/// Checks that every link under `root` still points inside it.
+/// Checks that every link under `root` still points inside it. A directory or entry that
+/// cannot be read fails the check, since a link the check cannot see could point anywhere.
 pub(super) fn check_links(root: &Path) -> Result<(), Limit> {
+    let relative = |path: &Path| {
+        path.strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    let unreadable = |path: &Path, e: io::Error| Limit::Path {
+        path: relative(path),
+        reason: format!("cannot be read to check its links: {e}"),
+    };
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        for entry in fs::read_dir(&dir).map_err(|e| unreadable(&dir, e))? {
+            let entry = entry.map_err(|e| unreadable(&dir, e))?;
             let path = entry.path();
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
+            let kind = entry.file_type().map_err(|e| unreadable(&path, e))?;
             if kind.is_dir() {
                 pending.push(path);
             } else if kind.is_symlink() {
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = relative(&path);
                 let target = fs::read_link(&path).map_err(|e| Limit::Path {
                     path: rel.clone(),
                     reason: format!("is a link that cannot be read: {e}"),

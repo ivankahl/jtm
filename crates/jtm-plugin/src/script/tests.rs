@@ -640,6 +640,53 @@ fn a_link_that_escapes_through_another_link_fails_the_hook() {
 }
 
 #[test]
+fn chmod_keeps_directories_usable_by_their_owner() {
+    let dir = install_dir();
+    for path in [".", "lib", "lib/nested"] {
+        for mode in ["0", "73", "320", "448 - 64"] {
+            post_extract(
+                dir.path(),
+                &format!("assert(not pcall(jtm.fs.chmod, '{path}', {mode}))"),
+            )
+            .unwrap_or_else(|e| panic!("{path} {mode}: {e}"));
+        }
+    }
+    // Owner rwx with anything for the rest is fine, and files may take any mode.
+    post_extract(
+        dir.path(),
+        "jtm.fs.chmod('lib', 448) jtm.fs.chmod('.', 493) jtm.fs.chmod('README', 0)",
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_directory_fails_the_link_check() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = install_dir();
+    let hidden = dir.path().join("lib/nested");
+    std::os::unix::fs::symlink("../../..", hidden.join("escape")).unwrap_or_else(|e| panic!("{e}"));
+    fs::set_permissions(&hidden, fs::Permissions::from_mode(0o000))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let readable = fs::read_dir(&hidden).is_ok();
+    let checked = super::fs::check_links(dir.path());
+    fs::set_permissions(&hidden, fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|e| panic!("{e}"));
+    if readable {
+        // Running as root, permissions do not stop the read; the escaping link is found.
+        assert!(checked.is_err());
+        return;
+    }
+    match checked {
+        Err(Limit::Path { path, reason }) => {
+            assert_eq!(path, "lib/nested", "{reason}");
+            assert!(reason.contains("cannot be read"), "{reason}");
+        }
+        other => panic!("expected a containment failure, got {other:?}"),
+    }
+}
+
+#[test]
 fn catching_a_memory_breach_does_not_help() {
     for source in [
         "function f() pcall(string.rep, 'x', 64 * 1024 * 1024) return '1' end",
