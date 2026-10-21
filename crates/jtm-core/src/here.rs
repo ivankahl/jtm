@@ -207,10 +207,18 @@ impl<'s, 'c> Here<'s, 'c> {
     /// A [`W_REQUIRES_UNMET`] warning for each `[requires]` entry of an active tool that the
     /// active version of the required tool does not meet, with `exec` versions taking
     /// precedence. A required tool jtm does not manage here is not checked, since whatever is
-    /// on `PATH` may meet it. Requirements are only ever warnings; nothing is installed.
-    pub fn requirement_warnings(&self, exec: &[(String, Installed)]) -> Result<Vec<Warning>> {
+    /// on `PATH` may meet it. Requirements are only ever warnings; nothing is installed, and a
+    /// failure to read the installs only skips the check, so it never fails a command.
+    pub fn requirement_warnings(&self, exec: &[(String, Installed)]) -> Vec<Warning> {
+        let items = match self.current(None) {
+            Ok(items) => items,
+            Err(err) => {
+                tracing::debug!(%err, "cannot check the active tools' requirements");
+                return Vec::new();
+            }
+        };
         let mut active: BTreeMap<String, (String, String)> = BTreeMap::new();
-        for item in self.current(None)? {
+        for item in items {
             if let Some(version) = item.version {
                 let origin = item.origin.unwrap_or_default();
                 active.insert(item.tool, (version, origin));
@@ -242,7 +250,7 @@ impl<'s, 'c> Here<'s, 'c> {
                 }
             }
         }
-        Ok(warnings)
+        warnings
     }
 
     /// The changes that make `env` match the overrides.

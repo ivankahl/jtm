@@ -399,3 +399,30 @@ fn hook_env_honours_json() {
         "{value}"
     );
 }
+
+#[test]
+fn a_failing_requirement_check_never_fails_the_command() {
+    let f = ready();
+    let (code, value) = f.json(&["default", "demo@1.0"]);
+    assert_eq!(code, 0, "{value}");
+    // Only the requirement check reads the default's installs, and it cannot list them now.
+    let tools = f.home.path().join("tools").join("demo");
+    std::fs::remove_dir_all(&tools).unwrap();
+    std::fs::write(&tools, "not a directory").unwrap();
+    let project = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["--json", "env"],
+        vec!["--json", "hook-env", "--shell", "bash"],
+    ] {
+        let output = f
+            .jtm()
+            .current_dir(project.path())
+            .env_remove("JTM_SESSION_DEMO")
+            .env_remove("JTM_HOOK_DIR")
+            .args(&args)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {stdout}");
+    }
+}
