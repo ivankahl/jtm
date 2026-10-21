@@ -385,6 +385,14 @@ fn deep_recursion_fails_without_crashing() {
         eval("local function f(n) return f(n + 1) + 1 end return tostring(f(1))"),
         Err(ScriptError::Failed { .. })
     ));
+    // Each protected call goes through the host, so nesting them is bounded too.
+    for source in [
+        "local function f() return pcall(f) end return tostring((f()))",
+        "local function f() return xpcall(f, f) end return tostring((f()))",
+    ] {
+        // The innermost call fails on the C stack limit, and every outer one succeeds.
+        assert_eq!(ok(source), "true", "{source}");
+    }
 }
 
 #[test]
@@ -961,15 +969,130 @@ fn catching_a_memory_breach_does_not_help() {
         "function f() pcall(string.rep, 'x', 64 * 1024 * 1024) return '1' end",
         "function f() pcall(function() local t = {} for i = 1, 1e9 do t[i] = string.rep('x', 4096) .. i end end) return '1' end",
         "function f() xpcall(function() return string.rep('x', 64 * 1024 * 1024) end, function(e) return e end) return '1' end",
+        // A handler that raises again must not replace the breach with its own error.
+        "function f() xpcall(function() return string.rep('x', 64 * 1024 * 1024) end, function(e) error('hidden') end) return '1' end",
+        "function f() pcall(xpcall, function() return string.rep('x', 64 * 1024 * 1024) end, function(e) error({}) end) return '1' end",
+        // Running out of memory in the handler is a breach too.
+        "function f() xpcall(function() error('x') end, function(e) return string.rep('x', 64 * 1024 * 1024) end) return '1' end",
+        // So is one caught by nested protected calls.
+        "function f() pcall(pcall, pcall, string.rep, 'x', 64 * 1024 * 1024) return '1' end",
+        "function f() xpcall(pcall, function(e) return e end, string.rep, 'x', 64 * 1024 * 1024) return '1' end",
     ] {
-        assert!(
-            matches!(
-                limit_of(tight(source).format_interop("f", "f", "v", "1")),
-                Limit::Memory(_)
-            ),
-            "{source}"
-        );
+        let limit = limit_of(tight(source).format_interop("f", "f", "v", "1"));
+        assert!(matches!(limit, Limit::Memory(_)), "{source}: {limit:?}");
     }
+    // And one in a host function. Building and decoding the text takes long enough on a slow
+    // runner to pass a tight deadline first, so this case gets more time.
+    let source = "function f() local text = '[' .. string.rep('0,', 1000000) .. '0]' \
+                  pcall(jtm.json.decode, text) return '1' end";
+    let limit = limit_of(
+        script(source)
+            .with_limits(Limits {
+                memory: 8 * 1024 * 1024,
+                time: Duration::from_secs(30),
+            })
+            .format_interop("f", "f", "v", "1"),
+    );
+    assert!(matches!(limit, Limit::Memory(_)), "{limit:?}");
+}
+
+#[test]
+fn the_out_of_memory_message_alone_is_not_a_breach() {
+    assert_eq!(
+        ok(
+            "local okay, err = pcall(error, 'not enough memory', 0) return tostring(okay) .. ' ' .. err"
+        ),
+        "false not enough memory"
+    );
+    assert_eq!(
+        ok(
+            "local okay, err = xpcall(function() error('not enough memory', 0) end, function(e) return e end) \
+             return tostring(okay) .. ' ' .. err"
+        ),
+        "false not enough memory"
+    );
+    assert_eq!(
+        ok(
+            "local okay, err = xpcall(error, function(e) error('not enough memory', 0) end, 'x') \
+             return tostring(okay) .. ' ' .. err"
+        ),
+        "false error in error handling"
+    );
+}
+
+#[test]
+fn an_xpcall_handler_does_not_run_after_a_memory_breach() {
+    let dir = install_dir();
+    let result = post_extract(
+        dir.path(),
+        "xpcall(function() return string.rep('x', 512 * 1024 * 1024) end, function(e) jtm.fs.remove('README') end)",
+    );
+    assert!(matches!(limit_of(result), Limit::Memory(_)));
+    assert!(dir.path().join("README").is_file());
+}
+
+#[test]
+fn pcall_and_xpcall_need_their_arguments() {
+    assert_eq!(ok("return tostring(pcall(pcall))"), "false");
+    assert_eq!(ok("return tostring(pcall(xpcall, error))"), "false");
+    assert_eq!(ok("return tostring(pcall(xpcall, error, 42))"), "false");
+}
+
+#[test]
+fn nothing_runs_after_a_caught_limit_breach() {
+    for body in [
+        // A file mode that would lock jtm out.
+        "pcall(jtm.fs.chmod, 'README', 0) jtm.fs.remove('README')",
+        "xpcall(jtm.fs.chmod, function(e) jtm.fs.remove('README') end, 'README', 0)",
+        // The time limit.
+        "xpcall(function() while true do end end, function(e) jtm.fs.remove('README') end)",
+        "pcall(function() while true do end end) jtm.fs.remove('README')",
+    ] {
+        let dir = install_dir();
+        let result = post_extract(dir.path(), body);
+        assert!(
+            matches!(result, Err(ScriptError::Limit { .. })),
+            "{body}: {result:?}"
+        );
+        assert!(dir.path().join("README").is_file(), "{body}");
+    }
+}
+
+#[test]
+fn nothing_runs_after_a_caught_containment_breach() {
+    for body in [
+        // Neither the handler nor the code after the call may touch the install dir.
+        "xpcall(jtm.fs.remove, function(e) jtm.fs.remove('README') end, '../victim')",
+        "xpcall(jtm.fs.remove, function(e) return e end, '../victim') jtm.fs.remove('README')",
+        "pcall(jtm.fs.remove, '../victim') jtm.fs.remove('README')",
+        "pcall(pcall, jtm.fs.remove, '../victim') jtm.fs.remove('README')",
+        "pcall(xpcall, jtm.fs.remove, function(e) return e end, '../victim') \
+         jtm.fs.remove('README')",
+        // A breach in the handler counts too.
+        "xpcall(function() error('x') end, function(e) jtm.fs.remove('../victim') end) \
+         jtm.fs.remove('README')",
+        // As does one inside a call that then succeeds.
+        "pcall(function() pcall(jtm.fs.remove, '../victim') return 1 end) \
+         jtm.fs.remove('README')",
+    ] {
+        let dir = install_dir();
+        let result = post_extract(dir.path(), body);
+        assert!(is_path_limit(result), "{body}");
+        assert!(dir.path().join("README").is_file(), "{body}");
+    }
+}
+
+#[test]
+fn a_memory_breach_after_another_limit_still_stops_the_script() {
+    let dir = install_dir();
+    let result = post_extract(
+        dir.path(),
+        "pcall(jtm.fs.remove, '../victim') \
+         xpcall(function() return string.rep('x', 512 * 1024 * 1024) end, function(e) error('hidden') end) \
+         jtm.fs.remove('README')",
+    );
+    assert!(is_path_limit(result));
+    assert!(dir.path().join("README").is_file());
 }
 
 #[test]
@@ -991,5 +1114,49 @@ fn pcall_and_xpcall_still_catch_ordinary_errors() {
             "local okay, v = xpcall(function() error('x') end, function(e) return 'handled' end) return tostring(okay) .. ' ' .. v"
         ),
         "false handled"
+    );
+}
+
+#[test]
+fn pcall_and_xpcall_take_any_value_like_lua() {
+    // A value that cannot be called is an ordinary caught error.
+    assert_eq!(
+        ok("local okay, err = pcall(nil) return tostring(okay) .. ' ' .. type(err)"),
+        "false string"
+    );
+    assert_eq!(
+        ok("local okay = pcall(42, 'x') return tostring(okay)"),
+        "false"
+    );
+    // A callable table is called.
+    assert_eq!(
+        ok(
+            "local t = setmetatable({}, { __call = function(_, x) return x * 2 end }) \
+             local okay, v = pcall(t, 21) return tostring(okay) .. ' ' .. v"
+        ),
+        "true 42"
+    );
+    // An error value that is not a string reaches the script unchanged.
+    assert_eq!(
+        ok("local okay, err = pcall(error, { code = 7 }) return tostring(okay) .. ' ' .. err.code"),
+        "false 7"
+    );
+    assert_eq!(
+        ok(
+            "local okay, v = xpcall(function() error({ code = 8 }) end, function(e) return e.code end) \
+             return tostring(okay) .. ' ' .. v"
+        ),
+        "false 8"
+    );
+    // A host error is still seen as its message.
+    assert_eq!(
+        ok(
+            "local okay, err = pcall(jtm.json.decode, '{') return type(err) .. ' ' .. tostring(err:find('invalid JSON') ~= nil)"
+        ),
+        "string true"
+    );
+    assert_eq!(
+        ok("local _, t = xpcall(jtm.json.decode, function(e) return type(e) end, '{') return t"),
+        "string"
     );
 }
