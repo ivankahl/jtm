@@ -515,6 +515,24 @@ fn abandoning_a_hook_waits_for_its_file_operation() {
 }
 
 #[test]
+fn a_panicking_abandoned_hook_still_releases_its_count() {
+    static STUCK: AtomicUsize = AtomicUsize::new(1);
+    let shared = Arc::new(Shared::new(Limits::default()));
+    assert!(shared.abandon());
+    let finish = Finish {
+        shared: Arc::clone(&shared),
+        stuck: &STUCK,
+    };
+    let panicked = std::thread::spawn(move || {
+        let _finish = finish;
+        panic!("a bug in a host function");
+    })
+    .join();
+    assert!(panicked.is_err());
+    assert_eq!(STUCK.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[test]
 fn a_hook_that_finishes_first_is_not_abandoned() {
     let shared = Shared::new(Limits::default());
     assert!(!shared.finish());

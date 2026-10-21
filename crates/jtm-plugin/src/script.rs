@@ -391,11 +391,12 @@ impl Script {
         std::thread::Builder::new()
             .name(format!("jtm-luau-{hook}"))
             .spawn(move || {
-                let outcome = sandbox::run(job);
-                if worker.finish() {
-                    stuck.fetch_sub(1, AtomicOrdering::SeqCst);
-                }
-                let _ = tx.send(outcome);
+                // Released on any exit, a panic included.
+                let _finish = Finish {
+                    shared: worker,
+                    stuck,
+                };
+                let _ = tx.send(sandbox::run(job));
             })
             .map_err(|e| host(format!("cannot start the script engine: {e}")))?;
         let outcome = match rx.recv_timeout(self.limits.time + ABANDON_GRACE) {
@@ -436,6 +437,21 @@ impl Script {
             },
             sandbox::Failure::Host(message) => host(message),
         })
+    }
+}
+
+/// Marks a hook's thread as ended when dropped, and releases the stuck count if the host had
+/// abandoned it.
+struct Finish {
+    shared: Arc<Shared>,
+    stuck: &'static AtomicUsize,
+}
+
+impl Drop for Finish {
+    fn drop(&mut self) {
+        if self.shared.finish() {
+            self.stuck.fetch_sub(1, AtomicOrdering::SeqCst);
+        }
     }
 }
 
