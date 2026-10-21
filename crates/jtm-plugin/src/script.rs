@@ -13,7 +13,8 @@
 //! when the deadline passes. An abandoned hook is cancelled: a `jtm.fs` call already running
 //! finishes before the host moves on, and every later one fails. A thread cannot be killed, so
 //! an abandoned one keeps its memory until its C call returns; once [`MAX_STUCK`] of them are
-//! still running, jtm refuses to start another hook.
+//! still running, jtm refuses to start another hook. Hooks already running when the count is
+//! reached are not refused, so concurrent callers can leave more than [`MAX_STUCK`] behind.
 //! Any limit breach or path escape fails the hook with [`ScriptError::Limit`], even when the
 //! script catches the error with `pcall` or `xpcall`, which the sandbox replaces with versions
 //! that record a memory breach before handing the error to the script.
@@ -88,6 +89,8 @@ pub enum Limit {
         path: String,
         reason: String,
     },
+    /// The hook was not started because this many abandoned hooks are still running.
+    Stuck(usize),
 }
 
 impl fmt::Display for Limit {
@@ -98,6 +101,10 @@ impl fmt::Display for Limit {
             Limit::Path { path, reason } => {
                 write!(f, "install dir containment: `{path}` {reason}")
             }
+            Limit::Stuck(count) => write!(
+                f,
+                "{count} earlier hooks are still running past their time limit"
+            ),
         }
     }
 }
@@ -381,10 +388,10 @@ impl Script {
         let stuck = self.stuck;
         let running = stuck.load(AtomicOrdering::SeqCst);
         if running >= MAX_STUCK {
-            return Err(host(format!(
-                "{running} earlier hooks are still running past their time limit; run jtm again \
-                 once they end"
-            )));
+            return Err(ScriptError::Limit {
+                hook: hook.to_owned(),
+                limit: Limit::Stuck(running),
+            });
         }
         let (tx, rx) = mpsc::channel();
         let worker = Arc::clone(&shared);
@@ -405,11 +412,21 @@ impl Script {
                 // The thread is stuck outside Lua code; leave it, but cut off its file access.
                 // Counting first keeps the thread's release from running ahead of the count.
                 stuck.fetch_add(1, AtomicOrdering::SeqCst);
-                if !shared.abandon() {
+                if shared.abandon() {
+                    shared.record(Limit::Time(self.limits.time));
+                    None
+                } else {
+                    // The thread ended between the timeout and the abandon, so its answer, if
+                    // it sent one, is already waiting.
                     stuck.fetch_sub(1, AtomicOrdering::SeqCst);
+                    match rx.try_recv() {
+                        Ok(outcome) => Some(outcome),
+                        Err(_) => {
+                            shared.record(Limit::Time(self.limits.time));
+                            None
+                        }
+                    }
                 }
-                shared.record(Limit::Time(self.limits.time));
-                None
             }
             // The thread ended without an answer, so it panicked: a jtm bug, not the plugin's.
             Err(mpsc::RecvTimeoutError::Disconnected) => None,

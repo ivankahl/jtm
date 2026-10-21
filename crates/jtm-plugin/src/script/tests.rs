@@ -545,7 +545,7 @@ fn too_many_stuck_hooks_refuse_the_next_one() {
     let s = tight(
         r#"
         function f()
-            jtm.sleep(3000)
+            jtm.sleep(10000)
             return "1"
         end
         "#,
@@ -560,12 +560,12 @@ fn too_many_stuck_hooks_refuse_the_next_one() {
     }
     assert!(
         matches!(
-            s.format_interop("f", "f", "v", "1"),
-            Err(ScriptError::Host { .. })
+            limit_of(s.format_interop("f", "f", "v", "1")),
+            Limit::Stuck(MAX_STUCK)
         ),
         "the stuck hooks were counted"
     );
-    // Each abandoned thread is released when its pattern match ends.
+    // Each abandoned thread is released when its sleep ends.
     let start = Instant::now();
     while STUCK.load(AtomicOrdering::SeqCst) > 0 {
         assert!(
