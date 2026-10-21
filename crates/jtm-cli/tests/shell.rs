@@ -475,16 +475,10 @@ fn unreadable_installs_of_a_tool_without_requirements_are_not_read() {
         "{value}"
     );
 
-    // `current` still lists every tool, showing the broken one as not installed with a warning.
+    // `current` needs the installs to show the version, so it fails rather than show the broken
+    // tool as not installed.
     let (code, value) = json_in(&f, project.path(), &["current"]);
-    assert_eq!(code, 0, "{value}");
-    let demo = value["data"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["tool"] == "demo")
-        .unwrap();
-    assert_eq!(demo["layer"], "default", "{value}");
-    assert_eq!(demo["installed"], false, "{value}");
-    assert_eq!(warning_codes(&value), ["W_INSTALLS_UNREADABLE"], "{value}");
+    assert_eq!(code, 4, "{value}");
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "E_IO", "{value}");
 }
