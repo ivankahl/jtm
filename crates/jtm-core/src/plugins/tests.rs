@@ -279,3 +279,175 @@ fn a_script_no_hook_names_is_not_loaded() {
             .is_none()
     );
 }
+
+// --- the builtin working copy ---
+
+/// Two builtin manifests whose files are padded by about `pad` bytes.
+fn builtin_set(pad: usize) -> &'static [BuiltinManifest] {
+    let text: &'static str =
+        Box::leak(format!("{}# {}\n", manifest("demo"), "x".repeat(pad)).into_boxed_str());
+    let script: &'static str = Box::leak("-- y\n".repeat(pad / 4 + 1).into_boxed_str());
+    Box::leak(Box::new([
+        BuiltinManifest {
+            name: "demo",
+            text,
+            script: Some(script),
+        },
+        BuiltinManifest {
+            name: "other",
+            text,
+            script: None,
+        },
+    ]))
+}
+
+/// Builtin manifests with larger files, so the repairs started at once overlap.
+fn big_builtin() -> &'static [BuiltinManifest] {
+    builtin_set(1 << 16)
+}
+
+/// The names of the repair's temporary files left in `<data>/plugins`.
+fn temp_files(dirs: &Dirs) -> Vec<String> {
+    fs::read_dir(dirs.plugins())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(TEMP_PREFIX))
+        .collect()
+}
+
+#[test]
+fn a_context_without_builtin_manifests_leaves_the_working_copy_alone() {
+    let (_home, dirs) = dirs();
+    sync_working_copy(&dirs, builtin_set(0)).unwrap();
+    let copy = dirs.builtin_plugins().join("demo").join("plugin.toml");
+    assert!(copy.is_file());
+    assert_eq!(
+        sync_working_copy(&dirs, &[]).unwrap(),
+        Vec::<PathBuf>::new()
+    );
+    assert!(copy.is_file(), "the working copy was removed");
+}
+
+#[test]
+fn concurrent_repairs_never_remove_each_others_files() {
+    let (_home, dirs) = dirs();
+    let builtin = big_builtin();
+    for round in 0..5 {
+        // A stale copy, so every process repairs both files at once.
+        for name in ["demo", "other"] {
+            let dir = dirs.builtin_plugins().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("plugin.toml"), format!("stale {round}")).unwrap();
+            fs::write(dir.join("plugin.toml~"), "backup").unwrap();
+        }
+        // And unknown entries, so every process tries to remove the same ones.
+        let stray = dirs.builtin_plugins().join("stray");
+        fs::create_dir_all(stray.join("nested")).unwrap();
+        fs::write(stray.join("nested").join("file"), "x").unwrap();
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| sync_working_copy(&dirs, builtin)))
+                .collect();
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+        });
+        for found in builtin {
+            let dir = dirs.builtin_plugins().join(found.name);
+            assert_eq!(
+                fs::read(dir.join("plugin.toml")).unwrap(),
+                found.text.as_bytes()
+            );
+            assert!(!dir.join("plugin.toml~").exists());
+        }
+        assert!(!stray.exists());
+        // No temporary file is left in the working copy or beside it.
+        assert!(sync_working_copy(&dirs, builtin).unwrap().is_empty());
+        assert_eq!(temp_files(&dirs), Vec::<String>::new());
+    }
+}
+
+#[test]
+fn temporary_files_a_killed_process_left_are_swept() {
+    let (_home, dirs) = dirs();
+    fs::create_dir_all(dirs.plugins()).unwrap();
+    let left = dirs.plugins().join(format!("{TEMP_PREFIX}left"));
+    let other = dirs.plugins().join(".tmp-not-ours");
+    for path in [&left, &other] {
+        fs::write(path, "partial").unwrap();
+    }
+    sync_working_copy(&dirs, builtin_set(0)).unwrap();
+    assert!(!left.exists(), "a leftover temporary file is removed");
+    assert!(other.exists(), "only jtm's own temporary files are touched");
+}
+
+#[test]
+fn a_repair_already_running_elsewhere_is_not_waited_for() {
+    let (_home, dirs) = dirs();
+    let held = lock_working_copy(&dirs).unwrap().unwrap();
+    fs::create_dir_all(dirs.plugins()).unwrap();
+    let left = dirs.plugins().join(format!("{TEMP_PREFIX}in-progress"));
+    fs::write(&left, "partial").unwrap();
+    assert_eq!(
+        sync_working_copy(&dirs, builtin_set(0)).unwrap(),
+        Vec::<PathBuf>::new()
+    );
+    assert!(
+        left.exists(),
+        "the lock holder's temporary file is left alone"
+    );
+    assert!(!dirs.builtin_plugins().join("demo").exists());
+    drop(held);
+    assert!(!sync_working_copy(&dirs, builtin_set(0)).unwrap().is_empty());
+    assert!(
+        dirs.builtin_plugins()
+            .join("demo")
+            .join("plugin.toml")
+            .is_file()
+    );
+}
+
+/// A target no rename can replace: a directory that is not empty.
+fn unreplaceable(dirs: &Dirs) -> PathBuf {
+    fs::create_dir_all(dirs.plugins()).unwrap();
+    let target = dirs.builtin_plugins().join("demo").join("plugin.toml");
+    fs::create_dir_all(target.join("inside")).unwrap();
+    target
+}
+
+#[test]
+fn a_rename_that_cannot_work_fails_at_once_and_leaves_no_temp_file() {
+    let (_home, dirs) = dirs();
+    let target = unreplaceable(&dirs);
+    let tries = std::cell::Cell::new(0);
+    let result = write_replacing_with(&dirs.plugins(), &target, b"new", |_| {
+        tries.set(tries.get() + 1);
+        false
+    });
+    assert!(result.is_err());
+    assert_eq!(tries.get(), 1, "a lasting failure is not retried");
+    assert_eq!(temp_files(&dirs), Vec::<String>::new());
+}
+
+#[test]
+fn a_refused_rename_is_retried_a_few_times_then_fails() {
+    let (_home, dirs) = dirs();
+    let target = unreplaceable(&dirs);
+    let tries = std::cell::Cell::new(0);
+    let result = write_replacing_with(&dirs.plugins(), &target, b"new", |_| {
+        tries.set(tries.get() + 1);
+        true
+    });
+    assert!(result.is_err());
+    assert_eq!(tries.get(), 3, "the rename is tried three times in all");
+    assert!(target.join("inside").is_dir());
+    assert_eq!(temp_files(&dirs), Vec::<String>::new());
+}
+
+#[test]
+fn only_a_refused_rename_on_windows_counts_as_transient() {
+    let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+    let missing = io::Error::from(io::ErrorKind::NotFound);
+    assert_eq!(rename_refused(&denied), cfg!(windows));
+    assert!(!rename_refused(&missing));
+}
