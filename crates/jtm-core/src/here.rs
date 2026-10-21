@@ -342,7 +342,12 @@ pub fn find_on_path(command: &str, path: Option<&str>, os: Os) -> Option<PathBuf
 }
 
 /// The first file named `command` in `dirs`, trying Windows executable extensions on Windows.
+/// A `command` that is not a bare file name, such as an absolute path or one with `..`, is
+/// never joined onto `dirs`, so it cannot name a file outside them.
 pub fn find_in_dirs(command: &str, dirs: &[PathBuf], os: Os) -> Option<PathBuf> {
+    if !is_bare_name(command) {
+        return None;
+    }
     let candidates: Vec<String> = if os == Os::Windows && !command.contains('.') {
         let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
         pathext
@@ -358,3 +363,16 @@ pub fn find_in_dirs(command: &str, dirs: &[PathBuf], os: Os) -> Option<PathBuf> 
         .flat_map(|dir| candidates.iter().map(move |c| dir.join(c)))
         .find(|p| p.is_file())
 }
+
+/// Whether `command` is one plain file name on every OS: not empty, not `.` or `..`, and free
+/// of `/`, `\`, `:` (a drive or stream) and control characters.
+fn is_bare_name(command: &str) -> bool {
+    !command.is_empty()
+        && command != "."
+        && command != ".."
+        && !command.contains(['/', '\\', ':'])
+        && !command.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+mod tests;

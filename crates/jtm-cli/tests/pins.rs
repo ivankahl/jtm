@@ -232,6 +232,14 @@ fn which_finds_the_executable_and_its_layer() {
     let (code, value) = json_in(&f, project.path(), &["which", system]);
     assert_eq!(code, 3, "{value}");
     assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
+
+    // A path is never joined onto the bin dirs, so a file elsewhere is not the tool's.
+    let elsewhere = project.path().join(".jtm.toml");
+    for command in [elsewhere.to_str().unwrap(), "../demo"] {
+        let (code, value) = json_in(&f, project.path(), &["which", command]);
+        assert_eq!(code, 3, "{command}: {value}");
+        assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
+    }
 }
 
 #[test]
