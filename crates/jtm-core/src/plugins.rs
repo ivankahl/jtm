@@ -199,7 +199,7 @@ impl Registry<'_> {
         if let Some(found) = self.builtin.iter().find(|b| b.name == name) {
             return parse(
                 found.text.as_bytes(),
-                found.script.map(str::to_owned),
+                || Ok(found.script.map(str::to_owned)),
                 ManifestOrigin::Builtin,
                 "builtin",
                 name,
@@ -213,10 +213,9 @@ impl Registry<'_> {
             [dir] => {
                 let path = dir.join("plugin.toml");
                 let bytes = fs::read(&path).map_err(|e| JtmError::io(&path, e))?;
-                let script = read_script(&dir.join("plugin.lua"))?;
                 parse(
                     &bytes,
-                    script,
+                    || read_script(&dir.join("plugin.lua")),
                     ManifestOrigin::External,
                     &path.display().to_string(),
                     name,
@@ -309,9 +308,11 @@ fn read_script(path: &Path) -> Result<Option<String>> {
     })
 }
 
+/// Parses the manifest `bytes`, reading the plugin's script through `script` only when the
+/// manifest names a hook.
 fn parse(
     bytes: &[u8],
-    script: Option<String>,
+    script: impl FnOnce() -> Result<Option<String>>,
     origin: ManifestOrigin,
     location: &str,
     name: &str,
@@ -338,16 +339,16 @@ fn parse(
         )));
     }
     // Validation guarantees `script_sha256` exactly when a hook is named. A script no hook
-    // uses is never loaded.
-    let script = match (&manifest.hooks.script_sha256, script) {
-        (None, _) => None,
-        (Some(_), None) => {
-            let hook = first_hook(&manifest).unwrap_or("a hook");
-            return Err(invalid(format!(
-                "names the hook `{hook}`, but the plugin has no plugin.lua"
-            )));
-        }
-        (Some(expected), Some(source)) => {
+    // uses is never read.
+    let script = match &manifest.hooks.script_sha256 {
+        None => None,
+        Some(expected) => {
+            let Some(source) = script()? else {
+                let hook = first_hook(&manifest).unwrap_or("a hook");
+                return Err(invalid(format!(
+                    "names the hook `{hook}`, but the plugin has no plugin.lua"
+                )));
+            };
             let actual = jtm_security::sha256_hex(source.as_bytes());
             if actual != *expected {
                 return Err(invalid(format!(

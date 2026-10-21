@@ -168,7 +168,11 @@ fn a_script_that_does_not_compile_is_an_invalid_plugin() {
 #[test]
 fn a_script_that_is_not_utf8_or_too_large_is_an_invalid_plugin() {
     let (_home, dirs) = dirs();
-    add(&dirs, "acme--widget@abc123", &manifest("acme/widget"));
+    add(
+        &dirs,
+        "acme--widget@abc123",
+        &with_hook("function post() end"),
+    );
     let script = dirs.plugins().join("acme--widget@abc123/plugin.lua");
     let registry = Registry {
         dirs: &dirs,
@@ -179,6 +183,56 @@ fn a_script_that_is_not_utf8_or_too_large_is_an_invalid_plugin() {
         let err = registry.find("acme/widget").unwrap_err();
         assert_eq!(err.code(), "E_PLUGIN_INVALID", "{err}");
     }
+}
+
+#[test]
+fn a_script_no_hook_names_is_never_read() {
+    let (_home, dirs) = dirs();
+    add(&dirs, "acme--widget@abc123", &manifest("acme/widget"));
+    let script = dirs.plugins().join("acme--widget@abc123/plugin.lua");
+    let registry = Registry {
+        dirs: &dirs,
+        builtin: &[],
+    };
+    for bytes in [vec![0xff, 0xfe], vec![b'-'; 1024 * 1024 + 1]] {
+        fs::write(&script, bytes).unwrap();
+        let plugin = registry.find("acme/widget").unwrap();
+        assert!(plugin.script.is_none());
+    }
+    // Nor is a `plugin.lua` that is not even a file.
+    fs::remove_file(&script).unwrap();
+    fs::create_dir(&script).unwrap();
+    assert!(registry.find("acme/widget").unwrap().script.is_none());
+}
+
+#[test]
+fn parse_reads_the_script_only_when_a_hook_is_named() {
+    let text = manifest("acme/widget");
+    let plugin = parse(
+        text.as_bytes(),
+        || panic!("the script was read although no hook is named"),
+        ManifestOrigin::External,
+        "test",
+        "acme/widget",
+    )
+    .unwrap();
+    assert!(plugin.script.is_none());
+
+    let source = "function post() end";
+    let mut reads = 0;
+    let plugin = parse(
+        with_hook(source).as_bytes(),
+        || {
+            reads += 1;
+            Ok(Some(source.to_owned()))
+        },
+        ManifestOrigin::External,
+        "test",
+        "acme/widget",
+    )
+    .unwrap();
+    assert_eq!(reads, 1);
+    assert_eq!(plugin.script.as_deref(), Some(source));
 }
 
 #[test]
