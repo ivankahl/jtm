@@ -106,21 +106,28 @@ pub fn check_bin_dirs(plugin: &str, placed: &Placed, layout: &Layout) -> Result<
     Ok(())
 }
 
-/// Whether `dir` is a directory inside `root` holding a file, following links. An entry that
+/// Whether `dir` is a directory inside `root` holding a file, following links. A path that
 /// cannot be read is an error rather than a file that is not there.
 fn has_file(root: &Path, dir: Option<&Path>) -> Result<bool> {
     let Some(dir) = dir else {
         return Ok(false);
     };
-    if !inside(root, dir)? || !dir.is_dir() {
+    let is_dir = match fs::metadata(dir) {
+        Ok(meta) => meta.is_dir(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        // A dangling or looping link is not a directory.
+        Err(_) if fs::symlink_metadata(dir).is_ok_and(|m| m.is_symlink()) => false,
+        Err(e) => return Err(JtmError::io(dir, e)),
+    };
+    if !is_dir || !inside(root, dir)? {
         return Ok(false);
     }
     let entries = tree::entries(dir).map_err(|e| JtmError::io(e.path, e.source))?;
     for entry in entries {
         let is_file = match fs::metadata(&entry.path) {
             Ok(meta) => meta.is_file(),
-            // A dangling link is not a file.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            // A dangling or looping link is not a file.
+            Err(_) if entry.kind.is_symlink() => false,
             Err(e) => return Err(JtmError::io(&entry.path, e)),
         };
         if is_file && inside(root, &entry.path)? {
