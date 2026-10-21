@@ -28,7 +28,11 @@ junction = "2.1"
 insta = { version = "1.49", features = ["json", "redactions"] }
 minisign = { version = "0.10", default-features = false }
 minisign-verify = "0.3"
-mlua = { version = "0.12", features = ["luau", "vendored"] }
+# Pinned exactly: jtm-plugin's sandbox calls `Lua::exec_raw`, which mlua marks
+# `#[doc(hidden)]` and exempts from semver, and its `unsafe` block relies on that
+# function's stack layout. Review the SAFETY comment in
+# crates/jtm-plugin/src/script/sandbox.rs before bumping.
+mlua = { version = "=0.12.2", features = ["luau", "vendored"] }
 proptest = "1.12"
 regex = { version = "1.12", default-features = false, features = ["std", "unicode-perl"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider"] }
