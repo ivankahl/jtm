@@ -351,6 +351,33 @@ fn io_failures_are_e_io_unless_access_was_denied() {
 }
 
 #[test]
+fn a_host_failure_after_a_hook_is_an_io_error_not_a_sandbox_limit() {
+    use jtm_plugin::script::{Limit, ScriptError};
+    let io = |kind| ScriptError::Io {
+        hook: "post_extract".into(),
+        path: "install/lib".into(),
+        kind,
+        message: "failed".into(),
+    };
+    let emfile = JtmError::script("demo", io(std::io::ErrorKind::Other));
+    assert_eq!(emfile.code(), "E_IO");
+    assert_eq!(emfile.details()["path"], "install/lib");
+    let denied = JtmError::script("demo", io(std::io::ErrorKind::PermissionDenied));
+    assert_eq!(denied.code(), "E_PERMISSION");
+    let mode = JtmError::script(
+        "demo",
+        ScriptError::Limit {
+            hook: "post_extract".into(),
+            limit: Limit::Mode {
+                path: "README".into(),
+                mode: 0,
+            },
+        },
+    );
+    assert_eq!(mode.code(), "E_PLUGIN_SCRIPT_LIMIT");
+}
+
+#[test]
 fn exit_code_converts_to_process_exit_code() {
     assert_eq!(
         std::process::ExitCode::from(ExitCode::TrustRequired),
