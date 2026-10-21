@@ -417,13 +417,13 @@ impl Script {
                 if !abandoned {
                     stuck.fetch_sub(1, AtomicOrdering::SeqCst);
                 }
-                // The answer may have arrived since the timeout; keep it if so.
-                let late = rx.try_recv().ok();
-                if late.is_none() && abandoned {
+                // An answer that came after the deadline still breaks the time limit, however
+                // the race went, so the outcome does not depend on scheduling. Only a thread
+                // that ended without an answer, because it panicked, is a jtm bug instead.
+                if abandoned || rx.try_recv().is_ok() {
                     shared.record(Limit::Time(self.limits.time));
                 }
-                // A thread that ended without an answer panicked: a jtm bug, not the plugin's.
-                late
+                None
             }
             // The thread ended without an answer, so it panicked: a jtm bug, not the plugin's.
             Err(mpsc::RecvTimeoutError::Disconnected) => None,
