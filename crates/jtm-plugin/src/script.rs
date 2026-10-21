@@ -10,7 +10,12 @@
 //! Limits: a memory cap through Luau's allocator, and a wall clock enforced twice. Luau's
 //! interrupt callback stops Lua code once the deadline passes, and the hook runs on its own
 //! thread, so a call stuck inside a C function, such as a slow pattern match, is abandoned
-//! when the deadline passes. An abandoned hook is cancelled: its `jtm.fs` calls fail from then on.
+//! when the deadline passes. An abandoned hook is cancelled: a `jtm.fs` call already running
+//! finishes before the host moves on, and every later one fails. A thread cannot be killed, so
+//! an abandoned one keeps its memory until its C call returns; once [`MAX_STUCK`] of them are
+//! still running, jtm refuses to start another hook. Hooks already running when the count is
+//! reached are not refused, so hooks run in parallel, as `install_all` does, can leave up to
+//! one fewer than their number behind on top of [`MAX_STUCK`].
 //! Any limit breach or path escape fails the hook with [`ScriptError::Limit`], even when the
 //! script catches the error with `pcall` or `xpcall`, which the sandbox replaces with versions
 //! that record a memory breach before handing the error to the script.
@@ -22,9 +27,9 @@ mod sandbox;
 use std::cmp::Ordering;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
 
@@ -40,6 +45,11 @@ pub const TIME_LIMIT: Duration = Duration::from_secs(2);
 /// How long past the deadline the host waits for a hook's thread before abandoning it. The
 /// interrupt callback normally stops the hook well within this.
 const ABANDON_GRACE: Duration = Duration::from_millis(250);
+/// How many abandoned hooks may still be running, across the process, before jtm refuses to
+/// start another. Each holds a thread and up to [`MEMORY_LIMIT`] until its C call returns.
+pub const MAX_STUCK: usize = 4;
+/// Abandoned hooks whose threads are still running.
+static STUCK: AtomicUsize = AtomicUsize::new(0);
 
 /// Resource limits for one hook call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +95,8 @@ pub enum Limit {
         path: String,
         mode: u32,
     },
+    /// The hook was not started because this many abandoned hooks are still running.
+    Stuck(usize),
 }
 
 impl fmt::Display for Limit {
@@ -99,6 +111,10 @@ impl fmt::Display for Limit {
                 f,
                 "file mode: {mode:#o} would leave jtm unable to read `{path}`; a file keeps at \
                  least 0o400"
+            ),
+            Limit::Stuck(count) => write!(
+                f,
+                "{count} earlier hooks, of any plugin, are still running past their time limit"
             ),
         }
     }
@@ -173,6 +189,8 @@ pub struct Script {
     scheme: Option<VersionScheme>,
     host: Host,
     limits: Limits,
+    /// The count of abandoned hooks still running: [`STUCK`], except in tests.
+    stuck: &'static AtomicUsize,
 }
 
 impl Script {
@@ -201,6 +219,7 @@ impl Script {
             scheme,
             host,
             limits: Limits::default(),
+            stuck: &STUCK,
         })
     }
 
@@ -208,6 +227,13 @@ impl Script {
     #[must_use]
     pub fn with_limits(mut self, limits: Limits) -> Script {
         self.limits = limits;
+        self
+    }
+
+    /// The same script counting its stuck hooks in `stuck`, so a test does not share the count.
+    #[cfg(test)]
+    fn with_stuck_counter(mut self, stuck: &'static AtomicUsize) -> Script {
+        self.stuck = stuck;
         self
     }
 
@@ -403,10 +429,24 @@ impl Script {
             hook: hook.to_owned(),
             message,
         };
+        let stuck = self.stuck;
+        let running = stuck.load(AtomicOrdering::SeqCst);
+        if running >= MAX_STUCK {
+            return Err(ScriptError::Limit {
+                hook: hook.to_owned(),
+                limit: Limit::Stuck(running),
+            });
+        }
         let (tx, rx) = mpsc::channel();
+        let worker = Arc::clone(&shared);
         std::thread::Builder::new()
             .name(format!("jtm-luau-{hook}"))
             .spawn(move || {
+                // Released on any exit, a panic included.
+                let _finish = Finish {
+                    shared: worker,
+                    stuck,
+                };
                 let _ = tx.send(sandbox::run(job));
             })
             .map_err(|e| host(format!("cannot start the script engine: {e}")))?;
@@ -414,8 +454,21 @@ impl Script {
             Ok(outcome) => Some(outcome),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // The thread is stuck outside Lua code; leave it, but cut off its file access.
-                shared.cancelled.store(true, AtomicOrdering::SeqCst);
-                shared.record(Limit::Time(self.limits.time));
+                // Waiting out a file operation before counting keeps the count from looking
+                // high to other callers meanwhile. Counting before the abandon keeps the
+                // thread's release from running ahead of the count.
+                shared.cut_off();
+                stuck.fetch_add(1, AtomicOrdering::SeqCst);
+                let abandoned = shared.abandon();
+                if !abandoned {
+                    stuck.fetch_sub(1, AtomicOrdering::SeqCst);
+                }
+                // An answer that came after the deadline still breaks the time limit, however
+                // the race went, so the outcome does not depend on scheduling. Only a thread
+                // that ended without an answer, because it panicked, is a jtm bug instead.
+                if abandoned || rx.try_recv().is_ok() {
+                    shared.record(Limit::Time(self.limits.time));
+                }
                 None
             }
             // The thread ended without an answer, so it panicked: a jtm bug, not the plugin's.
@@ -447,12 +500,41 @@ impl Script {
     }
 }
 
+/// Marks a hook's thread as ended when dropped, and releases the stuck count if the host had
+/// abandoned it.
+struct Finish {
+    shared: Arc<Shared>,
+    stuck: &'static AtomicUsize,
+}
+
+impl Drop for Finish {
+    fn drop(&mut self) {
+        if self.shared.finish() {
+            self.stuck.fetch_sub(1, AtomicOrdering::SeqCst);
+        }
+    }
+}
+
+/// A hook's thread is still running.
+const RUNNING: u8 = 0;
+/// A hook's thread ended before the host gave up on it.
+const FINISHED: u8 = 1;
+/// The host gave up on a hook whose thread was still running.
+const ABANDONED: u8 = 2;
+
 /// State shared between the host and a hook's thread.
 #[derive(Debug)]
 struct Shared {
     limits: Limits,
+    /// When the hook's time runs out, for both the Lua interrupt and `jtm.fs`.
+    deadline: Instant,
     /// Set when the host abandons the hook; its file operations fail from then on.
     cancelled: AtomicBool,
+    /// Held by each `jtm.fs` operation while it runs, so abandoning the hook waits for it.
+    busy: Mutex<()>,
+    /// [`RUNNING`], [`FINISHED`] or [`ABANDONED`]; whichever of the host and the thread moves
+    /// it from running first decides who releases the stuck count.
+    state: AtomicU8,
     /// The first limit the hook broke, kept even when the script catches the error.
     violation: Mutex<Option<Limit>>,
 }
@@ -461,9 +543,51 @@ impl Shared {
     fn new(limits: Limits) -> Shared {
         Shared {
             limits,
+            deadline: Instant::now() + limits.time,
             cancelled: AtomicBool::new(false),
+            busy: Mutex::new(()),
+            state: AtomicU8::new(RUNNING),
             violation: Mutex::new(None),
         }
+    }
+
+    /// Starts a file operation, which holds the guard until it is done; `None` once the hook
+    /// is abandoned or out of time, so no operation starts in the grace period.
+    fn enter(&self) -> Option<MutexGuard<'_, ()>> {
+        let busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
+        (!self.cancelled() && Instant::now() < self.deadline).then_some(busy)
+    }
+
+    /// Cuts off the hook's file access: once this returns, no file operation is running and
+    /// none can start.
+    fn cut_off(&self) {
+        self.cancelled.store(true, AtomicOrdering::SeqCst);
+        drop(self.busy.lock().unwrap_or_else(PoisonError::into_inner));
+    }
+
+    /// Gives up on the hook, after [`Shared::cut_off`]. Returns whether the hook's thread was
+    /// still running.
+    fn abandon(&self) -> bool {
+        self.state
+            .compare_exchange(
+                RUNNING,
+                ABANDONED,
+                AtomicOrdering::SeqCst,
+                AtomicOrdering::SeqCst,
+            )
+            .is_ok()
+    }
+
+    /// Marks the hook's thread as ended. Returns whether the host had abandoned it already.
+    fn finish(&self) -> bool {
+        self.state
+            .compare_exchange(
+                RUNNING,
+                FINISHED,
+                AtomicOrdering::SeqCst,
+                AtomicOrdering::SeqCst,
+            )
+            .is_err()
     }
 
     fn record(&self, limit: Limit) {

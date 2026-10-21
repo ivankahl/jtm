@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -496,12 +497,12 @@ fn loading_the_script_counts_towards_the_time_limit() {
 }
 
 #[test]
-fn a_hook_stuck_in_a_slow_pattern_match_is_abandoned() {
-    // Lua patterns backtrack inside one C call, where the interrupt never runs.
+fn a_slow_pattern_match_is_stopped_at_the_deadline() {
+    // Lua patterns backtrack inside one C call; Luau still stops it at the deadline.
     let s = tight(
         r#"
         function f()
-            -- Anchored, so the thread still finishes in a few seconds once abandoned.
+            -- Anchored, so even a missed interrupt would end within a few seconds.
             local s = string.rep("a", 3000)
             string.find(s, "^.-.-.-b")
             return "1"
@@ -514,6 +515,129 @@ fn a_hook_stuck_in_a_slow_pattern_match_is_abandoned() {
         Limit::Time(_)
     ));
     assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn abandoning_a_hook_waits_for_its_file_operation() {
+    let shared = Arc::new(Shared::new(Limits::default()));
+    let (started, wait) = mpsc::channel();
+    let (go, end) = mpsc::channel::<()>();
+    let worker = Arc::clone(&shared);
+    let thread = std::thread::spawn(move || {
+        let busy = worker
+            .enter()
+            .unwrap_or_else(|| panic!("not abandoned yet"));
+        started.send(()).unwrap_or_else(|e| panic!("{e}"));
+        std::thread::sleep(Duration::from_millis(300));
+        drop(busy);
+        // The hook goes on running after its file operation, until the test lets it end.
+        end.recv().unwrap_or_else(|e| panic!("{e}"));
+        worker.finish()
+    });
+    wait.recv().unwrap_or_else(|e| panic!("{e}"));
+    let start = Instant::now();
+    shared.cut_off();
+    assert!(shared.abandon(), "the thread was still running");
+    assert!(
+        start.elapsed() >= Duration::from_millis(200),
+        "abandon returned early"
+    );
+    assert!(
+        shared.enter().is_none(),
+        "no file operation starts once abandoned"
+    );
+    go.send(()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        thread.join().unwrap_or_else(|_| panic!("thread panicked")),
+        "the thread learns it was abandoned"
+    );
+}
+
+#[test]
+fn a_panicking_abandoned_hook_still_releases_its_count() {
+    static STUCK: AtomicUsize = AtomicUsize::new(1);
+    let shared = Arc::new(Shared::new(Limits::default()));
+    assert!(shared.abandon());
+    let finish = Finish {
+        shared: Arc::clone(&shared),
+        stuck: &STUCK,
+    };
+    let panicked = std::thread::spawn(move || {
+        let _finish = finish;
+        panic!("a bug in a host function");
+    })
+    .join();
+    assert!(panicked.is_err());
+    assert_eq!(STUCK.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[test]
+fn no_file_operation_starts_after_the_deadline() {
+    let shared = Shared::new(Limits {
+        memory: MEMORY_LIMIT,
+        time: Duration::ZERO,
+    });
+    assert!(
+        shared.enter().is_none(),
+        "the grace period allows no new work"
+    );
+}
+
+#[test]
+fn a_hook_that_finishes_first_is_not_abandoned() {
+    let shared = Shared::new(Limits::default());
+    assert!(!shared.finish());
+    assert!(!shared.abandon());
+}
+
+#[test]
+fn too_many_stuck_hooks_refuse_the_next_one() {
+    static STUCK: AtomicUsize = AtomicUsize::new(0);
+    // Enough time to reach the sleep on a loaded runner, and a sleep that outlasts all the calls.
+    let limits = Limits {
+        memory: 8 * 1024 * 1024,
+        time: Duration::from_millis(500),
+    };
+    let s = script(
+        r#"
+        function f()
+            jtm.sleep(8000)
+            return "1"
+        end
+        "#,
+    )
+    .with_limits(limits)
+    .with_stuck_counter(&STUCK);
+    for stuck in 1..=MAX_STUCK {
+        assert!(matches!(
+            limit_of(s.format_interop("f", "f", "v", "1")),
+            Limit::Time(_)
+        ));
+        assert_eq!(STUCK.load(AtomicOrdering::SeqCst), stuck);
+    }
+    assert!(
+        matches!(
+            limit_of(s.format_interop("f", "f", "v", "1")),
+            Limit::Stuck(MAX_STUCK)
+        ),
+        "the stuck hooks were counted"
+    );
+    // Each abandoned thread is released when its sleep ends.
+    let start = Instant::now();
+    while STUCK.load(AtomicOrdering::SeqCst) > 0 {
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "stuck hooks never ended"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let quick = tight(r#"function f() return "1" end"#).with_stuck_counter(&STUCK);
+    assert_eq!(
+        quick
+            .format_interop("f", "f", "v", "1")
+            .unwrap_or_else(|e| panic!("{e}")),
+        "1"
+    );
 }
 
 // --- post_extract ---
