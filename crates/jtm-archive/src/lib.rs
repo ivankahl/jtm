@@ -17,6 +17,7 @@ mod entry;
 mod error;
 mod name;
 mod tarball;
+pub mod tree;
 mod zip_file;
 
 #[cfg(any(test, feature = "testing"))]

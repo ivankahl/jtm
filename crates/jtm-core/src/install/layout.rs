@@ -10,6 +10,7 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use jtm_archive::tree;
 use jtm_plugin::manifest::{Layout, StripComponents};
 
 use crate::error::{JtmError, Result};
@@ -95,17 +96,7 @@ pub fn check_bin_dirs(plugin: &str, placed: &Placed, layout: &Layout) -> Result<
     let home = placed.home_dir();
     for bin in &layout.bin_dirs {
         let dir = relative(bin).map(|bin| home.join(bin));
-        let has_file = dir.as_ref().is_some_and(|dir| {
-            inside(&placed.root, dir).unwrap_or(false)
-                && fs::read_dir(dir).is_ok_and(|entries| {
-                    entries.flatten().any(|e| {
-                        let path = e.path();
-                        fs::metadata(&path).is_ok_and(|m| m.is_file())
-                            && inside(&placed.root, &path).unwrap_or(false)
-                    })
-                })
-        });
-        if !has_file {
+        if !has_file(&placed.root, dir.as_deref())? {
             return Err(JtmError::LayoutMismatch {
                 plugin: plugin.to_owned(),
                 message: format!("bin dir `{bin}` is missing or has no files"),
@@ -113,6 +104,30 @@ pub fn check_bin_dirs(plugin: &str, placed: &Placed, layout: &Layout) -> Result<
         }
     }
     Ok(())
+}
+
+/// Whether `dir` is a directory inside `root` holding a file, following links. An entry that
+/// cannot be read is an error rather than a file that is not there.
+fn has_file(root: &Path, dir: Option<&Path>) -> Result<bool> {
+    let Some(dir) = dir else {
+        return Ok(false);
+    };
+    if !inside(root, dir)? || !dir.is_dir() {
+        return Ok(false);
+    }
+    let entries = tree::entries(dir).map_err(|e| JtmError::io(e.path, e.source))?;
+    for entry in entries {
+        let is_file = match fs::metadata(&entry.path) {
+            Ok(meta) => meta.is_file(),
+            // A dangling link is not a file.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(e) => return Err(JtmError::io(&entry.path, e)),
+        };
+        if is_file && inside(root, &entry.path)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// `path` as a relative path of normal components, or `None`.

@@ -1144,6 +1144,7 @@ name = "jtm-plugin"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "jtm-archive",
  "mlua",
  "proptest",
  "regex",

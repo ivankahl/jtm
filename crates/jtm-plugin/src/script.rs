@@ -80,6 +80,11 @@ pub enum Limit {
         path: String,
         reason: String,
     },
+    /// A `jtm.fs.chmod` that would leave a file its owner cannot read.
+    Mode {
+        path: String,
+        mode: u32,
+    },
 }
 
 impl fmt::Display for Limit {
@@ -90,6 +95,11 @@ impl fmt::Display for Limit {
             Limit::Path { path, reason } => {
                 write!(f, "install dir containment: `{path}` {reason}")
             }
+            Limit::Mode { path, mode } => write!(
+                f,
+                "file mode: {mode:#o} would leave jtm unable to read `{path}`; a file keeps at \
+                 least 0o400"
+            ),
         }
     }
 }
@@ -103,6 +113,14 @@ pub enum ScriptError {
     Invalid { hook: String, message: String },
     /// The hook raised an error.
     Failed { hook: String, message: String },
+    /// The install dir could not be read or changed while checking it after the hook, such as
+    /// with too many open files or a failing disk. This is the host's failure, not the plugin's.
+    Io {
+        hook: String,
+        path: PathBuf,
+        kind: std::io::ErrorKind,
+        message: String,
+    },
 }
 
 impl fmt::Display for ScriptError {
@@ -115,6 +133,16 @@ impl fmt::Display for ScriptError {
                 write!(f, "plugin.lua cannot run hook `{hook}`: {message}")
             }
             ScriptError::Failed { hook, message } => write!(f, "hook `{hook}` failed: {message}"),
+            ScriptError::Io {
+                hook,
+                path,
+                message,
+                ..
+            } => write!(
+                f,
+                "cannot check the install dir after hook `{hook}`: {}: {message}",
+                path.display()
+            ),
         }
     }
 }
@@ -283,8 +311,9 @@ impl Script {
     }
 
     /// `post_extract(context)` with `jtm.fs` confined to `root`, the temporary install dir.
-    /// `context` is `{ variant, version, home }`. Once the hook returns, every link in `root`
-    /// must still point inside it.
+    /// `context` is `{ variant, version, home }`. Once the hook returns, even with an error,
+    /// every directory in `root` gets back `0o700` for its owner, and on success every link
+    /// in `root` must still point inside it.
     pub fn post_extract(
         &self,
         function: &str,
@@ -301,11 +330,24 @@ impl Script {
             "version": context.version,
             "home": context.home,
         });
-        self.call(HOOK, function, vec![arg], Some(root.clone()))?;
-        fs::check_links(&root).map_err(|limit| ScriptError::Limit {
-            hook: HOOK.to_owned(),
-            limit,
-        })
+        let called = self.call(HOOK, function, vec![arg], Some(root.clone()));
+        // Restored even when the hook failed, so jtm can still remove what it left behind.
+        let restored = fs::restore_dirs(&root);
+        called?;
+        restored
+            .and_then(|()| fs::check_links(&root))
+            .map_err(|failure| match failure {
+                fs::Failure::Limit(limit) => ScriptError::Limit {
+                    hook: HOOK.to_owned(),
+                    limit,
+                },
+                fs::Failure::Io { path, source } => ScriptError::Io {
+                    hook: HOOK.to_owned(),
+                    path,
+                    kind: source.kind(),
+                    message: source.to_string(),
+                },
+            })
     }
 
     /// Runs `function` on its own thread with a fresh sandboxed state and returns its first

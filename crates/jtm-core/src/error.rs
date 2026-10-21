@@ -700,6 +700,12 @@ impl JtmError {
                 hook,
                 message,
             },
+            S::Io {
+                path,
+                kind,
+                message,
+                ..
+            } => JtmError::io(path, std::io::Error::new(kind, message)),
         }
     }
 }

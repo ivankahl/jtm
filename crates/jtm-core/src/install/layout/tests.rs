@@ -136,3 +136,23 @@ fn every_bin_dir_must_hold_a_file() {
         assert_eq!(err.code(), "E_PLUGIN_INVALID", "{files:?}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn a_bin_dir_that_cannot_be_read_is_an_io_error_not_a_mismatch() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let l = layout("bin_dirs = [\"bin\"]");
+    let dir = tree(&["t/bin/tool"]);
+    let bin = dir.path().join("t/bin");
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o300)).unwrap();
+    let readable = fs::read_dir(&bin).is_ok();
+    let placed = apply("demo", dir.path(), &l, Os::Linux).unwrap();
+    let checked = check_bin_dirs("demo", &placed, &l);
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        // Running as root, permissions do not stop the read.
+        checked.unwrap();
+    } else {
+        assert_eq!(checked.unwrap_err().code(), "E_PERMISSION");
+    }
+}

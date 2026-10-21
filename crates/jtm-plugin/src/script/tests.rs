@@ -639,24 +639,108 @@ fn a_link_that_escapes_through_another_link_fails_the_hook() {
     assert!(is_path_limit(post_extract(dir.path(), "")));
 }
 
-#[test]
-fn chmod_keeps_directories_usable_by_their_owner() {
-    let dir = install_dir();
-    for path in [".", "lib", "lib/nested"] {
-        for mode in ["0", "73", "320", "448 - 64"] {
-            post_extract(
-                dir.path(),
-                &format!("assert(not pcall(jtm.fs.chmod, '{path}', {mode}))"),
-            )
-            .unwrap_or_else(|e| panic!("{path} {mode}: {e}"));
-        }
+/// Gives every directory under its path back `0o755` when dropped, so a test that fails while
+/// a directory is locked still leaves a temp dir that can be removed. Declare it after the
+/// temp dir, so it is dropped first.
+#[cfg(unix)]
+struct Unlock<'a>(&'a Path);
+
+#[cfg(unix)]
+impl Drop for Unlock<'_> {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let open = |path: &Path| fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+        let _ = open(self.0);
+        let _ = jtm_archive::tree::walk(self.0, |entry| {
+            if entry.kind.is_dir() {
+                let _ = open(&entry.path);
+            }
+            Ok::<(), jtm_archive::tree::ReadError>(())
+        });
     }
-    // Owner rwx with anything for the rest is fine, and files may take any mode.
+}
+
+#[cfg(unix)]
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::symlink_metadata(path)
+        .map(|m| m.permissions().mode() & 0o7777)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+#[test]
+fn chmod_keeps_files_readable_by_their_owner() {
+    let dir = install_dir();
+    for mode in [0, 0o200, 0o100, 0o377] {
+        // A mode jtm could not read is a limit breach, so catching it does not help.
+        let result = post_extract(
+            dir.path(),
+            &format!("pcall(jtm.fs.chmod, 'lib/nested/a.txt', {mode})"),
+        );
+        assert_eq!(
+            limit_of(result),
+            Limit::Mode {
+                path: "lib/nested/a.txt".to_owned(),
+                mode,
+            },
+            "{mode:#o}"
+        );
+    }
     post_extract(
         dir.path(),
-        "jtm.fs.chmod('lib', 448) jtm.fs.chmod('.', 493) jtm.fs.chmod('README', 0)",
+        "jtm.fs.chmod('README', 256) jtm.fs.chmod('bin/tool', 365)",
     )
     .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[cfg(unix)]
+#[test]
+fn directories_the_hook_locks_get_their_owner_bits_back() {
+    let dir = install_dir();
+    let _unlock = Unlock(dir.path());
+    post_extract(
+        dir.path(),
+        "jtm.fs.chmod('lib/nested', 0) jtm.fs.chmod('lib', 0) jtm.fs.chmod('.', 365)",
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(mode_of(dir.path()), 0o755);
+    assert_eq!(mode_of(&dir.path().join("lib")), 0o700);
+    assert_eq!(mode_of(&dir.path().join("lib/nested")), 0o700);
+    // A hook that fails after locking a directory leaves one jtm can still remove.
+    let failed = post_extract(dir.path(), "jtm.fs.chmod('lib', 0) error('boom')");
+    assert!(
+        matches!(failed, Err(ScriptError::Failed { .. })),
+        "{failed:?}"
+    );
+    assert_eq!(mode_of(&dir.path().join("lib")), 0o700);
+}
+
+#[cfg(unix)]
+#[test]
+fn locking_a_directory_cannot_hide_a_link_moved_outside() {
+    let dir = install_dir();
+    let _unlock = Unlock(dir.path());
+    // `lib/nested/up` points at the root; moved up into `lib`, it points above the root.
+    std::os::unix::fs::symlink("../..", dir.path().join("lib/nested/up"))
+        .unwrap_or_else(|e| panic!("{e}"));
+    for lock in ["jtm.fs.chmod('lib', 0)", "jtm.fs.chmod('.', 73)"] {
+        let result = post_extract(
+            dir.path(),
+            &format!("jtm.fs.rename('lib/nested/up', 'lib/up') {lock}"),
+        );
+        match limit_of(result) {
+            Limit::Path { path, reason } => {
+                assert_eq!(path, "lib/up", "{lock}: {reason}");
+                assert!(
+                    reason.contains("outside the install dir"),
+                    "{lock}: {reason}"
+                );
+            }
+            other => panic!("{lock}: expected a containment failure, got {other:?}"),
+        }
+        fs::rename(dir.path().join("lib/up"), dir.path().join("lib/nested/up"))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
 }
 
 #[cfg(unix)]
@@ -664,25 +748,24 @@ fn chmod_keeps_directories_usable_by_their_owner() {
 fn an_unreadable_directory_fails_the_link_check() {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = install_dir();
+    let _unlock = Unlock(dir.path());
     let hidden = dir.path().join("lib/nested");
     std::os::unix::fs::symlink("../../..", hidden.join("escape")).unwrap_or_else(|e| panic!("{e}"));
     fs::set_permissions(&hidden, fs::Permissions::from_mode(0o000))
         .unwrap_or_else(|e| panic!("{e}"));
     let readable = fs::read_dir(&hidden).is_ok();
-    let checked = super::fs::check_links(dir.path());
-    fs::set_permissions(&hidden, fs::Permissions::from_mode(0o755))
-        .unwrap_or_else(|e| panic!("{e}"));
-    if readable {
-        // Running as root, permissions do not stop the read; the escaping link is found.
-        assert!(checked.is_err());
-        return;
-    }
-    match checked {
-        Err(Limit::Path { path, reason }) => {
-            assert_eq!(path, "lib/nested", "{reason}");
-            assert!(reason.contains("cannot be read"), "{reason}");
+    // Without restoring modes first, so the check itself must fail closed.
+    match super::fs::check_links(dir.path()) {
+        Err(super::fs::Failure::Io { path, source }) if !readable => {
+            assert_eq!(path, hidden);
+            assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
         }
-        other => panic!("expected a containment failure, got {other:?}"),
+        // Running as root, permissions do not stop the read; the escaping link is found.
+        Err(super::fs::Failure::Limit(Limit::Path { path, reason })) if readable => {
+            assert_eq!(path, "lib/nested/escape", "{reason}");
+            assert!(reason.contains("outside the install dir"), "{reason}");
+        }
+        other => panic!("readable: {readable}, got {other:?}"),
     }
 }
 
