@@ -23,14 +23,6 @@ use crate::sync::apply_lock;
 /// the tool it needs, such as a build tool that needs a newer Java than the one active.
 pub const W_REQUIRES_UNMET: &str = "W_REQUIRES_UNMET";
 
-/// Warning code when `[requires]` entries are not checked, because the installs of a tool they
-/// involve cannot be read.
-pub const W_REQUIRES_UNCHECKED: &str = "W_REQUIRES_UNCHECKED";
-
-/// Warning code when `jtm current` cannot read a tool's installs, so it shows the tool as not
-/// installed.
-pub const W_INSTALLS_UNREADABLE: &str = "W_INSTALLS_UNREADABLE";
-
 /// The plugins, pins, session versions and defaults that apply in one directory.
 #[derive(Debug)]
 pub struct Here<'s, 'c> {
@@ -135,15 +127,14 @@ impl<'s, 'c> Here<'s, 'c> {
         }
     }
 
-    /// The active version of each tool, or of `only`. A tool whose installs cannot be read is
-    /// shown as not installed, with a [`W_INSTALLS_UNREADABLE`] warning, so one broken tool does
-    /// not hide the others; when it is `only`, the read error is returned instead.
-    pub fn current(&self, only: Option<&str>) -> Result<(Vec<CurrentItem>, Vec<Warning>)> {
+    /// The active version of each tool, or of `only`. When the installs of a tool that is set
+    /// here cannot be read, the read error is returned, never a "not installed" item, even when
+    /// other tools could still be shown (SPEC.md section 5).
+    pub fn current(&self, only: Option<&str>) -> Result<Vec<CurrentItem>> {
         if let Some(tool) = only {
             self.plugin(tool)?;
         }
         let mut items = Vec::new();
-        let mut warnings = Vec::new();
         for plugin in &self.plugins {
             let tool = plugin.manifest.name.as_str();
             if only.is_some_and(|o| o != tool) {
@@ -162,24 +153,9 @@ impl<'s, 'c> Here<'s, 'c> {
                 });
                 continue;
             };
-            let found = match self
+            let found = self
                 .session
-                .installed_match(plugin, choice.selector.as_ref())
-            {
-                Ok(found) => found,
-                Err(err) if only.is_none() => {
-                    warnings.push(Warning {
-                        code: W_INSTALLS_UNREADABLE,
-                        message: format!(
-                            "`{tool}` is shown as not installed, because its installs cannot be \
-                             read: {}",
-                            unreadable(err)?
-                        ),
-                    });
-                    None
-                }
-                Err(err) => return Err(err),
-            };
+                .installed_match(plugin, choice.selector.as_ref())?;
             items.push(CurrentItem {
                 tool: tool.to_owned(),
                 layer: Some(choice.layer),
@@ -195,7 +171,7 @@ impl<'s, 'c> Here<'s, 'c> {
                 installed: found.is_some(),
             });
         }
-        Ok((items, warnings))
+        Ok(items)
     }
 
     /// The tools to take from real install dirs: `exec` first, then session and project
@@ -238,8 +214,8 @@ impl<'s, 'c> Here<'s, 'c> {
     /// Active versions come from `exec` first, then from `known`, the items [`Here::current`]
     /// already resolved, so only the remaining tools that have requirements or are required
     /// have their installs read, each at most once. When a tool's installs cannot be read, the
-    /// entries involving it get one [`W_REQUIRES_UNCHECKED`] warning and the others are still
-    /// checked. Any other error is returned.
+    /// read error is returned, as in every other command (SPEC.md section 5): an unmet
+    /// requirement only warns, but installs jtm cannot read are never taken for none.
     pub fn requirement_warnings(
         &self,
         exec: &[(String, Installed)],
@@ -252,17 +228,14 @@ impl<'s, 'c> Here<'s, 'c> {
                 continue;
             }
             let tool = plugin.manifest.name.as_str();
-            let Some((version, _)) = self.active(tool, exec, known, &mut active, &mut warnings)?
-            else {
+            let Some((version, _)) = self.active(tool, exec, known, &mut active)? else {
                 continue;
             };
             for (needed, requirement) in &plugin.manifest.requires {
                 let Ok(needed_plugin) = self.plugin(needed) else {
                     continue;
                 };
-                let Some((have, origin)) =
-                    self.active(needed, exec, known, &mut active, &mut warnings)?
-                else {
+                let Some((have, origin)) = self.active(needed, exec, known, &mut active)? else {
                     continue;
                 };
                 if meets(&needed_plugin.manifest, &have, requirement) == Some(false) {
@@ -281,14 +254,13 @@ impl<'s, 'c> Here<'s, 'c> {
 
     /// The active version of `tool` and what set it, for [`Here::requirement_warnings`]: from
     /// `exec`, then a `known` item that settles it, then its installs. Each tool is resolved
-    /// once into `cache`; an unreadable one adds its [`W_REQUIRES_UNCHECKED`] warning then.
+    /// once into `cache`; installs that cannot be read are an error.
     fn active(
         &self,
         tool: &str,
         exec: &[(String, Installed)],
         known: &[CurrentItem],
         cache: &mut BTreeMap<String, Option<(String, String)>>,
-        warnings: &mut Vec<Warning>,
     ) -> Result<Option<(String, String)>> {
         if let Some(found) = cache.get(tool) {
             return Ok(found.clone());
@@ -303,23 +275,9 @@ impl<'s, 'c> Here<'s, 'c> {
                 .clone()
                 .map(|version| (version, item.origin.clone().unwrap_or_default()))
         } else if let Some(choice) = self.layers().choose(tool) {
-            match self
-                .session
-                .installed_match(self.plugin(tool)?, choice.selector.as_ref())
-            {
-                Ok(found) => found.map(|f| (f.version, choice.origin)),
-                Err(err) => {
-                    warnings.push(Warning {
-                        code: W_REQUIRES_UNCHECKED,
-                        message: format!(
-                            "the requirements involving `{tool}` were not checked, because its \
-                             installs cannot be read: {}",
-                            unreadable(err)?
-                        ),
-                    });
-                    None
-                }
-            }
+            self.session
+                .installed_match(self.plugin(tool)?, choice.selector.as_ref())?
+                .map(|f| (f.version, choice.origin))
         } else {
             None
         };
@@ -437,16 +395,6 @@ fn is_bare_name(command: &str) -> bool {
         && command != ".."
         && !command.contains(['/', '\\', ':'])
         && !command.chars().any(char::is_control)
-}
-
-/// The message of `err` when it is an I/O or permission error, as reading a tool's installs
-/// fails with, so a caller can report it as a warning and carry on. Any other error is
-/// returned unchanged, so a bug or a bad config is never hidden behind a warning.
-fn unreadable(err: JtmError) -> Result<String> {
-    match err {
-        JtmError::Io { .. } | JtmError::Permission { .. } => Ok(err.to_string()),
-        other => Err(other),
-    }
 }
 
 #[cfg(test)]
