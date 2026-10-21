@@ -263,6 +263,24 @@ fn a_star_never_matches_a_link() {
     );
 }
 
+/// A link that is broken, or leads out of the archive to a place where the rest of the path
+/// is missing, fails the install instead of reading as "no match".
+#[cfg(unix)]
+#[test]
+fn a_broken_or_escaping_link_never_hands_over_to_the_next_candidate() {
+    for (target, why) in [
+        ("/", "leads out of the archive"),
+        ("/nonexistent-jtm-target", "is broken"),
+        ("missing", "is broken"),
+    ] {
+        let dir = tree(&["t/bin/java"]);
+        std::os::unix::fs::symlink(target, dir.path().join("t/Contents")).unwrap();
+        let err = apply("demo", dir.path(), &layout(CANDIDATES), Os::Macos).unwrap_err();
+        assert_eq!(err.code(), "E_PLUGIN_INVALID", "{target}");
+        assert!(err.to_string().contains(why), "{target}: {err}");
+    }
+}
+
 /// `post_extract` runs between `apply` and `check_bin_dirs` and may fill the bin dirs, so a
 /// home only has to exist.
 #[test]

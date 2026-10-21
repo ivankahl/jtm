@@ -92,13 +92,8 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
         }
     }
     let tried: Vec<String> = candidates.iter().map(|c| format!("`{c}`")).collect();
-    let star = if candidates.iter().any(|c| c.contains('*')) {
-        " (a `*` must match exactly one directory)"
-    } else {
-        ""
-    };
     Err(mismatch(format!(
-        "no home candidate is a directory inside the archive{star}; tried {}",
+        "no home candidate is a directory inside the archive; tried {}",
         tried.join(", ")
     )))
 }
@@ -107,17 +102,28 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
 /// `root`, or `None` when it is not. A `*` segment matches any one real directory, never a
 /// link. When two or more directories fit the whole path the candidate is ambiguous, and a
 /// directory `*` matched must have a [safe name](is_safe_name): both are errors, never a
-/// reason to try the next candidate. So is a path that exists but leads out of the archive.
+/// reason to try the next candidate. So is a path through a link that is broken or leads out
+/// of the archive.
 fn find_home(plugin: &str, root: &Path, candidate: &str, rel: &Path) -> Result<Option<PathBuf>> {
     let mismatch = |message: String| JtmError::LayoutMismatch {
         plugin: plugin.to_owned(),
         message,
     };
-    let outside = |path: &Path| {
-        mismatch(format!(
-            "home candidate `{candidate}` reaches `{}`, which leads out of the archive",
-            shown(path)
-        ))
+    // Whether `path` is a directory inside the archive; a link on the way that is broken or
+    // leads out of the archive fails the install rather than reading as "no match".
+    let probe = |path: &Path| -> Result<bool> {
+        let bad = |why: &str| {
+            mismatch(format!(
+                "home candidate `{candidate}` reaches `{}` through a link that {why}",
+                shown(path)
+            ))
+        };
+        match walk(root, path)? {
+            Walk::Absent => Ok(false),
+            Walk::Dir => Ok(true),
+            Walk::Broken => Err(bad("is broken")),
+            Walk::Escapes => Err(bad("leads out of the archive")),
+        }
     };
     let mut paths = vec![PathBuf::new()];
     for part in rel.components() {
@@ -132,16 +138,12 @@ fn find_home(plugin: &str, root: &Path, candidate: &str, rel: &Path) -> Result<O
         }
         let mut next = Vec::new();
         for path in &paths {
-            let dir = root.join(path);
             // A path that is not a directory simply has no matches; any other failure to
-            // read one is an error, never a reason to pick another candidate. Never list a
-            // directory a link leads to outside the archive.
-            if !is_dir(&dir)? {
+            // read one is an error, never a reason to pick another candidate.
+            if !probe(path)? {
                 continue;
             }
-            if !inside(root, &dir)? {
-                return Err(outside(path));
-            }
+            let dir = root.join(path);
             for entry in fs::read_dir(&dir).map_err(|e| JtmError::io(&dir, e))? {
                 let entry = entry.map_err(|e| JtmError::io(&dir, e))?;
                 // `DirEntry::file_type` does not follow links.
@@ -157,11 +159,7 @@ fn find_home(plugin: &str, root: &Path, candidate: &str, rel: &Path) -> Result<O
     }
     let mut homes = Vec::new();
     for path in paths {
-        let dir = root.join(&path);
-        if is_dir(&dir)? {
-            if !inside(root, &dir)? {
-                return Err(outside(&path));
-            }
+        if probe(&path)? {
             homes.push(path);
         }
     }
@@ -195,20 +193,51 @@ fn find_home(plugin: &str, root: &Path, candidate: &str, rel: &Path) -> Result<O
     Ok(Some(home))
 }
 
-/// Whether `path` is a directory, following links. A path that does not exist, or that runs
-/// through a file, is not one; any other failure to tell is an error.
-fn is_dir(path: &Path) -> Result<bool> {
-    match fs::metadata(path) {
-        Ok(meta) => Ok(meta.is_dir()),
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Ok(false)
+/// What walking a relative path inside the archive found.
+enum Walk {
+    /// Nothing there, or a file: no match.
+    Absent,
+    /// A directory inside the archive.
+    Dir,
+    /// A link on the way whose target does not exist.
+    Broken,
+    /// A link on the way that leads out of the archive.
+    Escapes,
+}
+
+/// Walks `rel` under `root` one component at a time, checking every link on the way, so a
+/// broken link or one out of the archive is told apart from a path that is simply missing.
+/// Any other failure to read the tree is an error.
+fn walk(root: &Path, rel: &Path) -> Result<Walk> {
+    let real_root = fs::canonicalize(root).map_err(|e| JtmError::io(root, e))?;
+    let absent = |e: &io::Error| {
+        matches!(
+            e.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+        )
+    };
+    let mut path = root.to_path_buf();
+    for part in rel.components() {
+        path.push(part);
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if absent(&e) => return Ok(Walk::Absent),
+            Err(e) => return Err(JtmError::io(&path, e)),
+        };
+        if meta.file_type().is_symlink() {
+            match fs::canonicalize(&path) {
+                Ok(real) if real.starts_with(&real_root) => {}
+                Ok(_) => return Ok(Walk::Escapes),
+                Err(e) if absent(&e) => return Ok(Walk::Broken),
+                Err(e) => return Err(JtmError::io(&path, e)),
+            }
         }
-        Err(e) => Err(JtmError::io(path, e)),
+    }
+    match fs::metadata(&path) {
+        Ok(meta) if meta.is_dir() => Ok(Walk::Dir),
+        Ok(_) => Ok(Walk::Absent),
+        Err(e) if absent(&e) => Ok(Walk::Absent),
+        Err(e) => Err(JtmError::io(&path, e)),
     }
 }
 
