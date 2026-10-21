@@ -206,6 +206,36 @@ fn a_script_no_hook_names_is_never_read() {
 }
 
 #[test]
+fn parse_reads_the_script_only_when_a_hook_is_named() {
+    let text = manifest("acme/widget");
+    let plugin = parse(
+        text.as_bytes(),
+        || panic!("the script was read although no hook is named"),
+        ManifestOrigin::External,
+        "test",
+        "acme/widget",
+    )
+    .unwrap();
+    assert!(plugin.script.is_none());
+
+    let source = "function post() end";
+    let mut reads = 0;
+    let plugin = parse(
+        with_hook(source).as_bytes(),
+        || {
+            reads += 1;
+            Ok(Some(source.to_owned()))
+        },
+        ManifestOrigin::External,
+        "test",
+        "acme/widget",
+    )
+    .unwrap();
+    assert_eq!(reads, 1);
+    assert_eq!(plugin.script.as_deref(), Some(source));
+}
+
+#[test]
 fn a_script_that_does_not_match_its_hash_is_an_invalid_plugin() {
     let (_home, dirs) = dirs();
     add(
