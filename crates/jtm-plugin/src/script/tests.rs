@@ -533,6 +533,18 @@ fn a_panicking_abandoned_hook_still_releases_its_count() {
 }
 
 #[test]
+fn no_file_operation_starts_after_the_deadline() {
+    let shared = Shared::new(Limits {
+        memory: MEMORY_LIMIT,
+        time: Duration::ZERO,
+    });
+    assert!(
+        shared.enter().is_none(),
+        "the grace period allows no new work"
+    );
+}
+
+#[test]
 fn a_hook_that_finishes_first_is_not_abandoned() {
     let shared = Shared::new(Limits::default());
     assert!(!shared.finish());

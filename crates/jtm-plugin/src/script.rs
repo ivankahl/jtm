@@ -29,7 +29,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
 
@@ -411,7 +411,10 @@ impl Script {
             Ok(outcome) => Some(outcome),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // The thread is stuck outside Lua code; leave it, but cut off its file access.
-                // Counting first keeps the thread's release from running ahead of the count.
+                // Waiting out a file operation before counting keeps the count from looking
+                // high to other callers meanwhile. Counting before the abandon keeps the
+                // thread's release from running ahead of the count.
+                shared.cut_off();
                 stuck.fetch_add(1, AtomicOrdering::SeqCst);
                 let abandoned = shared.abandon();
                 if !abandoned {
@@ -480,6 +483,8 @@ const ABANDONED: u8 = 2;
 #[derive(Debug)]
 struct Shared {
     limits: Limits,
+    /// When the hook's time runs out; no file operation starts after it.
+    deadline: Instant,
     /// Set when the host abandons the hook; its file operations fail from then on.
     cancelled: AtomicBool,
     /// Held by each `jtm.fs` operation while it runs, so abandoning the hook waits for it.
@@ -495,6 +500,7 @@ impl Shared {
     fn new(limits: Limits) -> Shared {
         Shared {
             limits,
+            deadline: Instant::now() + limits.time,
             cancelled: AtomicBool::new(false),
             busy: Mutex::new(()),
             state: AtomicU8::new(RUNNING),
@@ -503,17 +509,23 @@ impl Shared {
     }
 
     /// Starts a file operation, which holds the guard until it is done; `None` once the hook
-    /// is abandoned.
+    /// is abandoned or out of time, so no operation starts in the grace period.
     fn enter(&self) -> Option<MutexGuard<'_, ()>> {
         let busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
-        (!self.cancelled()).then_some(busy)
+        (!self.cancelled() && Instant::now() < self.deadline).then_some(busy)
     }
 
-    /// Cuts the hook off: once this returns, no file operation is running and none can start.
-    /// Returns whether the hook's thread was still running.
-    fn abandon(&self) -> bool {
+    /// Cuts off the hook's file access: once this returns, no file operation is running and
+    /// none can start.
+    fn cut_off(&self) {
         self.cancelled.store(true, AtomicOrdering::SeqCst);
         drop(self.busy.lock().unwrap_or_else(PoisonError::into_inner));
+    }
+
+    /// Cuts the hook off, as [`Shared::cut_off`] does, and returns whether the hook's thread
+    /// was still running.
+    fn abandon(&self) -> bool {
+        self.cut_off();
         self.state
             .compare_exchange(
                 RUNNING,
