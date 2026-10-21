@@ -18,6 +18,9 @@ use crate::error::{JtmError, Result};
 use crate::indices::ManifestOrigin;
 use crate::platform::Platform;
 
+/// The name prefix of the files the working copy repair writes in `<data>/plugins`.
+const TEMP_PREFIX: &str = ".jtm-builtin-";
+
 /// The working copy files of one builtin plugin, as `(file name, bytes)`.
 fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> {
     let mut files = vec![("plugin.toml", found.text.as_bytes())];
@@ -35,10 +38,27 @@ fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> 
 ///
 /// The working copy is for people and tools to read. jtm never reads it, so a modified copy
 /// cannot change a trust decision; [`Registry`] reads only the compiled-in manifests.
+///
+/// Several jtm processes may start a repair at once, such as two shells' prompt hooks, so a
+/// repair holds an exclusive lock in `<data>/locks`. While another process holds it, the sync
+/// is skipped and reports no repairs rather than waiting, so a stopped process never stalls
+/// every prompt. New files are also written in `<data>/plugins`, outside the copy, and renamed
+/// into place, so nothing that does not take the lock sees a half-written file in the copy.
+/// Without any `builtin` manifests, such as from a context that embeds none, there is nothing
+/// to compare against, so the copy is left alone.
 pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec<PathBuf>> {
+    if builtin.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(_lock) = lock_working_copy(dirs)? else {
+        tracing::debug!("another process is repairing the builtin plugin working copy");
+        return Ok(Vec::new());
+    };
     let root = dirs.builtin_plugins();
+    let scratch = dirs.plugins();
     let mut repaired = Vec::new();
     ensure_dir(&root, &mut repaired)?;
+    sweep_temp_files(&scratch);
     let wanted: Vec<(String, &BuiltinManifest)> =
         builtin.iter().map(|b| (dir_name(b.name), b)).collect();
     for entry in read_entries(&root)? {
@@ -71,7 +91,7 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
                 _ => None,
             };
             if current.as_deref() != Some(bytes) {
-                write_replacing(&path, bytes)?;
+                write_replacing(&scratch, &path, bytes)?;
                 repaired.push(path);
             }
         }
@@ -85,16 +105,87 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
     Ok(repaired)
 }
 
-/// Writes `bytes` to a new file beside `path` and renames it over `path`. A rename replaces a
-/// link rather than writing through it, so a link planted in the working copy is never
-/// followed.
-fn write_replacing(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path.parent().unwrap_or(path);
-    let mut file = tempfile::NamedTempFile::new_in(dir).map_err(|e| JtmError::io(dir, e))?;
+/// Writes `bytes` to a new file in `scratch`, on the same file system, and renames it over
+/// `path`. A rename replaces a link rather than writing through it, so a link planted in the
+/// working copy is never followed.
+///
+/// Windows briefly refuses a rename onto a file another program has open, such as a virus
+/// scanner or an editor, so there a refused rename is retried twice, waiting at most 60 ms in
+/// all. Any other failure is returned at once.
+fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
+    write_replacing_with(scratch, path, bytes, rename_refused)
+}
+
+/// Whether a failed rename may work if tried again: on Windows, a refused or shared target.
+fn rename_refused(error: &io::Error) -> bool {
+    // ERROR_SHARING_VIOLATION, which std does not map to an error kind.
+    const SHARING_VIOLATION: i32 = 32;
+    cfg!(windows)
+        && (error.kind() == io::ErrorKind::PermissionDenied
+            || error.raw_os_error() == Some(SHARING_VIOLATION))
+}
+
+/// [`write_replacing`], retrying a failed rename while `transient` says it may work.
+fn write_replacing_with(
+    scratch: &Path,
+    path: &Path,
+    bytes: &[u8],
+    transient: impl Fn(&io::Error) -> bool,
+) -> Result<()> {
+    const ATTEMPTS: u32 = 3;
+    let mut file = tempfile::Builder::new()
+        .prefix(TEMP_PREFIX)
+        .tempfile_in(scratch)
+        .map_err(|e| JtmError::io(scratch, e))?;
     io::Write::write_all(&mut file, bytes).map_err(|e| JtmError::io(file.path(), e))?;
-    file.persist(path)
-        .map_err(|e| JtmError::io(path, e.error))?;
-    Ok(())
+    let mut attempt = 1;
+    loop {
+        let failed = match file.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(failed) => failed,
+        };
+        if !transient(&failed.error) || attempt == ATTEMPTS {
+            return Err(JtmError::io(path, failed.error));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10 << attempt));
+        attempt += 1;
+        file = failed.file;
+    }
+}
+
+/// Takes the exclusive lock on the working copy, or returns `None` while another process
+/// holds it.
+fn lock_working_copy(dirs: &Dirs) -> Result<Option<fs::File>> {
+    let locks = dirs.locks();
+    fs::create_dir_all(&locks).map_err(|e| JtmError::io(&locks, e))?;
+    // A leading `.` keeps this apart from every install lock, which starts with a plugin name.
+    let path = locks.join(".builtin-working-copy.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| JtmError::io(&path, e))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(e)) => Err(JtmError::io(&path, e)),
+    }
+}
+
+/// Removes the repair's temporary files in `scratch`. Only a repair holding the working copy
+/// lock writes them, so with the lock held every one is from a process killed mid-repair.
+/// Failures are ignored; the next sync tries again.
+fn sweep_temp_files(scratch: &Path) {
+    let Ok(entries) = fs::read_dir(scratch) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let ours = entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX);
+        if ours && entry.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Makes `dir` a real directory, replacing a file or link in its place.
@@ -199,7 +290,7 @@ impl Registry<'_> {
         if let Some(found) = self.builtin.iter().find(|b| b.name == name) {
             return parse(
                 found.text.as_bytes(),
-                found.script.map(str::to_owned),
+                || Ok(found.script.map(str::to_owned)),
                 ManifestOrigin::Builtin,
                 "builtin",
                 name,
@@ -213,10 +304,9 @@ impl Registry<'_> {
             [dir] => {
                 let path = dir.join("plugin.toml");
                 let bytes = fs::read(&path).map_err(|e| JtmError::io(&path, e))?;
-                let script = read_script(&dir.join("plugin.lua"))?;
                 parse(
                     &bytes,
-                    script,
+                    || read_script(&dir.join("plugin.lua")),
                     ManifestOrigin::External,
                     &path.display().to_string(),
                     name,
@@ -309,9 +399,11 @@ fn read_script(path: &Path) -> Result<Option<String>> {
     })
 }
 
+/// Parses the manifest `bytes`, reading the plugin's script through `script` only when the
+/// manifest names a hook.
 fn parse(
     bytes: &[u8],
-    script: Option<String>,
+    script: impl FnOnce() -> Result<Option<String>>,
     origin: ManifestOrigin,
     location: &str,
     name: &str,
@@ -338,16 +430,16 @@ fn parse(
         )));
     }
     // Validation guarantees `script_sha256` exactly when a hook is named. A script no hook
-    // uses is never loaded.
-    let script = match (&manifest.hooks.script_sha256, script) {
-        (None, _) => None,
-        (Some(_), None) => {
-            let hook = first_hook(&manifest).unwrap_or("a hook");
-            return Err(invalid(format!(
-                "names the hook `{hook}`, but the plugin has no plugin.lua"
-            )));
-        }
-        (Some(expected), Some(source)) => {
+    // uses is never read.
+    let script = match &manifest.hooks.script_sha256 {
+        None => None,
+        Some(expected) => {
+            let Some(source) = script()? else {
+                let hook = first_hook(&manifest).unwrap_or("a hook");
+                return Err(invalid(format!(
+                    "names the hook `{hook}`, but the plugin has no plugin.lua"
+                )));
+            };
             let actual = jtm_security::sha256_hex(source.as_bytes());
             if actual != *expected {
                 return Err(invalid(format!(
