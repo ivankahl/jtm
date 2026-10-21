@@ -821,14 +821,36 @@ fn an_unmet_java_requirement_is_a_warning() {
         assert!(codes(&value).is_empty(), "{args:?}: {value}");
     }
 
-    // Asking about one tool never fails on another active tool's installs.
-    let project = h.project(&[(".sdkmanrc", "springboot=3.3.5\nmaven=3.9.9\n")]);
-    let maven = h.home.path().join("tools").join(test_name("maven"));
-    fs::remove_dir_all(&maven).unwrap();
-    fs::write(&maven, "not a directory").unwrap();
-    let (code, value) = h.json(&project, &["current", &test_name("spring-boot-cli")]);
+    // Asking about one tool reads only the installs its requirements involve, so another
+    // tool's unreadable installs neither fail it nor hide its requirements.
+    let project = h.project(&[(
+        ".sdkmanrc",
+        "java=11.0.25-zulu\nspringboot=3.3.5\nmaven=3.9.9\n",
+    )]);
+    let unreadable = |tool: &str| {
+        let dir = h.home.path().join("tools").join(test_name(tool));
+        fs::remove_dir_all(&dir).unwrap();
+        fs::write(&dir, "not a directory").unwrap();
+    };
+    unreadable("maven");
+    let spring = test_name("spring-boot-cli");
+    let (code, value) = h.json(&project, &["current", &spring]);
     assert_eq!(code, 0, "{value}");
     assert_eq!(value["data"]["tools"][0]["installed"], true, "{value}");
+    assert_eq!(codes(&value), ["W_REQUIRES_UNMET"], "{value}");
+
+    // When the installs a requirement needs cannot be read, that is only a warning.
+    unreadable("java");
+    let (code, value) = h.json(&project, &["current", &spring]);
+    assert_eq!(code, 0, "{value}");
+    let all: Vec<&str> = value["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["code"].as_str().unwrap())
+        .collect();
+    assert!(all.contains(&"W_REQUIRES_UNCHECKED"), "{value}");
+    assert!(codes(&value).is_empty(), "{value}");
 }
 
 // --- real tools ---
