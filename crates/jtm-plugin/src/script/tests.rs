@@ -134,9 +134,14 @@ fn resolve_alias_refuses_a_value_that_is_not_a_version() {
 fn resolve_alias_must_pick_one_of_the_candidates() {
     // An alias name, a version the index does not list, and one listed only for another
     // variant are all refused.
-    for picked in ["lts", "latest", "9.9.9", "3.9.9"] {
+    for (picked, variant) in [
+        ("lts", "default"),
+        ("latest", "default"),
+        ("9.9.9", "default"),
+        ("3.9.9", "other"),
+    ] {
         let s = script(&format!("function pick() return '{picked}' end"));
-        let result = s.resolve_alias("pick", "x", "other", &entries());
+        let result = s.resolve_alias("pick", "x", variant, &entries());
         match result {
             Err(ScriptError::Invalid { message, .. }) => {
                 assert!(message.contains(picked), "{message}");

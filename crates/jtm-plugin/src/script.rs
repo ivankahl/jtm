@@ -229,6 +229,7 @@ impl Script {
         match out {
             Json::Null => Ok(None),
             Json::String(version) => {
+                // Checked first so the message below never echoes an arbitrary script string.
                 check_version(HOOK, &version)?;
                 if candidates
                     .iter()
