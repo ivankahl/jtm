@@ -811,6 +811,24 @@ fn an_unmet_java_requirement_is_a_warning() {
         assert_eq!(code, 0, "{value}");
         assert_eq!(codes(&value), ["W_REQUIRES_UNMET"], "{args:?}: {value}");
     }
+
+    // A Java the project pins but has not installed is not active, in either command; the
+    // default does not stand in for it.
+    let project = h.project(&[(".sdkmanrc", "java=17.0.13-tem\nspringboot=3.3.5\n")]);
+    for args in [&["current"][..], &["env"]] {
+        let (code, value) = h.json(&project, args);
+        assert_eq!(code, 0, "{value}");
+        assert!(codes(&value).is_empty(), "{args:?}: {value}");
+    }
+
+    // Asking about one tool never fails on another active tool's installs.
+    let project = h.project(&[(".sdkmanrc", "springboot=3.3.5\nmaven=3.9.9\n")]);
+    let maven = h.home.path().join("tools").join(test_name("maven"));
+    fs::remove_dir_all(&maven).unwrap();
+    fs::write(&maven, "not a directory").unwrap();
+    let (code, value) = h.json(&project, &["current", &test_name("spring-boot-cli")]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["data"]["tools"][0]["installed"], true, "{value}");
 }
 
 // --- real tools ---

@@ -201,14 +201,23 @@ pub(crate) fn current(ctx: &Context, tool: Option<&str>) -> Result<Outcome<Curre
     if let Some(tool) = tool {
         here.plugin(tool)?;
     }
-    // Every tool's version is needed for the requirements, so they are all looked up once.
-    let all = here.current(None)?;
     let mut found = here.warnings();
-    found.extend(here.current_requirement_warnings(&all));
-    let tools = all
-        .into_iter()
-        .filter(|item| tool.is_none_or(|t| t == item.tool))
-        .collect();
+    // Every tool's version is needed for the requirements, so they are all looked up once.
+    let tools = match here.current(None) {
+        Ok(all) => {
+            found.extend(here.current_requirement_warnings(&all));
+            all.into_iter()
+                .filter(|item| tool.is_none_or(|t| t == item.tool))
+                .collect()
+        }
+        // Asked about one tool, another tool's installs never fail the command; only the
+        // requirements check is skipped.
+        Err(err) if tool.is_some() => {
+            tracing::debug!(%err, "cannot check the active tools' requirements");
+            here.current(tool)?
+        }
+        Err(err) => return Err(err),
+    };
     Ok(Outcome {
         command: "current",
         changed: false,

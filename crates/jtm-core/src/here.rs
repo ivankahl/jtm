@@ -1,6 +1,7 @@
 //! What applies in one directory and shell: the activation context behind `jtm current`,
 //! `which`, `exec`, `env` and `use` (SPEC.md sections 5 and 6).
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -207,14 +208,22 @@ impl<'s, 'c> Here<'s, 'c> {
 
     /// A [`W_REQUIRES_UNMET`] warning for each `[requires]` entry of an active tool that the
     /// active version of the required tool does not meet. The active versions are the
-    /// `overrides`, as [`Here::overrides`] returned them, and for any other tool its default. A
+    /// `overrides`, as [`Here::overrides`] returned them, and the defaults of tools only the
+    /// defaults set, so a version a pin chose but is not installed is not active, as in
+    /// [`Here::current`]. A
     /// required tool jtm does not manage here is not checked, since whatever is on `PATH` may
     /// meet it. Requirements are only ever warnings; nothing is installed, and a failure to
     /// read a default's installs only skips that tool, so it never fails a command.
     pub fn requirement_warnings(&self, overrides: &[Override]) -> Vec<Warning> {
+        // A default is looked up at most once, however many tools require it.
+        let defaults = RefCell::new(BTreeMap::new());
         self.unmet_requirements(|tool| match overrides.iter().find(|o| o.tool == tool) {
             Some(found) => Some((found.selector.value.clone(), found.origin.clone())),
-            None => self.default_version(tool),
+            None => defaults
+                .borrow_mut()
+                .entry(tool.to_owned())
+                .or_insert_with(|| self.default_version(tool))
+                .clone(),
         })
     }
 
@@ -266,11 +275,16 @@ impl<'s, 'c> Here<'s, 'c> {
         warnings
     }
 
-    /// The installed version `tool`'s default picks, with the defaults file as its origin.
+    /// The installed version `tool`'s default picks, with the defaults file as its origin, when
+    /// no higher layer chooses `tool`.
     fn default_version(&self, tool: &str) -> Option<(String, String)> {
-        let selector = self.defaults.get(tool)?;
+        let choice = self.layers().choose(tool)?;
+        if choice.layer != Layer::Default {
+            return None;
+        }
+        let selector = choice.selector?;
         let plugin = self.plugin(tool).ok()?;
-        match self.session.installed_match(plugin, Some(selector)) {
+        match self.session.installed_match(plugin, Some(&selector)) {
             Ok(found) => {
                 found.map(|found| (found.version, self.defaults.path().display().to_string()))
             }
