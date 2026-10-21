@@ -459,12 +459,12 @@ fn loading_the_script_counts_towards_the_time_limit() {
 }
 
 #[test]
-fn a_hook_stuck_in_a_slow_pattern_match_is_abandoned() {
-    // Lua patterns backtrack inside one C call, where the interrupt never runs.
+fn a_slow_pattern_match_is_stopped_at_the_deadline() {
+    // Lua patterns backtrack inside one C call; Luau still stops it at the deadline.
     let s = tight(
         r#"
         function f()
-            -- Anchored, so the thread still finishes in a few seconds once abandoned.
+            -- Anchored, so even a missed interrupt would end within a few seconds.
             local s = string.rep("a", 3000)
             string.find(s, "^.-.-.-b")
             return "1"
@@ -545,7 +545,7 @@ fn too_many_stuck_hooks_refuse_the_next_one() {
     let s = tight(
         r#"
         function f()
-            jtm.sleep(10000)
+            jtm.sleep(6000)
             return "1"
         end
         "#,
@@ -574,10 +574,13 @@ fn too_many_stuck_hooks_refuse_the_next_one() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(matches!(
-        limit_of(s.format_interop("f", "f", "v", "1")),
-        Limit::Time(_)
-    ));
+    let quick = tight(r#"function f() return "1" end"#).with_stuck_counter(&STUCK);
+    assert_eq!(
+        quick
+            .format_interop("f", "f", "v", "1")
+            .unwrap_or_else(|e| panic!("{e}")),
+        "1"
+    );
 }
 
 // --- post_extract ---

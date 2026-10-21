@@ -14,7 +14,8 @@
 //! finishes before the host moves on, and every later one fails. A thread cannot be killed, so
 //! an abandoned one keeps its memory until its C call returns; once [`MAX_STUCK`] of them are
 //! still running, jtm refuses to start another hook. Hooks already running when the count is
-//! reached are not refused, so concurrent callers can leave more than [`MAX_STUCK`] behind.
+//! reached are not refused, so hooks run in parallel, as `install_all` does, can leave up to
+//! one fewer than their number behind on top of [`MAX_STUCK`].
 //! Any limit breach or path escape fails the hook with [`ScriptError::Limit`], even when the
 //! script catches the error with `pcall` or `xpcall`, which the sandbox replaces with versions
 //! that record a memory breach before handing the error to the script.
@@ -103,7 +104,7 @@ impl fmt::Display for Limit {
             }
             Limit::Stuck(count) => write!(
                 f,
-                "{count} earlier hooks are still running past their time limit"
+                "{count} earlier hooks, of any plugin, are still running past their time limit"
             ),
         }
     }
@@ -416,16 +417,10 @@ impl Script {
                     shared.record(Limit::Time(self.limits.time));
                     None
                 } else {
-                    // The thread ended between the timeout and the abandon, so its answer, if
-                    // it sent one, is already waiting.
+                    // The thread ended between the timeout and the abandon. An answer is sent
+                    // before the thread ends, so none waiting means it panicked: a jtm bug.
                     stuck.fetch_sub(1, AtomicOrdering::SeqCst);
-                    match rx.try_recv() {
-                        Ok(outcome) => Some(outcome),
-                        Err(_) => {
-                            shared.record(Limit::Time(self.limits.time));
-                            None
-                        }
-                    }
+                    rx.try_recv().ok()
                 }
             }
             // The thread ended without an answer, so it panicked: a jtm bug, not the plugin's.
