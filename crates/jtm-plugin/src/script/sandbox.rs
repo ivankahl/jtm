@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use mlua::chunk::ChunkMode;
-use mlua::{Lua, LuaOptions, StdLib, Table, Value, VmState};
+use mlua::{Function, Lua, LuaOptions, MultiValue, StdLib, Table, Value, VmState};
 use serde_json::Value as Json;
 
 use super::convert::{json_to_lua, lua_to_json};
@@ -146,56 +146,73 @@ pub(super) fn run(job: Job) -> Result<Json, Failure> {
     lua_to_json(&out).map_err(Failure::Invalid)
 }
 
-/// Replaces `pcall` and `xpcall` with versions that record a memory breach before the script
-/// sees the error, so catching it cannot hide it. Time and containment breaches are recorded
-/// where they are raised. The error a script catches is its message as a string.
+/// Luau's error message for a failed allocation, which is what a protected call returns
+/// when a hook runs out of memory in Lua code.
+const MEMORY_ERROR: &str = "not enough memory";
+
+/// Wraps `pcall` and `xpcall` so a memory breach is recorded before the script sees the
+/// error, and catching it cannot hide it. Time and containment breaches are recorded where
+/// they are raised. Luau's own functions still do the calling, so any callable value works and
+/// an error value the script raised reaches it unchanged; an error from the host is seen as
+/// its message. A script raising the memory error's message itself counts as a breach.
 fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> {
-    let caught = |shared: &Shared, error: mlua::Error| -> mlua::Result<String> {
-        if matches!(classify(&error), Failure::Memory) {
-            shared.record(Limit::Memory(shared.limits.memory));
-            return Err(error);
-        }
-        Ok(message(&error))
-    };
-    let s = Arc::clone(shared);
-    let pcall =
-        lua.create_function(move |lua, (f, args): (mlua::Function, mlua::MultiValue)| {
-            match f.call::<mlua::MultiValue>(args) {
-                Ok(values) => {
-                    let mut out = mlua::MultiValue::from_iter(values);
-                    out.push_front(Value::Boolean(true));
-                    Ok(out)
-                }
-                Err(error) => {
-                    let text = caught(&s, error)?;
-                    Ok(mlua::MultiValue::from_iter([
-                        Value::Boolean(false),
-                        Value::String(lua.create_string(text)?),
-                    ]))
-                }
-            }
-        })?;
-    let s = Arc::clone(shared);
-    let xpcall = lua.create_function(
-        move |lua, (f, handler, args): (mlua::Function, mlua::Function, mlua::MultiValue)| {
-            match f.call::<mlua::MultiValue>(args) {
-                Ok(values) => {
-                    let mut out = mlua::MultiValue::from_iter(values);
-                    out.push_front(Value::Boolean(true));
-                    Ok(out)
-                }
-                Err(error) => {
-                    let text = caught(&s, error)?;
-                    let mut out: mlua::MultiValue = handler.call(lua.create_string(text)?)?;
-                    out.push_front(Value::Boolean(false));
-                    Ok(out)
-                }
-            }
-        },
-    )?;
     let globals = lua.globals();
+    let native_pcall: Function = globals.raw_get("pcall")?;
+    let native_xpcall: Function = globals.raw_get("xpcall")?;
+
+    let s = Arc::clone(shared);
+    let pcall = lua.create_function(move |lua, args: MultiValue| {
+        let mut out: MultiValue = native_pcall.call(args)?;
+        if matches!(out.front(), Some(Value::Boolean(false))) {
+            let error = out.get(1).cloned().unwrap_or(Value::Nil);
+            let seen = caught(lua, &s, error)?;
+            if let Some(slot) = out.get_mut(1) {
+                *slot = seen;
+            }
+        }
+        Ok(out)
+    })?;
+
+    let s = Arc::clone(shared);
+    let xpcall = lua.create_function(move |lua, mut args: MultiValue| {
+        // The handler runs inside the failed call, so the breach is recorded before it does.
+        // Luau itself refuses a handler that is not a function.
+        if let Some(Value::Function(handler)) = args.get(1).cloned() {
+            let s = Arc::clone(&s);
+            let wrapped = lua.create_function(move |lua, error: Value| {
+                handler.call::<MultiValue>(caught(lua, &s, error)?)
+            })?;
+            if let Some(slot) = args.get_mut(1) {
+                *slot = Value::Function(wrapped);
+            }
+        }
+        let out: MultiValue = native_xpcall.call(args)?;
+        // A handler that raised again replaced the error, but not the record.
+        if matches!(s.violation(), Some(Limit::Memory(_))) {
+            return Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned()));
+        }
+        Ok(out)
+    })?;
     globals.raw_set("pcall", pcall)?;
     globals.raw_set("xpcall", xpcall)
+}
+
+/// The error value a script's caller or handler sees for `error`: a memory breach is recorded
+/// and raised again, a host error becomes its message, and any other value is unchanged.
+fn caught(lua: &Lua, shared: &Shared, error: Value) -> mlua::Result<Value> {
+    let memory = match &error {
+        Value::Error(e) => matches!(classify(e), Failure::Memory),
+        Value::String(text) => text.to_str().is_ok_and(|text| *text == *MEMORY_ERROR),
+        _ => false,
+    };
+    if memory {
+        shared.record(Limit::Memory(shared.limits.memory));
+        return Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned()));
+    }
+    match error {
+        Value::Error(e) => Ok(Value::String(lua.create_string(message(&e))?)),
+        other => Ok(other),
+    }
 }
 
 /// Builds the read-only `jtm` table.

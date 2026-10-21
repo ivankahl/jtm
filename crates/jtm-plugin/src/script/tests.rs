@@ -645,6 +645,9 @@ fn catching_a_memory_breach_does_not_help() {
         "function f() pcall(string.rep, 'x', 64 * 1024 * 1024) return '1' end",
         "function f() pcall(function() local t = {} for i = 1, 1e9 do t[i] = string.rep('x', 4096) .. i end end) return '1' end",
         "function f() xpcall(function() return string.rep('x', 64 * 1024 * 1024) end, function(e) return e end) return '1' end",
+        // A handler that raises again must not replace the breach with its own error.
+        "function f() xpcall(function() return string.rep('x', 64 * 1024 * 1024) end, function(e) error('hidden') end) return '1' end",
+        "function f() pcall(xpcall, function() return string.rep('x', 64 * 1024 * 1024) end, function(e) error({}) end) return '1' end",
     ] {
         assert!(
             matches!(
@@ -675,5 +678,45 @@ fn pcall_and_xpcall_still_catch_ordinary_errors() {
             "local okay, v = xpcall(function() error('x') end, function(e) return 'handled' end) return tostring(okay) .. ' ' .. v"
         ),
         "false handled"
+    );
+}
+
+#[test]
+fn pcall_and_xpcall_take_any_value_like_lua() {
+    // A value that cannot be called is an ordinary caught error.
+    assert_eq!(
+        ok("local okay, err = pcall(nil) return tostring(okay) .. ' ' .. type(err)"),
+        "false string"
+    );
+    assert_eq!(
+        ok("local okay = pcall(42, 'x') return tostring(okay)"),
+        "false"
+    );
+    // A callable table is called.
+    assert_eq!(
+        ok(
+            "local t = setmetatable({}, { __call = function(_, x) return x * 2 end }) \
+             local okay, v = pcall(t, 21) return tostring(okay) .. ' ' .. v"
+        ),
+        "true 42"
+    );
+    // An error value that is not a string reaches the script unchanged.
+    assert_eq!(
+        ok("local okay, err = pcall(error, { code = 7 }) return tostring(okay) .. ' ' .. err.code"),
+        "false 7"
+    );
+    assert_eq!(
+        ok(
+            "local okay, v = xpcall(function() error({ code = 8 }) end, function(e) return e.code end) \
+             return tostring(okay) .. ' ' .. v"
+        ),
+        "false 8"
+    );
+    // A host error is still seen as its message.
+    assert_eq!(
+        ok(
+            "local okay, err = pcall(jtm.json.decode, '{') return type(err) .. ' ' .. tostring(err:find('invalid JSON') ~= nil)"
+        ),
+        "string true"
     );
 }
