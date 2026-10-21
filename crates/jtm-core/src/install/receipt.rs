@@ -39,6 +39,19 @@ impl Receipt {
         serde_json::from_slice(&bytes).ok()
     }
 
+    /// Like [`Receipt::read`], but a receipt that exists and cannot be read, such as for lack
+    /// of permission, is an error rather than no install, so a caller listing installs never
+    /// passes an unreadable one off as missing. A missing or invalid receipt is still `None`.
+    pub fn load(install_dir: &Path) -> Result<Option<Receipt>> {
+        let path = install_dir.join(RECEIPT_FILE);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(JtmError::io(&path, e)),
+        };
+        Ok(serde_json::from_slice(&bytes).ok())
+    }
+
     /// Writes the receipt into `install_dir`.
     pub fn write(&self, install_dir: &Path) -> Result<()> {
         let path = install_dir.join(RECEIPT_FILE);

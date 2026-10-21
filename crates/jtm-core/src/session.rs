@@ -493,7 +493,7 @@ impl<'a> Session<'a> {
         };
         for plugin_dir in plugin_dirs {
             for dir in read_dirs(&plugin_dir)? {
-                let Some(receipt) = Receipt::read(&dir) else {
+                let Some(receipt) = Receipt::load(&dir)? else {
                     continue;
                 };
                 if tool.is_some_and(|t| t != receipt.plugin) {
@@ -999,18 +999,26 @@ fn hidden(path: &Path) -> bool {
         .is_some_and(|n| n.to_string_lossy().starts_with('.'))
 }
 
-/// The subdirectories of `dir`; none when it does not exist.
+/// The subdirectories of `dir`; none when it does not exist. An entry that cannot be read is
+/// an error, never skipped, so an install jtm cannot see is not passed off as missing.
 fn read_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(JtmError::io(dir, e)),
     };
-    let mut dirs: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .map(|e| e.path())
-        .collect();
+    let mut dirs = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| JtmError::io(dir, e))?;
+        let path = entry.path();
+        if entry
+            .file_type()
+            .map_err(|e| JtmError::io(&path, e))?
+            .is_dir()
+        {
+            dirs.push(path);
+        }
+    }
     dirs.sort();
     Ok(dirs)
 }
