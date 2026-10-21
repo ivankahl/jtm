@@ -11,7 +11,7 @@ use std::{env, fs};
 fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let plugins = Path::new(&manifest_dir).join("plugins");
-    println!("cargo:rerun-if-changed=plugins");
+    println!("cargo::rerun-if-changed=plugins");
 
     let mut names: Vec<String> = match fs::read_dir(&plugins) {
         Ok(entries) => entries
@@ -54,7 +54,11 @@ fn main() {
 
 /// Fails the build with `message` as a cargo error. Only the two-colon form is an error
 /// instruction; `cargo:error=` is read as `links` metadata and never shown as one.
+///
+/// The script exits 0 on purpose: cargo fails the build on its own once `cargo::error` is
+/// logged, and a non-zero exit would add "failed to run custom build command" plus a dump
+/// of stdout that repeats the message.
 fn fail(message: &str) -> ! {
     println!("cargo::error={message}");
-    std::process::exit(1)
+    std::process::exit(0)
 }
