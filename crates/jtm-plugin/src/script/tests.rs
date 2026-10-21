@@ -502,6 +502,19 @@ fn post_extract(root: &Path, body: &str) -> Result<(), ScriptError> {
 }
 
 #[test]
+fn an_install_dir_jtm_cannot_open_is_an_io_error() {
+    let dir = install_dir();
+    let missing = dir.path().join("missing");
+    match post_extract(&missing, "") {
+        Err(ScriptError::Io { path, kind, .. }) => {
+            assert_eq!(path, missing);
+            assert_eq!(kind, std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected an IO error, got {other:?}"),
+    }
+}
+
+#[test]
 fn post_extract_can_rename_move_remove_and_list() {
     let dir = install_dir();
     let root = dir.path();
