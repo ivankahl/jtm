@@ -1039,18 +1039,27 @@ fn pcall_and_xpcall_need_their_arguments() {
 }
 
 #[test]
-fn a_caught_containment_error_is_a_message_and_still_fails_the_hook() {
-    let dir = install_dir();
-    // The script removes README only if a handler saw something other than a string.
-    let result = post_extract(
-        dir.path(),
-        "local a, b \
-         xpcall(jtm.fs.remove, function(e) a = type(e) end, '../victim') \
-         local _, e = pcall(jtm.fs.remove, '../victim') b = type(e) \
-         if a ~= 'string' or b ~= 'string' then jtm.fs.remove('README') end",
-    );
-    assert!(is_path_limit(result));
-    assert!(dir.path().join("README").is_file());
+fn nothing_runs_after_a_caught_containment_breach() {
+    for body in [
+        // Neither the handler nor the code after the call may touch the install dir.
+        "xpcall(jtm.fs.remove, function(e) jtm.fs.remove('README') end, '../victim')",
+        "xpcall(jtm.fs.remove, function(e) return e end, '../victim') jtm.fs.remove('README')",
+        "pcall(jtm.fs.remove, '../victim') jtm.fs.remove('README')",
+        "pcall(pcall, jtm.fs.remove, '../victim') jtm.fs.remove('README')",
+        "pcall(xpcall, jtm.fs.remove, function(e) return e end, '../victim') \
+         jtm.fs.remove('README')",
+        // A breach in the handler counts too.
+        "xpcall(function() error('x') end, function(e) jtm.fs.remove('../victim') end) \
+         jtm.fs.remove('README')",
+        // As does one inside a call that then succeeds.
+        "pcall(function() pcall(jtm.fs.remove, '../victim') return 1 end) \
+         jtm.fs.remove('README')",
+    ] {
+        let dir = install_dir();
+        let result = post_extract(dir.path(), body);
+        assert!(is_path_limit(result), "{body}");
+        assert!(dir.path().join("README").is_file(), "{body}");
+    }
 }
 
 #[test]

@@ -164,9 +164,10 @@ enum Outcome {
 
 /// Replaces `pcall` and `xpcall` with versions that make the call through Luau's
 /// `lua_pcall`, whose status says whether an allocation was refused. A memory breach is
-/// recorded and raised again, so catching it cannot hide it. The error's text plays no part,
-/// so a script raising the same message raises an ordinary error. Time and containment
-/// breaches are recorded where they are raised.
+/// recorded there; time and containment breaches are recorded where they are raised. After
+/// any breach the error is raised again, so catching it cannot hide it and no handler runs.
+/// The error's text plays no part, so a script raising the same message raises an ordinary
+/// error.
 ///
 /// Otherwise they behave as Luau's own: any callable value works, an error value the script
 /// raised reaches it unchanged, and an error from the host is seen as its message. `xpcall`
@@ -241,7 +242,8 @@ fn xpcall(lua: &Lua, s: &Shared, mut args: MultiValue) -> mlua::Result<MultiValu
 }
 
 /// Calls the first of `args` with the rest, protected. A refused allocation, in Lua code or
-/// reported by a host function, is recorded and raised again.
+/// reported by a host function, is recorded. Once any limit has been broken, in this call or
+/// before it, the breach is raised again rather than handed to the script.
 fn protected_call(lua: &Lua, shared: &Shared, args: MultiValue) -> mlua::Result<Outcome> {
     if args.is_empty() {
         return Err(mlua::Error::runtime("nothing to call"));
@@ -259,17 +261,24 @@ fn protected_call(lua: &Lua, shared: &Shared, args: MultiValue) -> mlua::Result<
             status = ffi::lua_pcall(state, ffi::lua_gettop(state) - 1, ffi::LUA_MULTRET, 0);
         })
     }?;
-    if status == ffi::LUA_OK {
-        return Ok(Outcome::Returned(values));
+    let outcome = if status == ffi::LUA_OK {
+        Outcome::Returned(values)
+    } else {
+        let error = values.into_iter().next().unwrap_or(Value::Nil);
+        let out_of_memory = status == ffi::LUA_ERRMEM
+            || matches!(&error, Value::Error(e) if matches!(classify(e), Failure::Memory));
+        if out_of_memory {
+            shared.record(Limit::Memory(shared.limits.memory));
+        }
+        Outcome::Raised(error)
+    };
+    // Fail closed: once any limit is broken, nothing the script wrote after the call runs,
+    // neither the code following `pcall` nor an `xpcall` handler.
+    match shared.violation() {
+        None => Ok(outcome),
+        Some(Limit::Memory(_)) => Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned())),
+        Some(limit) => Err(mlua::Error::external(Refused(limit.to_string()))),
     }
-    let error = values.into_iter().next().unwrap_or(Value::Nil);
-    let out_of_memory = status == ffi::LUA_ERRMEM
-        || matches!(&error, Value::Error(e) if matches!(classify(e), Failure::Memory));
-    if out_of_memory {
-        shared.record(Limit::Memory(shared.limits.memory));
-        return Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned()));
-    }
-    Ok(Outcome::Raised(error))
 }
 
 /// The error value a script sees: a host error becomes its message, and any other value is
