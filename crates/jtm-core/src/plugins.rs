@@ -35,8 +35,18 @@ fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> 
 ///
 /// The working copy is for people and tools to read. jtm never reads it, so a modified copy
 /// cannot change a trust decision; [`Registry`] reads only the compiled-in manifests.
+///
+/// Several jtm processes may repair the copy at once, such as two shells' prompt hooks. New
+/// files are written in `<data>/plugins`, outside the copy, and renamed into place, so one
+/// process never takes another's half-written file for an unknown entry and removes it.
+/// Without any `builtin` manifests, such as from a context that embeds none, there is nothing
+/// to compare against, so the copy is left alone.
 pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec<PathBuf>> {
+    if builtin.is_empty() {
+        return Ok(Vec::new());
+    }
     let root = dirs.builtin_plugins();
+    let scratch = dirs.plugins();
     let mut repaired = Vec::new();
     ensure_dir(&root, &mut repaired)?;
     let wanted: Vec<(String, &BuiltinManifest)> =
@@ -71,7 +81,7 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
                 _ => None,
             };
             if current.as_deref() != Some(bytes) {
-                write_replacing(&path, bytes)?;
+                write_replacing(&scratch, &path, bytes)?;
                 repaired.push(path);
             }
         }
@@ -85,12 +95,12 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
     Ok(repaired)
 }
 
-/// Writes `bytes` to a new file beside `path` and renames it over `path`. A rename replaces a
-/// link rather than writing through it, so a link planted in the working copy is never
-/// followed.
-fn write_replacing(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path.parent().unwrap_or(path);
-    let mut file = tempfile::NamedTempFile::new_in(dir).map_err(|e| JtmError::io(dir, e))?;
+/// Writes `bytes` to a new file in `scratch`, on the same file system, and renames it over
+/// `path`. A rename replaces a link rather than writing through it, so a link planted in the
+/// working copy is never followed.
+fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file =
+        tempfile::NamedTempFile::new_in(scratch).map_err(|e| JtmError::io(scratch, e))?;
     io::Write::write_all(&mut file, bytes).map_err(|e| JtmError::io(file.path(), e))?;
     file.persist(path)
         .map_err(|e| JtmError::io(path, e.error))?;

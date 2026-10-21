@@ -225,3 +225,68 @@ fn a_script_no_hook_names_is_not_loaded() {
             .is_none()
     );
 }
+
+// --- the builtin working copy ---
+
+/// Builtin manifests with large files, so each repair takes long enough to overlap.
+fn big_builtin() -> &'static [BuiltinManifest] {
+    let text: &'static str =
+        Box::leak(format!("{}# {}\n", manifest("demo"), "x".repeat(1 << 20)).into_boxed_str());
+    let script: &'static str = Box::leak("-- y\n".repeat(1 << 18).into_boxed_str());
+    Box::leak(Box::new([
+        BuiltinManifest {
+            name: "demo",
+            text,
+            script: Some(script),
+        },
+        BuiltinManifest {
+            name: "other",
+            text,
+            script: None,
+        },
+    ]))
+}
+
+#[test]
+fn a_context_without_builtin_manifests_leaves_the_working_copy_alone() {
+    let (_home, dirs) = dirs();
+    sync_working_copy(&dirs, big_builtin()).unwrap();
+    let copy = dirs.builtin_plugins().join("demo").join("plugin.toml");
+    assert!(copy.is_file());
+    assert_eq!(
+        sync_working_copy(&dirs, &[]).unwrap(),
+        Vec::<PathBuf>::new()
+    );
+    assert!(copy.is_file(), "the working copy was removed");
+}
+
+#[test]
+fn concurrent_repairs_never_remove_each_others_files() {
+    let (_home, dirs) = dirs();
+    let builtin = big_builtin();
+    for round in 0..5 {
+        // A stale copy, so every process repairs both files at once.
+        for name in ["demo", "other"] {
+            let dir = dirs.builtin_plugins().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("plugin.toml"), format!("stale {round}")).unwrap();
+        }
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| sync_working_copy(&dirs, builtin)))
+                .collect();
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+        });
+        for found in builtin {
+            let dir = dirs.builtin_plugins().join(found.name);
+            assert_eq!(
+                fs::read(dir.join("plugin.toml")).unwrap(),
+                found.text.as_bytes()
+            );
+        }
+        // No temporary file is left anywhere in the working copy.
+        assert!(sync_working_copy(&dirs, builtin).unwrap().is_empty());
+    }
+}
