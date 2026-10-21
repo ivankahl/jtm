@@ -33,9 +33,10 @@ bin_dirs = ["bin"]
 [layout.home_subdir]
 macos = "Contents/Home"
 
-# Zulu's macOS archive links its home into the top directory; Liberica's has no bundle.
+# Variants that package the tool differently: one tries candidate homes in order, and one
+# replaces the home and the strip count.
 [layout.variants.zulu]
-home_subdir = {}
+home_subdir = { macos = ["*/Contents/Home", ""] }
 
 [layout.variants.liberica]
 strip_components = 1

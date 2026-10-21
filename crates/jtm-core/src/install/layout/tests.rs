@@ -136,3 +136,90 @@ fn every_bin_dir_must_hold_a_file() {
         assert_eq!(err.code(), "E_PLUGIN_INVALID", "{files:?}");
     }
 }
+
+const CANDIDATES: &str = "bin_dirs = [\"bin\"]\nhome_subdir = { macos = [\"Contents/Home\", \"*/Contents/Home\", \"\"] }";
+
+fn mac_home(files: &[&str]) -> Result<PathBuf> {
+    let dir = tree(files);
+    apply("demo", dir.path(), &layout(CANDIDATES), Os::Macos).map(|p| {
+        assert_eq!(p.root, dir.path().join("t"));
+        p.home
+    })
+}
+
+#[test]
+fn the_first_candidate_home_with_bin_files_wins() {
+    // An app bundle.
+    let home = mac_home(&["t/Contents/Home/bin/java", "t/Contents/Info.plist"]).unwrap();
+    assert_eq!(home, PathBuf::from("Contents/Home"));
+    // A bundle beside other directories, found through `*`.
+    let home = mac_home(&["t/zulu-17.jdk/Contents/Home/bin/java", "t/legal/LICENSE"]).unwrap();
+    assert_eq!(home, PathBuf::from("zulu-17.jdk/Contents/Home"));
+    // No bundle: the root.
+    let home = mac_home(&["t/bin/java", "t/lib/x"]).unwrap();
+    assert_eq!(home, PathBuf::new());
+    // A `Contents/Home` without bin files is passed over.
+    let home = mac_home(&["t/Contents/Home/README", "t/bin/java"]).unwrap();
+    assert_eq!(home, PathBuf::new());
+}
+
+#[test]
+fn a_star_candidate_needs_exactly_one_match() {
+    // Two bundles: `*` is ambiguous, so the root is tried, and it has no bin files.
+    let err = mac_home(&[
+        "t/a.jdk/Contents/Home/bin/java",
+        "t/b.jdk/Contents/Home/bin/java",
+    ])
+    .unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    let message = err.to_string();
+    assert!(
+        message.contains("`Contents/Home`, `*/Contents/Home`, ``"),
+        "{message}"
+    );
+    // With a root bin dir, the root wins instead.
+    let home = mac_home(&[
+        "t/a.jdk/Contents/Home/bin/java",
+        "t/b.jdk/Contents/Home/bin/java",
+        "t/bin/java",
+    ])
+    .unwrap();
+    assert_eq!(home, PathBuf::new());
+}
+
+#[test]
+fn no_candidate_matching_is_a_layout_mismatch() {
+    let err = mac_home(&["t/lib/x", "t/README"]).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_star_never_matches_a_link() {
+    // Zulu's links to its bundle's home beside the bundle are not candidates for `*`.
+    let dir = tree(&["t/zulu-17.jdk/Contents/Home/bin/java"]);
+    std::os::unix::fs::symlink("zulu-17.jdk", dir.path().join("t/alias.jdk")).unwrap();
+    std::os::unix::fs::symlink("zulu-17.jdk/Contents/Home/bin", dir.path().join("t/bin")).unwrap();
+    let placed = apply("demo", dir.path(), &layout(CANDIDATES), Os::Macos).unwrap();
+    assert_eq!(placed.home, PathBuf::from("zulu-17.jdk/Contents/Home"));
+
+    // A link out of the archive is never a home, even when it is the only match.
+    let outside = tree(&["Contents/Home/bin/java"]);
+    let dir = tree(&["t/README"]);
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("t/Contents")).unwrap();
+    let err = apply("demo", dir.path(), &layout(CANDIDATES), Os::Macos).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+}
+
+#[test]
+fn a_variant_override_replaces_the_home() {
+    let base = layout(
+        "bin_dirs = [\"bin\"]\nhome_subdir = { macos = \"Contents/Home\" }\n\
+         [layout.variants.default]\nhome_subdir = { macos = \"\" }",
+    );
+    let dir = tree(&["t/bin/demo"]);
+    let err = apply("demo", dir.path(), &base, Os::Macos).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    let placed = apply("demo", dir.path(), &base.for_variant("default"), Os::Macos).unwrap();
+    assert_eq!(placed.home, PathBuf::new());
+}
