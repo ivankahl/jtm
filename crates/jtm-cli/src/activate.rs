@@ -276,7 +276,10 @@ pub(crate) fn hook_env(ctx: &Context, shell: &str) -> Result<Outcome<EnvData>> {
             here.selected.remove(&tool);
         }
     }
-    let (overrides, found) = here.overrides(&[])?;
+    let (overrides, mut found) = here.overrides(&[])?;
+    // Checked at every prompt, so installs that cannot be read always fail the hook, but
+    // shown only on a directory change.
+    found.extend(here.requirement_warnings(&[], &[])?);
     let mut changes = here.plan(&|key| std::env::var(key).ok(), &overrides);
     if moved {
         changes.push(Change::Set {
@@ -295,8 +298,6 @@ pub(crate) fn hook_env(ctx: &Context, shell: &str) -> Result<Outcome<EnvData>> {
         },
         // Shown once per directory, not at every prompt.
         warnings: if moved {
-            let mut found = found;
-            found.extend(here.requirement_warnings(&[], &[])?);
             warnings_with(found, &here.pins.conflicts)
         } else {
             Vec::new()
