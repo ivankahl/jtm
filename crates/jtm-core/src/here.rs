@@ -15,13 +15,16 @@ use crate::error::{JtmError, Result};
 use crate::pins::{ProjectPins, discover};
 use crate::platform::Os;
 use crate::plugins::Plugin;
-use crate::session::{PATH_SEPARATOR, Session, pin_warnings};
+use crate::session::{PATH_SEPARATOR, Session, not_installed_warning, pin_warnings};
 use crate::spec::Selector;
 use crate::sync::apply_lock;
 
 /// Warning code when an active tool's `[requires]` entry is not met by the active version of
 /// the tool it needs, such as a build tool that needs a newer Java than the one active.
 pub const W_REQUIRES_UNMET: &str = "W_REQUIRES_UNMET";
+
+/// Warning code when `jtm which` skips a tool whose installs cannot be read.
+pub const W_TOOL_SKIPPED: &str = "W_TOOL_SKIPPED";
 
 /// The plugins, pins, session versions and defaults that apply in one directory.
 #[derive(Debug)]
@@ -264,55 +267,53 @@ impl<'s, 'c> Here<'s, 'c> {
 
     /// The executable `command` resolves to among the active installs: the first whose bin
     /// dirs hold it, so any file a tool ships maps to that tool, whatever the version calls it.
-    /// Only installs jtm manages and some layer activates are searched, never `PATH`, so the
-    /// answer is always a jtm install.
+    /// Only installs jtm manages are searched, never `PATH`, so the answer is always a jtm
+    /// install. Each tool counts only in the version its highest layer chooses: a session or
+    /// project version that is not installed gets a `W_NOT_INSTALLED` warning and never falls
+    /// back to the default.
     ///
-    /// Without `[executables]` there is no telling which commands an active tool that is not
-    /// installed would provide, so a command found nowhere names each of them in its
-    /// `E_TOOL_UNKNOWN` error.
-    pub fn which(&self, command: &str, os: Os) -> Result<WhichItem> {
-        let mut missing = Vec::new();
+    /// A tool whose installs cannot be read is skipped with a [`W_TOOL_SKIPPED`] warning, so
+    /// one broken tool does not hide the others. A command in no active install is
+    /// `E_TOOL_UNKNOWN`.
+    pub fn which(&self, command: &str, os: Os) -> Result<(WhichItem, Vec<Warning>)> {
+        let mut warnings = Vec::new();
         for plugin in &self.plugins {
             let tool = plugin.manifest.name.as_str();
             let Some(choice) = self.layers().choose(tool) else {
                 continue;
             };
-            let Some(found) = self
+            let found = match self
                 .session
-                .installed_match(plugin, choice.selector.as_ref())?
-            else {
-                missing.push(choice);
-                continue;
+                .installed_match(plugin, choice.selector.as_ref())
+            {
+                Ok(Some(found)) => found,
+                Ok(None) => {
+                    warnings.push(not_installed_warning(&choice));
+                    continue;
+                }
+                Err(err) => {
+                    warnings.push(Warning {
+                        code: W_TOOL_SKIPPED,
+                        message: format!("skipped `{tool}`, whose installs cannot be read: {err}"),
+                    });
+                    continue;
+                }
             };
             let env = tool_env(&plugin.manifest, &found.home);
             let Some(path) = find_in_dirs(command, &env.path, os) else {
                 continue;
             };
-            return Ok(WhichItem {
+            let item = WhichItem {
                 command: command.to_owned(),
                 tool: tool.to_owned(),
                 layer: choice.layer,
                 version: format!("{}:{}", found.variant, found.version),
                 path: path.display().to_string(),
-            });
-        }
-        if missing.is_empty() {
-            return Err(JtmError::ToolUnknown {
-                tool: command.to_owned(),
-            });
+            };
+            return Ok((item, warnings));
         }
         Err(JtmError::CommandUnknown {
             command: command.to_owned(),
-            not_installed: missing
-                .iter()
-                .map(|choice| {
-                    let wanted = match &choice.selector {
-                        Some(selector) => format!("{}@{selector}", choice.tool),
-                        None => choice.tool.clone(),
-                    };
-                    format!("`{wanted}` (set by {})", choice.origin)
-                })
-                .collect(),
         })
     }
 }

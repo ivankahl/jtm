@@ -332,6 +332,8 @@ fn exec_shows_warnings_before_running_the_command() {
 #[test]
 fn which_reports_a_pin_that_is_not_installed() {
     let f = ready();
+    let (code, value) = f.json(&["default", "demo@1.0"]);
+    assert_eq!(code, 0, "{value}");
     let project = tempfile::tempdir().unwrap();
     fs::write(
         project.path().join(".jtm.toml"),
@@ -344,22 +346,35 @@ fn which_reports_a_pin_that_is_not_installed() {
     assert_eq!(code, 3, "{value}");
     assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
 
-    // The error names the pin that may provide it.
+    // The pin replaces the default, so the installed default is not searched either, and the
+    // error names the command without guessing which tool would provide it.
     let (code, value) = json_in(&f, project.path(), &["which", "demo"]);
     assert_eq!(code, 3, "{value}");
     assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
-    let message = value["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("`demo@9.9`") && message.contains(".jtm.toml"),
+    assert_eq!(
+        value["error"]["message"], "`demo` is in no active install",
         "{value}"
     );
-    assert!(
-        value["error"]["details"]["not_installed"][0]
-            .as_str()
-            .unwrap()
-            .contains("demo@9.9"),
+    assert_eq!(
+        value["error"]["details"],
+        serde_json::json!({ "command": "demo" }),
         "{value}"
     );
+}
+
+#[test]
+fn which_skips_a_tool_whose_installs_cannot_be_read() {
+    let f = ready();
+    let (code, value) = f.json(&["default", "demo@1.0"]);
+    assert_eq!(code, 0, "{value}");
+    // A file where the tool's install dir should be cannot be listed.
+    let tool_dir = f.install_dir("1.0.0").parent().unwrap().to_owned();
+    fs::remove_dir_all(&tool_dir).unwrap();
+    fs::write(&tool_dir, "").unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let (code, value) = json_in(&f, project.path(), &["which", "demo"]);
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
 }
 
 #[test]

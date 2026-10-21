@@ -886,7 +886,7 @@ impl<'a> Session<'a> {
 }
 
 /// The `W_NOT_INSTALLED` warning for a `choice` with no matching install.
-fn not_installed_warning(choice: &Choice) -> Warning {
+pub(crate) fn not_installed_warning(choice: &Choice) -> Warning {
     let tool = &choice.tool;
     let wanted = choice
         .selector
