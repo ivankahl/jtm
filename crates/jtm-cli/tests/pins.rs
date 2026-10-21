@@ -226,6 +226,12 @@ fn which_finds_the_executable_and_its_layer() {
 
     let (code, value) = json_in(&f, project.path(), &["which", "no-such-command-anywhere"]);
     assert_eq!(code, 3, "{value}");
+
+    // Only active jtm installs are searched, never PATH.
+    let system = if cfg!(windows) { "cmd" } else { "sh" };
+    let (code, value) = json_in(&f, project.path(), &["which", system]);
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
 }
 
 #[test]
@@ -324,21 +330,13 @@ fn which_reports_a_pin_that_is_not_installed() {
         "[tools]\ndemo = \"9.9\"\n",
     )
     .unwrap();
-    // Found on PATH, but the user learns the pin does not apply.
+    // A command only on PATH is not jtm's, so it is never reported, pin or no pin.
     let system = if cfg!(windows) { "cmd" } else { "sh" };
     let (code, value) = json_in(&f, project.path(), &["which", system]);
-    assert_eq!(code, 0, "{value}");
-    assert_eq!(value["data"]["tool"], Value::Null, "{value}");
-    assert_eq!(value["warnings"][0]["code"], "W_NOT_INSTALLED", "{value}");
-    assert!(
-        value["warnings"][0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("demo@9.9"),
-        "{value}"
-    );
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
 
-    // Found nowhere: still an unknown command, naming the pin that may provide it.
+    // The error names the pin that may provide it.
     let (code, value) = json_in(&f, project.path(), &["which", "demo"]);
     assert_eq!(code, 3, "{value}");
     assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");

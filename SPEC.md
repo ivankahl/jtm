@@ -89,7 +89,7 @@ The CLI uses nvm-style verbs with a `<tool>@<spec>` argument; every command supp
 | `jtm current [tool]` | Show the active version per tool and which layer set it |  |
 | `jtm list [tool]` | List installed versions |  |
 | `jtm available <tool>` | List installable versions from the index | `--variant`, `--alias`, `--all` (include non-default variants) |
-| `jtm which <command>` | Show the executable a command resolves to here, and which layer chose it |  |
+| `jtm which <command>` | Show the executable a command resolves to in the active jtm installs, and which layer chose it; never looks at `PATH` |  |
 | `jtm exec <spec>... -- <cmd>` | Run a command with specific versions, no state change | `--install`, `--latest` |
 | `jtm sync` | Install everything the project pins need and update `jtm.lock` | `--dry-run`, `--frozen` (fail if lock would change), `--trust-project-plugins` |
 | `jtm lock` | Resolve pins and write `jtm.lock` without installing | `--platform` (repeatable), `--upgrade [tool]`, `--dry-run` |
@@ -481,7 +481,7 @@ An install is idempotent and atomic: it either produces a complete, verified ins
 7. **Extract** into `tools/.tmp/<random>` under the archive rules below.
 8. **Apply layout:** `strip_components`, or `auto` (strip a single top-level directory), then the per-OS `home_subdir`.
 9. **Run `post_extract`** if the plugin defines it, inside the Luau sandbox.
-10. **Sanity check** that each `bin_dirs` entry is a directory inside the install holding at least one file. Manifests name no executables, so a vendor can rename or add commands in any version; whatever the bin dirs hold goes on `PATH`, and `jtm which` maps a command to the active install whose bin dirs contain it. Downloaded binaries are never executed during install.
+10. **Sanity check** that each `bin_dirs` entry is a directory inside the install holding at least one file. Manifests name no executables, so a vendor can rename or add commands in any version; whatever the bin dirs hold goes on `PATH`, and `jtm which` maps a command to the active install whose bin dirs contain it. It searches only installs jtm manages and some layer activates, never `PATH`, so a command no active install holds is `E_TOOL_UNKNOWN`, whose message names any active version that is not installed. Downloaded binaries are never executed during install.
 11. **Write the receipt** `.jtm-receipt.json`: plugin, manifest hash, variant, version, platform, final URL, sha256, size, index sequence, install time, jtm version, and the tool home relative to the install dir (after `home_subdir`).
 12. **Commit** with an atomic rename from the temp dir to `tools/<plugin>/<variant>-<version>`. On Windows, retry the rename for up to 10 seconds because antivirus scanners briefly lock new files.
 13. **Update the lockfile** if the command was run in a project with locking enabled. Installing never sets or changes the default, even for a tool's first install and even with `--yes`; the default is only ever set explicitly with `jtm default`.
