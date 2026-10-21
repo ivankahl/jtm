@@ -232,13 +232,14 @@ fn a_home_is_chosen_before_its_bin_dirs_hold_files() {
 
 #[test]
 fn a_candidate_that_is_not_relative_fails_instead_of_falling_through() {
-    // Validation rejects this; a layout built some other way must not skip it quietly.
+    // Validation rejects this; a layout built some other way fails even when an earlier
+    // candidate would match.
     let mut l = layout(CANDIDATES);
     l.home_subdir.insert(
         "macos".to_owned(),
-        jtm_plugin::manifest::HomeCandidates(vec!["/abs".to_owned(), String::new()]),
+        jtm_plugin::manifest::HomeCandidates(vec!["Contents/Home".to_owned(), "/abs".to_owned()]),
     );
-    let dir = tree(&["t/bin/java"]);
+    let dir = tree(&["t/Contents/Home/bin/java"]);
     let err = apply("demo", dir.path(), &l, Os::Macos).unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
     assert!(err.to_string().contains("not a relative path"), "{err}");

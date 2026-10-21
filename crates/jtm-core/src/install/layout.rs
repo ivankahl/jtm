@@ -80,11 +80,12 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
     }
     // The first candidate that exists wins. Its bin dirs are checked after `post_extract`,
     // which may fill them.
+    // Validation rejects these; never let one quietly hand the choice to another candidate,
+    // whatever the archive holds.
+    if let Some(bad) = candidates.iter().find(|c| relative(c).is_none()) {
+        return Err(mismatch(format!("`{bad}` is not a relative path")));
+    }
     for candidate in candidates {
-        // Validation rejects these; never let one quietly hand the choice to the next.
-        if relative(candidate).is_none() {
-            return Err(mismatch(format!("`{candidate}` is not a relative path")));
-        }
         if let Some(home) = find_home(&root, candidate)? {
             return Ok(Placed { root, home });
         }
