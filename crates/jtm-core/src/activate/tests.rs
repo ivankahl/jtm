@@ -243,6 +243,7 @@ mod plan {
             tool: tool.to_owned(),
             layer,
             selector: Selector::parse(&format!("default:{version}")).unwrap(),
+            origin: "test".to_owned(),
             env: ToolEnv {
                 vars: vec![(
                     format!("{}_HOME", tool.to_uppercase()),

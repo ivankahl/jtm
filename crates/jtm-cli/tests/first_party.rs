@@ -802,6 +802,56 @@ fn an_unmet_java_requirement_is_a_warning() {
     let project = h.project(&[(".sdkmanrc", "springboot=3.3.5\n")]);
     let (_, value) = h.json(&project, &["current"]);
     assert!(codes(&value).is_empty(), "{value}");
+    let (_, value) = h.json(&project, &["env"]);
+    assert!(codes(&value).is_empty(), "{value}");
+
+    // A Java only the defaults set counts too, in `current` and in `env`.
+    h.ok(&["default", "fp-java@zulu:11"]);
+    for args in [&["current"][..], &["env"]] {
+        let (code, value) = h.json(&project, args);
+        assert_eq!(code, 0, "{value}");
+        assert_eq!(codes(&value), ["W_REQUIRES_UNMET"], "{args:?}: {value}");
+    }
+
+    // A Java the project pins but has not installed is not active, in either command; the
+    // default does not stand in for it.
+    let project = h.project(&[(".sdkmanrc", "java=17.0.13-tem\nspringboot=3.3.5\n")]);
+    for args in [&["current"][..], &["env"]] {
+        let (code, value) = h.json(&project, args);
+        assert_eq!(code, 0, "{value}");
+        assert!(codes(&value).is_empty(), "{args:?}: {value}");
+    }
+
+    // Asking about one tool reads only the installs its requirements involve, so another
+    // tool's unreadable installs neither fail it nor hide its requirements.
+    let project = h.project(&[(
+        ".sdkmanrc",
+        "java=11.0.25-zulu\nspringboot=3.3.5\nmaven=3.9.9\n",
+    )]);
+    let unreadable = |tool: &str| {
+        let dir = h.home.path().join("tools").join(test_name(tool));
+        fs::remove_dir_all(&dir).unwrap();
+        fs::write(&dir, "not a directory").unwrap();
+    };
+    unreadable("maven");
+    let spring = test_name("spring-boot-cli");
+    let (code, value) = h.json(&project, &["current", &spring]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["data"]["tools"][0]["installed"], true, "{value}");
+    assert_eq!(codes(&value), ["W_REQUIRES_UNMET"], "{value}");
+
+    // When the installs a requirement needs cannot be read, that is only a warning.
+    unreadable("java");
+    let (code, value) = h.json(&project, &["current", &spring]);
+    assert_eq!(code, 0, "{value}");
+    let all: Vec<&str> = value["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["code"].as_str().unwrap())
+        .collect();
+    assert!(all.contains(&"W_REQUIRES_UNCHECKED"), "{value}");
+    assert!(codes(&value).is_empty(), "{value}");
 }
 
 /// Makes `fp-<name>` a user default whose installs cannot be listed: `tools/fp-<name>` becomes
