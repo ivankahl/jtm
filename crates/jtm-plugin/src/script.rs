@@ -206,7 +206,8 @@ impl Script {
     }
 
     /// `resolve_alias(alias, variant, candidates)`: returns the version `alias` selects among
-    /// `candidates` (each `{ variant, version, tags }`), or `nil` when none matches.
+    /// `candidates` (each `{ variant, version, tags }`), or `nil` when none matches. Anything
+    /// but the version of a candidate of `variant`, such as another alias, is refused.
     pub fn resolve_alias<C: Candidate>(
         &self,
         function: &str,
@@ -227,7 +228,25 @@ impl Script {
         )?;
         match out {
             Json::Null => Ok(None),
-            Json::String(version) => check_version(HOOK, &version).map(|()| Some(version)),
+            Json::String(version) => {
+                // A malformed value gets the shape error; only well-formed ones reach the
+                // membership test, so its message quotes a plain version string.
+                check_version(HOOK, &version)?;
+                if candidates
+                    .iter()
+                    .any(|c| c.variant() == variant && c.version() == version)
+                {
+                    Ok(Some(version))
+                } else {
+                    Err(ScriptError::Invalid {
+                        hook: HOOK.to_owned(),
+                        message: format!(
+                            "returned `{version}`, which is not the version of any `{variant}` \
+                             candidate"
+                        ),
+                    })
+                }
+            }
             other => Err(wrong_return(HOOK, "a version string or nil", &other)),
         }
     }

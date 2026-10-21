@@ -131,6 +131,33 @@ fn resolve_alias_refuses_a_value_that_is_not_a_version() {
 }
 
 #[test]
+fn resolve_alias_must_pick_one_of_the_candidates() {
+    // An alias name, a version the index does not list, and one listed only for another
+    // variant are all refused.
+    for (picked, variant) in [
+        ("lts", "default"),
+        ("latest", "default"),
+        ("9.9.9", "default"),
+        ("3.9.9", "other"),
+    ] {
+        let s = script(&format!("function pick() return '{picked}' end"));
+        let result = s.resolve_alias("pick", "x", variant, &entries());
+        match result {
+            Err(ScriptError::Invalid { message, .. }) => {
+                assert!(message.contains(picked), "{message}");
+                assert!(message.contains("is not the version of any"), "{message}");
+            }
+            other => panic!("`{picked}` should be refused, got {other:?}"),
+        }
+    }
+    let s = script("function pick() return '4.0.0-rc-2' end");
+    assert_eq!(
+        s.resolve_alias("pick", "x", "default", &entries()),
+        Ok(Some("4.0.0-rc-2".to_owned()))
+    );
+}
+
+#[test]
 fn compare_versions_maps_the_sign_to_an_ordering() {
     let s = script("function cmp(a, b) return jtm.version.compare(a, b) end");
     assert_eq!(
