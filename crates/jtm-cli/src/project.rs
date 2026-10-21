@@ -198,9 +198,8 @@ pub(crate) fn unpin(ctx: &Context, tool: &str, format: Option<&str>) -> Result<O
 pub(crate) fn current(ctx: &Context, tool: Option<&str>) -> Result<Outcome<CurrentData>> {
     let session = Session::open(ctx)?;
     let here = here(&session)?;
-    let (tools, unreadable) = here.current(tool)?;
+    let tools = here.current(tool)?;
     let mut found = here.warnings();
-    found.extend(unreadable);
     found.extend(here.requirement_warnings(&[], &tools)?);
     Ok(Outcome {
         command: "current",
