@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -476,6 +477,89 @@ fn a_hook_stuck_in_a_slow_pattern_match_is_abandoned() {
         Limit::Time(_)
     ));
     assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn abandoning_a_hook_waits_for_its_file_operation() {
+    let shared = Arc::new(Shared::new(Limits::default()));
+    let (started, wait) = mpsc::channel();
+    let (go, end) = mpsc::channel::<()>();
+    let worker = Arc::clone(&shared);
+    let thread = std::thread::spawn(move || {
+        let busy = worker
+            .enter()
+            .unwrap_or_else(|| panic!("not abandoned yet"));
+        started.send(()).unwrap_or_else(|e| panic!("{e}"));
+        std::thread::sleep(Duration::from_millis(300));
+        drop(busy);
+        // The hook goes on running after its file operation, until the test lets it end.
+        end.recv().unwrap_or_else(|e| panic!("{e}"));
+        worker.finish()
+    });
+    wait.recv().unwrap_or_else(|e| panic!("{e}"));
+    let start = Instant::now();
+    assert!(shared.abandon(), "the thread was still running");
+    assert!(
+        start.elapsed() >= Duration::from_millis(200),
+        "abandon returned early"
+    );
+    assert!(
+        shared.enter().is_none(),
+        "no file operation starts once abandoned"
+    );
+    go.send(()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        thread.join().unwrap_or_else(|_| panic!("thread panicked")),
+        "the thread learns it was abandoned"
+    );
+}
+
+#[test]
+fn a_hook_that_finishes_first_is_not_abandoned() {
+    let shared = Shared::new(Limits::default());
+    assert!(!shared.finish());
+    assert!(!shared.abandon());
+}
+
+#[test]
+fn too_many_stuck_hooks_refuse_the_next_one() {
+    static STUCK: AtomicUsize = AtomicUsize::new(0);
+    let s = tight(
+        r#"
+        function f()
+            jtm.sleep(3000)
+            return "1"
+        end
+        "#,
+    )
+    .with_stuck_counter(&STUCK);
+    for stuck in 1..=MAX_STUCK {
+        assert!(matches!(
+            limit_of(s.format_interop("f", "f", "v", "1")),
+            Limit::Time(_)
+        ));
+        assert_eq!(STUCK.load(AtomicOrdering::SeqCst), stuck);
+    }
+    assert!(
+        matches!(
+            s.format_interop("f", "f", "v", "1"),
+            Err(ScriptError::Host { .. })
+        ),
+        "the stuck hooks were counted"
+    );
+    // Each abandoned thread is released when its pattern match ends.
+    let start = Instant::now();
+    while STUCK.load(AtomicOrdering::SeqCst) > 0 {
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "stuck hooks never ended"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(matches!(
+        limit_of(s.format_interop("f", "f", "v", "1")),
+        Limit::Time(_)
+    ));
 }
 
 // --- post_extract ---
