@@ -229,3 +229,33 @@ fn a_home_is_chosen_before_its_bin_dirs_hold_files() {
         assert_eq!(err.code(), "E_PLUGIN_INVALID");
     }
 }
+
+#[test]
+fn a_candidate_that_is_not_relative_fails_instead_of_falling_through() {
+    // Validation rejects this; a layout built some other way must not skip it quietly.
+    let mut l = layout(CANDIDATES);
+    l.home_subdir.insert(
+        "macos".to_owned(),
+        jtm_plugin::manifest::HomeCandidates(vec!["/abs".to_owned(), String::new()]),
+    );
+    let dir = tree(&["t/bin/java"]);
+    let err = apply("demo", dir.path(), &l, Os::Macos).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    assert!(err.to_string().contains("not a relative path"), "{err}");
+}
+
+/// Linux file names may be any bytes; the receipt records the home as text.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_star_never_matches_a_name_that_is_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tree(&["t/README"]);
+    let bad = dir
+        .path()
+        .join("t")
+        .join(std::ffi::OsStr::from_bytes(b"jdk\xff"));
+    fs::create_dir_all(bad.join("Contents/Home/bin")).unwrap();
+    fs::write(bad.join("Contents/Home/bin/java"), b"x").unwrap();
+    let err = apply("demo", dir.path(), &layout(BUNDLES_ONLY), Os::Macos).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
+}

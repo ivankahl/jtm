@@ -81,6 +81,10 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
     // The first candidate that exists wins. Its bin dirs are checked after `post_extract`,
     // which may fill them.
     for candidate in candidates {
+        // Validation rejects these; never let one quietly hand the choice to the next.
+        if relative(candidate).is_none() {
+            return Err(mismatch(format!("`{candidate}` is not a relative path")));
+        }
         if let Some(home) = find_home(&root, candidate)? {
             return Ok(Placed { root, home });
         }
@@ -130,7 +134,9 @@ fn find_home(root: &Path, candidate: &str) -> Result<Option<PathBuf>> {
                 let kind = entry
                     .file_type()
                     .map_err(|e| JtmError::io(entry.path(), e))?;
-                if kind.is_dir() {
+                // The receipt records the home as text, so a name that is not UTF-8 is
+                // never a match.
+                if kind.is_dir() && entry.file_name().to_str().is_some() {
                     next.push(path.join(entry.file_name()));
                 }
             }
