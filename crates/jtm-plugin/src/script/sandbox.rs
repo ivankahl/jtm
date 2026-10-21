@@ -12,10 +12,11 @@
 //!   `ends_with`.
 //! - `jtm.fs`, during `post_extract` only (see [`super::fs`]).
 
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::Instant;
 
 use mlua::chunk::ChunkMode;
@@ -183,10 +184,10 @@ fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> 
         // The handler runs inside the failed call, so the breach is recorded before it does.
         // Luau itself refuses a handler that is not a function. The flag is this call's own:
         // a limit recorded earlier must not stop a breach here from being raised again.
-        let breached = Arc::new(AtomicBool::new(false));
+        let breached = Rc::new(Cell::new(false));
         if let Some(Value::Function(handler)) = args.get(1).cloned() {
             let s = Arc::clone(&s);
-            let flag = Arc::clone(&breached);
+            let flag = Rc::clone(&breached);
             let wrapped = lua.create_function(move |lua, error: Value| {
                 let result =
                     caught(lua, &s, error).and_then(|error| handler.call::<MultiValue>(error));
@@ -196,7 +197,7 @@ fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> 
                     && matches!(classify(e), Failure::Memory)
                 {
                     s.record(Limit::Memory(s.limits.memory));
-                    flag.store(true, AtomicOrdering::SeqCst);
+                    flag.set(true);
                 }
                 result
             })?;
@@ -205,8 +206,12 @@ fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> 
             }
         }
         let out: MultiValue = native_xpcall.call(args)?;
-        // A handler that raised again replaced the error, but not the breach.
-        if breached.load(AtomicOrdering::SeqCst) {
+        // A handler that raised again replaced the error, but not the breach. Luau may also
+        // fail to call the handler at all when memory is short, and return its message.
+        let unhandled =
+            matches!(out.front(), Some(Value::Boolean(false))) && out.get(1).is_some_and(is_memory);
+        if breached.get() || unhandled {
+            s.record(Limit::Memory(s.limits.memory));
             return Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned()));
         }
         Ok(out)
@@ -218,18 +223,23 @@ fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> 
 /// The error value a script's caller or handler sees for `error`: a memory breach is recorded
 /// and raised again, a host error becomes its message, and any other value is unchanged.
 fn caught(lua: &Lua, shared: &Shared, error: Value) -> mlua::Result<Value> {
-    let memory = match &error {
-        Value::Error(e) => matches!(classify(e), Failure::Memory),
-        Value::String(text) => text.to_str().is_ok_and(|text| *text == *MEMORY_ERROR),
-        _ => false,
-    };
-    if memory {
+    if is_memory(&error) {
         shared.record(Limit::Memory(shared.limits.memory));
         return Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned()));
     }
     match error {
         Value::Error(e) => Ok(Value::String(lua.create_string(message(&e))?)),
         other => Ok(other),
+    }
+}
+
+/// Whether a caught error value is a memory breach: an mlua memory error, or Luau's message
+/// for one.
+fn is_memory(error: &Value) -> bool {
+    match error {
+        Value::Error(e) => matches!(classify(e), Failure::Memory),
+        Value::String(text) => text.to_str().is_ok_and(|text| *text == *MEMORY_ERROR),
+        _ => false,
     }
 }
 
