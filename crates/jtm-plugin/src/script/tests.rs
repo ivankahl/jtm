@@ -523,6 +523,41 @@ fn post_extract(root: &Path, body: &str) -> Result<(), ScriptError> {
 }
 
 #[test]
+fn an_install_dir_jtm_cannot_open_is_an_io_error() {
+    let dir = install_dir();
+    let missing = dir.path().join("missing");
+    match post_extract(&missing, "") {
+        Err(ScriptError::Io { path, kind, .. }) => {
+            assert_eq!(path, missing);
+            assert_eq!(kind, std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected an IO error, got {other:?}"),
+    }
+}
+
+#[test]
+fn host_side_failures_say_jtm_could_not_run_the_hook() {
+    let io = ScriptError::Io {
+        hook: "post".to_owned(),
+        path: PathBuf::from("install"),
+        kind: std::io::ErrorKind::PermissionDenied,
+        message: "access denied".to_owned(),
+    };
+    assert_eq!(
+        io.to_string(),
+        "cannot run hook `post`: cannot access install: access denied"
+    );
+    let host = ScriptError::Host {
+        hook: "post".to_owned(),
+        message: "the script engine stopped unexpectedly".to_owned(),
+    };
+    assert_eq!(
+        host.to_string(),
+        "cannot run hook `post`: the script engine stopped unexpectedly"
+    );
+}
+
+#[test]
 fn post_extract_can_rename_move_remove_and_list() {
     let dir = install_dir();
     let root = dir.path();

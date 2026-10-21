@@ -103,6 +103,17 @@ pub enum ScriptError {
     Invalid { hook: String, message: String },
     /// The hook raised an error.
     Failed { hook: String, message: String },
+    /// jtm could not reach a file the hook needs, such as the install dir; not the plugin's
+    /// fault.
+    Io {
+        hook: String,
+        path: PathBuf,
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+    /// jtm could not run the hook at all, such as when its thread cannot start or dies; not the
+    /// plugin's fault.
+    Host { hook: String, message: String },
 }
 
 impl fmt::Display for ScriptError {
@@ -115,6 +126,19 @@ impl fmt::Display for ScriptError {
                 write!(f, "plugin.lua cannot run hook `{hook}`: {message}")
             }
             ScriptError::Failed { hook, message } => write!(f, "hook `{hook}` failed: {message}"),
+            ScriptError::Io {
+                hook,
+                path,
+                message,
+                ..
+            } => write!(
+                f,
+                "cannot run hook `{hook}`: cannot access {}: {message}",
+                path.display()
+            ),
+            ScriptError::Host { hook, message } => {
+                write!(f, "cannot run hook `{hook}`: {message}")
+            }
         }
     }
 }
@@ -309,9 +333,11 @@ impl Script {
         context: &PostExtract<'_>,
     ) -> Result<(), ScriptError> {
         const HOOK: &str = "post_extract";
-        let root = root.canonicalize().map_err(|e| ScriptError::Failed {
+        let root = root.canonicalize().map_err(|e| ScriptError::Io {
             hook: HOOK.to_owned(),
-            message: format!("cannot open the install dir {}: {e}", root.display()),
+            path: root.to_path_buf(),
+            kind: e.kind(),
+            message: e.to_string(),
         })?;
         let arg = json!({
             "variant": context.variant,
@@ -347,7 +373,7 @@ impl Script {
             fs_root,
             shared: Arc::clone(&shared),
         };
-        let failed = |message: String| ScriptError::Failed {
+        let host = |message: String| ScriptError::Host {
             hook: hook.to_owned(),
             message,
         };
@@ -357,18 +383,17 @@ impl Script {
             .spawn(move || {
                 let _ = tx.send(sandbox::run(job));
             })
-            .map_err(|e| failed(format!("cannot start the script engine: {e}")))?;
+            .map_err(|e| host(format!("cannot start the script engine: {e}")))?;
         let outcome = match rx.recv_timeout(self.limits.time + ABANDON_GRACE) {
-            Ok(outcome) => outcome,
+            Ok(outcome) => Some(outcome),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // The thread is stuck outside Lua code; leave it, but cut off its file access.
                 shared.cancelled.store(true, AtomicOrdering::SeqCst);
                 shared.record(Limit::Time(self.limits.time));
-                Err(sandbox::Failure::Runtime(String::new()))
+                None
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(sandbox::Failure::Runtime(
-                "the script engine stopped".to_owned(),
-            )),
+            // The thread ended without an answer, so it panicked: a jtm bug, not the plugin's.
+            Err(mpsc::RecvTimeoutError::Disconnected) => None,
         };
         if let Some(limit) = shared.violation() {
             return Err(ScriptError::Limit {
@@ -376,6 +401,8 @@ impl Script {
                 limit,
             });
         }
+        let outcome =
+            outcome.ok_or_else(|| host("the script engine stopped unexpectedly".to_owned()))?;
         outcome.map_err(|failure| match failure {
             sandbox::Failure::Memory => ScriptError::Limit {
                 hook: hook.to_owned(),
@@ -385,7 +412,11 @@ impl Script {
                 hook: hook.to_owned(),
                 message,
             },
-            sandbox::Failure::Runtime(message) => failed(message),
+            sandbox::Failure::Runtime(message) => ScriptError::Failed {
+                hook: hook.to_owned(),
+                message,
+            },
+            sandbox::Failure::Host(message) => host(message),
         })
     }
 }
