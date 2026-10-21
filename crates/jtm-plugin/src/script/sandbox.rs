@@ -191,12 +191,15 @@ fn install_protected_calls(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<()> 
 
     let s = Arc::clone(shared);
     let xpcall = lua.create_function(move |lua, mut args: MultiValue| {
-        let Some(Value::Function(handler)) = args.get(1).cloned() else {
-            return Err(mlua::Error::runtime(
-                "invalid argument #2 to 'xpcall' (function expected)",
-            ));
+        let handler = match args.remove(1) {
+            Some(Value::Function(handler)) => handler,
+            Some(_) => {
+                return Err(mlua::Error::runtime(
+                    "invalid argument #2 to 'xpcall' (function expected)",
+                ));
+            }
+            None => return Err(mlua::Error::runtime("missing argument #2 to 'xpcall'")),
         };
-        args.remove(1);
         let error = match protected_call(lua, &s, args)? {
             Outcome::Returned(mut values) => {
                 values.push_front(Value::Boolean(true));
@@ -236,9 +239,9 @@ fn protected_call(lua: &Lua, shared: &Shared, args: MultiValue) -> mlua::Result<
         return Ok(Outcome::Returned(values));
     }
     let error = values.into_iter().next().unwrap_or(Value::Nil);
-    let refused = status == ffi::LUA_ERRMEM
+    let out_of_memory = status == ffi::LUA_ERRMEM
         || matches!(&error, Value::Error(e) if matches!(classify(e), Failure::Memory));
-    if refused {
+    if out_of_memory {
         shared.record(Limit::Memory(shared.limits.memory));
         return Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned()));
     }

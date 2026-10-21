@@ -389,7 +389,11 @@ fn deep_recursion_fails_without_crashing() {
         "local function f() return pcall(f) end return tostring((f()))",
         "local function f() return xpcall(f, f) end return tostring((f()))",
     ] {
-        let _ = eval(source);
+        let result = eval(source);
+        assert!(
+            matches!(result, Ok(_) | Err(ScriptError::Failed { .. })),
+            "{source}: {result:?}"
+        );
     }
 }
 
