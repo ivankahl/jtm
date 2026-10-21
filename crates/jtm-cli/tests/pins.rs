@@ -316,6 +316,42 @@ fn exec_shows_warnings_before_running_the_command() {
 }
 
 #[test]
+fn which_reports_a_pin_that_is_not_installed() {
+    let f = ready();
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join(".jtm.toml"),
+        "[tools]\ndemo = \"9.9\"\n",
+    )
+    .unwrap();
+    // Found on PATH, but the user learns the pin does not apply.
+    let system = if cfg!(windows) { "cmd" } else { "sh" };
+    let (code, value) = json_in(&f, project.path(), &["which", system]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["data"]["tool"], Value::Null, "{value}");
+    assert_eq!(value["warnings"][0]["code"], "W_NOT_INSTALLED", "{value}");
+    assert!(
+        value["warnings"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("demo@9.9"),
+        "{value}"
+    );
+
+    // Found nowhere: the pin that may provide it is the error.
+    let (code, value) = json_in(&f, project.path(), &["which", "demo"]);
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["error"]["code"], "E_VERSION_NOT_FOUND", "{value}");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not installed"),
+        "{value}"
+    );
+}
+
+#[test]
 fn activation_uses_the_locked_version() {
     let f = ready();
     let project = tempfile::tempdir().unwrap();

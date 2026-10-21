@@ -213,12 +213,14 @@ pub(crate) fn which(ctx: &Context, command: &str) -> Result<Outcome<WhichData>> 
     let session = Session::open(ctx)?;
     let here = here(&session)?;
     let path = std::env::var("PATH").ok();
-    let item = here.which(command, session.platform().os(), path.as_deref())?;
+    let (item, missing) = here.which(command, session.platform().os(), path.as_deref())?;
+    let mut found = here.warnings();
+    found.extend(missing);
     Ok(Outcome {
         command: "which",
         changed: false,
         data: WhichData { item },
-        warnings: warnings_with(here.warnings(), &here.pins.conflicts),
+        warnings: warnings_with(found, &here.pins.conflicts),
     })
 }
 

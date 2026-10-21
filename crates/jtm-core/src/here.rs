@@ -15,7 +15,7 @@ use crate::error::{JtmError, Result};
 use crate::pins::{ProjectPins, discover};
 use crate::platform::Os;
 use crate::plugins::Plugin;
-use crate::session::{PATH_SEPARATOR, Session, pin_warnings};
+use crate::session::{PATH_SEPARATOR, Session, not_installed_warning, pin_warnings};
 use crate::spec::Selector;
 use crate::sync::apply_lock;
 
@@ -263,7 +263,17 @@ impl<'s, 'c> Here<'s, 'c> {
     /// The executable `command` runs here: the first active install whose bin dirs hold it, so
     /// any file a tool ships maps to that tool, whatever the version calls it; anything else is
     /// looked up on `path`.
-    pub fn which(&self, command: &str, os: Os, path: Option<&str>) -> Result<WhichItem> {
+    ///
+    /// Without `[executables]` there is no telling which commands an active tool that is not
+    /// installed would provide, so each one is reported: as a `W_NOT_INSTALLED` warning when
+    /// `path` has the command, or as the error when nothing does.
+    pub fn which(
+        &self,
+        command: &str,
+        os: Os,
+        path: Option<&str>,
+    ) -> Result<(WhichItem, Vec<Warning>)> {
+        let mut missing = Vec::new();
         for plugin in &self.plugins {
             let tool = plugin.manifest.name.as_str();
             let Some(choice) = self.layers().choose(tool) else {
@@ -273,30 +283,49 @@ impl<'s, 'c> Here<'s, 'c> {
                 .session
                 .installed_match(plugin, choice.selector.as_ref())?
             else {
+                missing.push(choice);
                 continue;
             };
             let env = tool_env(&plugin.manifest, &found.home);
             let Some(path) = find_in_dirs(command, &env.path, os) else {
                 continue;
             };
-            return Ok(WhichItem {
+            let item = WhichItem {
                 command: command.to_owned(),
                 tool: Some(tool.to_owned()),
                 layer: Some(choice.layer),
                 version: Some(format!("{}:{}", found.variant, found.version)),
                 path: path.display().to_string(),
-            });
+            };
+            return Ok((item, Vec::new()));
         }
-        let found = find_on_path(command, path, os).ok_or_else(|| JtmError::ToolUnknown {
-            tool: command.to_owned(),
-        })?;
-        Ok(WhichItem {
+        let Some(found) = find_on_path(command, path, os) else {
+            return Err(match missing.into_iter().next() {
+                Some(choice) => JtmError::VersionNotFound {
+                    tool: choice.tool,
+                    spec: format!(
+                        "{} (set by {}, not installed)",
+                        choice
+                            .selector
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_default(),
+                        choice.origin
+                    ),
+                },
+                None => JtmError::ToolUnknown {
+                    tool: command.to_owned(),
+                },
+            });
+        };
+        let item = WhichItem {
             command: command.to_owned(),
             tool: None,
             layer: None,
             version: None,
             path: found.display().to_string(),
-        })
+        };
+        Ok((item, missing.iter().map(not_installed_warning).collect()))
     }
 }
 

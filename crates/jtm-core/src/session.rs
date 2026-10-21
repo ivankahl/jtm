@@ -14,7 +14,7 @@ use jtm_plugin::{Candidate, ResolveError};
 use jtm_security::{IndexEntry, Timestamp, Warning};
 use serde::Serialize;
 
-use crate::activate::{Defaults, Installed, Layers, Override, pick_installed, tool_env};
+use crate::activate::{Choice, Defaults, Installed, Layers, Override, pick_installed, tool_env};
 use crate::config::{AutoRefresh, Config, ConfigInputs, FileSource, Settings};
 use crate::context::Context;
 use crate::dirs::{Dirs, dir_name};
@@ -832,21 +832,7 @@ impl<'a> Session<'a> {
                         value: found.version,
                     },
                 }),
-                None => {
-                    let wanted = choice
-                        .selector
-                        .as_ref()
-                        .map(|s| format!("{tool}@{s}"))
-                        .unwrap_or_else(|| tool.to_owned());
-                    warnings.push(Warning {
-                        code: W_NOT_INSTALLED,
-                        message: format!(
-                            "{} sets `{wanted}`, which is not installed; run `jtm install \
-                             {wanted}` or `jtm sync`",
-                            choice.origin
-                        ),
-                    });
-                }
+                None => warnings.push(not_installed_warning(&choice)),
             }
         }
         Ok((overrides, warnings))
@@ -896,6 +882,24 @@ impl<'a> Session<'a> {
             installed,
         };
         Ok((item, link_changed || default_changed || installed, warnings))
+    }
+}
+
+/// The `W_NOT_INSTALLED` warning for a `choice` with no matching install.
+pub fn not_installed_warning(choice: &Choice) -> Warning {
+    let tool = &choice.tool;
+    let wanted = choice
+        .selector
+        .as_ref()
+        .map(|s| format!("{tool}@{s}"))
+        .unwrap_or_else(|| tool.clone());
+    Warning {
+        code: W_NOT_INSTALLED,
+        message: format!(
+            "{} sets `{wanted}`, which is not installed; run `jtm install {wanted}` or `jtm \
+             sync`",
+            choice.origin
+        ),
     }
 }
 
