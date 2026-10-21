@@ -869,7 +869,15 @@ fn check_home_subdir(p: &mut Problems, path: &str, home: &BTreeMap<String, HomeC
             [only] => check_home_candidate(p, &path, only),
             all => {
                 for (i, candidate) in all.iter().enumerate() {
-                    check_home_candidate(p, &format!("{path}[{i}]"), candidate);
+                    let path = format!("{path}[{i}]");
+                    check_home_candidate(p, &path, candidate);
+                    // The archive root always exists, so nothing after it is ever tried.
+                    if candidate.is_empty() && i + 1 < all.len() {
+                        p.push(
+                            path,
+                            "`\"\"` (the archive root) always matches, so it must come last",
+                        );
+                    }
                 }
             }
         }

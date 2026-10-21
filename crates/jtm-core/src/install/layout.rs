@@ -86,9 +86,13 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
         }
     }
     let tried: Vec<String> = candidates.iter().map(|c| format!("`{c}`")).collect();
+    let star = if candidates.iter().any(|c| c.contains('*')) {
+        " (a `*` must match exactly one directory)"
+    } else {
+        ""
+    };
     Err(mismatch(format!(
-        "no home candidate is a directory inside the archive (a `*` must match exactly one); \
-         tried {}",
+        "no home candidate is a directory inside the archive{star}; tried {}",
         tried.join(", ")
     )))
 }
@@ -114,16 +118,19 @@ fn find_home(root: &Path, candidate: &str) -> Result<Option<PathBuf>> {
         let mut next = Vec::new();
         for path in &paths {
             let dir = root.join(path);
-            // Never list a directory a link leads to outside the archive.
-            if !inside(root, &dir)? {
+            // Never list a directory a link leads to outside the archive. A path that is not
+            // a directory simply has no matches; any other failure to read one is an error,
+            // never a reason to pick another candidate.
+            if !dir.is_dir() || !inside(root, &dir)? {
                 continue;
             }
-            let Ok(entries) = fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
+            for entry in fs::read_dir(&dir).map_err(|e| JtmError::io(&dir, e))? {
+                let entry = entry.map_err(|e| JtmError::io(&dir, e))?;
                 // `DirEntry::file_type` does not follow links.
-                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                let kind = entry
+                    .file_type()
+                    .map_err(|e| JtmError::io(entry.path(), e))?;
+                if kind.is_dir() {
                     next.push(path.join(entry.file_name()));
                 }
             }
