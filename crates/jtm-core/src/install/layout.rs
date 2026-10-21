@@ -129,7 +129,7 @@ fn find_home(plugin: &str, root: &Path, candidate: &str, rel: &Path) -> Result<O
         match walk(root, path).map_err(|e| unreadable(path, &e))? {
             Walk::Absent => Ok(false),
             Walk::Dir => Ok(true),
-            Walk::Broken => Err(bad("is broken")),
+            Walk::Broken(kind) => Err(bad(&format!("is broken ({kind})"))),
             Walk::Escapes => Err(bad("leads out of the archive")),
         }
     };
@@ -207,8 +207,9 @@ enum Walk {
     Absent,
     /// A directory inside the archive.
     Dir,
-    /// A link on the way whose target does not exist.
-    Broken,
+    /// A link on the way that cannot be resolved: its target is missing, it loops, or it
+    /// cannot be read, with the reason.
+    Broken(io::ErrorKind),
     /// A link on the way that leads out of the archive.
     Escapes,
 }
@@ -237,7 +238,7 @@ fn walk(root: &Path, rel: &Path) -> io::Result<Walk> {
             match fs::canonicalize(&path) {
                 Ok(real) if real.starts_with(&real_root) => {}
                 Ok(_) => return Ok(Walk::Escapes),
-                Err(_) => return Ok(Walk::Broken),
+                Err(e) => return Ok(Walk::Broken(e.kind())),
             }
         }
     }
@@ -250,11 +251,17 @@ fn walk(root: &Path, rel: &Path) -> io::Result<Walk> {
 }
 
 /// A path from the archive for a message: `/`-separated on every OS, as in the manifest, with
-/// control characters and other unprintable text escaped, since the names are untrusted.
+/// control characters and other unprintable text escaped, since the names are untrusted, and
+/// backticks escaped so the name cannot break out of the quotes around it.
 fn shown(path: &Path) -> String {
     let parts: Vec<String> = path
         .iter()
-        .map(|p| p.to_string_lossy().escape_debug().to_string())
+        .map(|p| {
+            p.to_string_lossy()
+                .escape_debug()
+                .to_string()
+                .replace('`', "\\`")
+        })
         .collect();
     parts.join("/")
 }

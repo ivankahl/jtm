@@ -195,6 +195,7 @@ fn an_ambiguous_star_candidate_fails_instead_of_falling_through() {
 #[test]
 fn no_match_names_every_candidate_tried() {
     let err = mac_home_with(BUNDLES_ONLY, &["t/lib/x", "t/README"]).unwrap_err();
+    assert_eq!(err.code(), "E_PLUGIN_INVALID");
     let message = err.to_string();
     assert!(
         message.contains("`Contents/Home`, `*/Contents/Home`"),
@@ -228,12 +229,6 @@ fn a_star_matches_only_safe_names() {
     // A name the rest of the path does not fit is never looked at.
     let home = mac_home(&["t/Some Docs/README", "t/bin/java"]).unwrap();
     assert_eq!(home, PathBuf::new());
-}
-
-#[test]
-fn no_candidate_existing_is_a_layout_mismatch() {
-    let err = mac_home_with(BUNDLES_ONLY, &["t/lib/x", "t/README"]).unwrap_err();
-    assert_eq!(err.code(), "E_PLUGIN_INVALID");
 }
 
 #[cfg(unix)]
@@ -347,6 +342,17 @@ fn archive_names_in_errors_are_escaped() {
         "{message}"
     );
     assert!(message.contains(r"a\u{1b}]0;x\u{7}.jdk"), "{message}");
+
+    // A backtick cannot end the quotes around a name early.
+    let files = [
+        "t/a`, `b.jdk/Contents/Home/bin/java",
+        "t/c.jdk/Contents/Home/bin/java",
+    ];
+    let message = mac_home(&files).unwrap_err().to_string();
+    assert!(
+        message.contains(r"`a\`, \`b.jdk/Contents/Home`"),
+        "{message}"
+    );
 
     let message = mac_home(&[files[0], "t/bin/java"]).unwrap_err().to_string();
     assert!(message.contains("may hold only ASCII"), "{message}");
