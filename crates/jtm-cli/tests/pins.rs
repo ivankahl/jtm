@@ -338,15 +338,20 @@ fn which_reports_a_pin_that_is_not_installed() {
         "{value}"
     );
 
-    // Found nowhere: the pin that may provide it is the error.
+    // Found nowhere: still an unknown command, naming the pin that may provide it.
     let (code, value) = json_in(&f, project.path(), &["which", "demo"]);
     assert_eq!(code, 3, "{value}");
-    assert_eq!(value["error"]["code"], "E_VERSION_NOT_FOUND", "{value}");
+    assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
+    let message = value["error"]["message"].as_str().unwrap();
     assert!(
-        value["error"]["message"]
+        message.contains("`demo@9.9`") && message.contains(".jtm.toml"),
+        "{value}"
+    );
+    assert!(
+        value["error"]["details"]["not_installed"][0]
             .as_str()
             .unwrap()
-            .contains("not installed"),
+            .contains("demo@9.9"),
         "{value}"
     );
 }

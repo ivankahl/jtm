@@ -266,7 +266,7 @@ impl<'s, 'c> Here<'s, 'c> {
     ///
     /// Without `[executables]` there is no telling which commands an active tool that is not
     /// installed would provide, so each one is reported: as a `W_NOT_INSTALLED` warning when
-    /// `path` has the command, or as the error when nothing does.
+    /// `path` has the command, or in the `E_TOOL_UNKNOWN` error when nothing does.
     pub fn which(
         &self,
         command: &str,
@@ -300,22 +300,23 @@ impl<'s, 'c> Here<'s, 'c> {
             return Ok((item, Vec::new()));
         }
         let Some(found) = find_on_path(command, path, os) else {
-            return Err(match missing.into_iter().next() {
-                Some(choice) => JtmError::VersionNotFound {
-                    tool: choice.tool,
-                    spec: format!(
-                        "{} (set by {}, not installed)",
-                        choice
-                            .selector
-                            .as_ref()
-                            .map(ToString::to_string)
-                            .unwrap_or_default(),
-                        choice.origin
-                    ),
-                },
-                None => JtmError::ToolUnknown {
+            if missing.is_empty() {
+                return Err(JtmError::ToolUnknown {
                     tool: command.to_owned(),
-                },
+                });
+            }
+            return Err(JtmError::CommandUnknown {
+                command: command.to_owned(),
+                not_installed: missing
+                    .iter()
+                    .map(|choice| {
+                        let wanted = match &choice.selector {
+                            Some(selector) => format!("{}@{selector}", choice.tool),
+                            None => choice.tool.clone(),
+                        };
+                        format!("`{wanted}` (set by {})", choice.origin)
+                    })
+                    .collect(),
             });
         };
         let item = WhichItem {
