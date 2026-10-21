@@ -540,8 +540,12 @@ impl Manifest {
         for (variant, over) in &layout.variants {
             let path = format!("layout.variants.{}", quote_key(variant));
             if !self.has_variant(variant) {
-                p.push(path, format!("`{variant}` is not a variant of this plugin"));
-            } else if let Some(home) = &over.home_subdir {
+                p.push(
+                    &path,
+                    format!("`{variant}` is not a variant of this plugin"),
+                );
+            }
+            if let Some(home) = &over.home_subdir {
                 check_home_subdir(p, &format!("{path}.home_subdir"), home);
             }
         }
@@ -851,9 +855,13 @@ fn toml_error(text: &str, error: &toml::de::Error, path: &str) -> ManifestError 
         }
         _ => path.to_owned(),
     };
-    let message = if path == "layout.home_subdir"
-        || (path.starts_with("layout.variants.") && path.ends_with(".home_subdir"))
-    {
+    // The table itself, at `layout.home_subdir` or `layout.variants.<variant>.home_subdir`,
+    // not a variant that happens to be named `home_subdir`.
+    let variant_home = path
+        .strip_prefix("layout.variants.")
+        .and_then(|rest| rest.strip_suffix(".home_subdir"))
+        .is_some_and(|variant| !variant.is_empty());
+    let message = if path == "layout.home_subdir" || variant_home {
         format!("{message}; set it per OS, such as `home_subdir = {{ macos = \"Contents/Home\" }}`")
     } else {
         message

@@ -243,3 +243,54 @@ fn ide_declares_build_tool_toolchains() {
     assert_eq!(m.ide.maven_toolchain, None);
     assert!(!m.ide.gradle_installations);
 }
+
+/// The base of the `layout-variant-*` fixtures, with its `[layout.variants.*]` table cut off.
+fn variant_base() -> String {
+    let text = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/manifests/invalid/layout-variant-unknown.toml"),
+    )
+    .unwrap();
+    text.lines()
+        .take_while(|line| !line.starts_with("[layout.variants"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn an_unknown_variant_override_reports_every_problem_at_once() {
+    let text = format!(
+        "{}\n[layout.variants.gamma-build]\nhome_subdir = {{ macos = \"../x\", solaris = \"y\" }}\n",
+        variant_base()
+    );
+    let err = Manifest::parse(&text).unwrap_err();
+    let paths: Vec<&str> = err.problems.iter().map(|p| p.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "layout.variants.gamma-build",
+            "layout.variants.gamma-build.home_subdir.macos",
+            "layout.variants.gamma-build.home_subdir.solaris",
+        ],
+        "{err}"
+    );
+}
+
+#[test]
+fn only_a_home_subdir_table_gets_the_per_os_hint() {
+    let hint = "home_subdir = { macos = \"Contents/Home\" }";
+    let text = format!(
+        "{}\n[layout.variants.beta-build]\nhome_subdir = \"x\"\n",
+        variant_base()
+    );
+    let err = Manifest::parse(&text).unwrap_err().to_string();
+    assert!(err.contains(hint), "{err}");
+
+    // A variant named `home_subdir` is not a `home_subdir` table.
+    let text = format!(
+        "{}\n[layout.variants]\nhome_subdir = \"x\"\n",
+        variant_base()
+    );
+    let err = Manifest::parse(&text).unwrap_err().to_string();
+    assert!(!err.contains(hint), "{err}");
+}
