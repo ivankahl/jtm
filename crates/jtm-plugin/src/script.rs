@@ -413,15 +413,17 @@ impl Script {
                 // The thread is stuck outside Lua code; leave it, but cut off its file access.
                 // Counting first keeps the thread's release from running ahead of the count.
                 stuck.fetch_add(1, AtomicOrdering::SeqCst);
-                if shared.abandon() {
-                    shared.record(Limit::Time(self.limits.time));
-                    None
-                } else {
-                    // The thread ended between the timeout and the abandon. An answer is sent
-                    // before the thread ends, so none waiting means it panicked: a jtm bug.
+                let abandoned = shared.abandon();
+                if !abandoned {
                     stuck.fetch_sub(1, AtomicOrdering::SeqCst);
-                    rx.try_recv().ok()
                 }
+                // The answer may have arrived since the timeout; keep it if so.
+                let late = rx.try_recv().ok();
+                if late.is_none() && abandoned {
+                    shared.record(Limit::Time(self.limits.time));
+                }
+                // A thread that ended without an answer panicked: a jtm bug, not the plugin's.
+                late
             }
             // The thread ended without an answer, so it panicked: a jtm bug, not the plugin's.
             Err(mpsc::RecvTimeoutError::Disconnected) => None,
