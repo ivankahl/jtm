@@ -32,15 +32,10 @@ pub struct Receipt {
 }
 
 impl Receipt {
-    /// The receipt in `install_dir`, or `None` when it is missing or unreadable. A directory
-    /// without a valid receipt is not an install.
-    pub fn read(install_dir: &Path) -> Option<Receipt> {
-        Receipt::load(install_dir).ok().flatten()
-    }
-
-    /// Like [`Receipt::read`], but a receipt that exists and cannot be read, such as for lack
-    /// of permission, is an error rather than no install, so a caller listing installs never
-    /// passes an unreadable one off as missing. A missing or invalid receipt is still `None`.
+    /// The receipt in `install_dir`, or `None` when it is missing or invalid: a directory
+    /// without a valid receipt is not an install. A receipt that exists and cannot be read,
+    /// such as for lack of permission, is an error, so an install jtm cannot read is never
+    /// passed off as missing (SPEC.md section 5).
     pub fn load(install_dir: &Path) -> Result<Option<Receipt>> {
         let path = install_dir.join(RECEIPT_FILE);
         let bytes = match fs::read(&path) {
