@@ -246,12 +246,21 @@ fn a_star_never_matches_a_link() {
     let placed = apply("demo", dir.path(), &layout(CANDIDATES), Os::Macos).unwrap();
     assert_eq!(placed.home, PathBuf::from("zulu-17.jdk/Contents/Home"));
 
-    // A link out of the archive is never a home, even when it is the only match.
+    // A link out of the archive is never a home, and fails the install rather than handing
+    // the choice to the archive root.
     let outside = tree(&["Contents/Home/bin/java"]);
-    let dir = tree(&["t/README"]);
-    std::os::unix::fs::symlink(outside.path(), dir.path().join("t/Contents")).unwrap();
-    let err = apply("demo", dir.path(), &layout(BUNDLES_ONLY), Os::Macos).unwrap_err();
+    let dir = tree(&["t/bin/java"]);
+    std::os::unix::fs::symlink(
+        outside.path().join("Contents"),
+        dir.path().join("t/Contents"),
+    )
+    .unwrap();
+    let err = apply("demo", dir.path(), &layout(CANDIDATES), Os::Macos).unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    assert!(
+        err.to_string().contains("leads out of the archive"),
+        "{err}"
+    );
 }
 
 /// `post_extract` runs between `apply` and `check_bin_dirs` and may fill the bin dirs, so a
@@ -301,4 +310,25 @@ fn a_star_never_matches_a_name_that_is_not_utf8() {
     let err = apply("demo", dir.path(), &layout(BUNDLES_ONLY), Os::Macos).unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
     assert!(err.to_string().contains("may hold only ASCII"), "{err}");
+}
+
+/// Names from the archive are escaped in messages, so they cannot drive the terminal.
+#[cfg(unix)]
+#[test]
+fn archive_names_in_errors_are_escaped() {
+    let files = [
+        "t/a\u{1b}]0;x\u{7}.jdk/Contents/Home/bin/java",
+        "t/b.jdk/Contents/Home/bin/java",
+    ];
+    let message = mac_home(&files).unwrap_err().to_string();
+    assert!(message.contains("ambiguous"), "{message}");
+    assert!(
+        !message.contains('\u{1b}') && !message.contains('\u{7}'),
+        "{message}"
+    );
+    assert!(message.contains(r"a\u{1b}]0;x\u{7}.jdk"), "{message}");
+
+    let message = mac_home(&[files[0], "t/bin/java"]).unwrap_err().to_string();
+    assert!(message.contains("may hold only ASCII"), "{message}");
+    assert!(!message.contains('\u{1b}'), "{message}");
 }

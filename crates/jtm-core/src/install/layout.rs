@@ -80,13 +80,14 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
     }
     // Validation rejects these; never let one quietly hand the choice to another candidate,
     // whatever the archive holds.
-    if let Some(bad) = candidates.iter().find(|c| relative(c).is_none()) {
-        return Err(mismatch(format!("`{bad}` is not a relative path")));
-    }
+    let rels = candidates
+        .iter()
+        .map(|c| relative(c).ok_or_else(|| mismatch(format!("`{c}` is not a relative path"))))
+        .collect::<Result<Vec<_>>>()?;
     // The first candidate that exists wins. Its bin dirs are checked after `post_extract`,
     // which may fill them.
-    for candidate in candidates {
-        if let Some(home) = find_home(plugin, &root, candidate)? {
+    for (candidate, rel) in candidates.iter().zip(&rels) {
+        if let Some(home) = find_home(plugin, &root, candidate, rel)? {
             return Ok(Placed { root, home });
         }
     }
@@ -106,14 +107,17 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
 /// `root`, or `None` when it is not. A `*` segment matches any one real directory, never a
 /// link. When two or more directories fit the whole path the candidate is ambiguous, and a
 /// directory `*` matched must have a [safe name](is_safe_name): both are errors, never a
-/// reason to try the next candidate.
-fn find_home(plugin: &str, root: &Path, candidate: &str) -> Result<Option<PathBuf>> {
+/// reason to try the next candidate. So is a path that exists but leads out of the archive.
+fn find_home(plugin: &str, root: &Path, candidate: &str, rel: &Path) -> Result<Option<PathBuf>> {
     let mismatch = |message: String| JtmError::LayoutMismatch {
         plugin: plugin.to_owned(),
         message,
     };
-    let Some(rel) = relative(candidate) else {
-        return Ok(None);
+    let outside = |path: &Path| {
+        mismatch(format!(
+            "home candidate `{candidate}` reaches `{}`, which leads out of the archive",
+            shown(path)
+        ))
     };
     let mut paths = vec![PathBuf::new()];
     for part in rel.components() {
@@ -129,11 +133,14 @@ fn find_home(plugin: &str, root: &Path, candidate: &str) -> Result<Option<PathBu
         let mut next = Vec::new();
         for path in &paths {
             let dir = root.join(path);
-            // Never list a directory a link leads to outside the archive. A path that is not
-            // a directory simply has no matches; any other failure to read one is an error,
-            // never a reason to pick another candidate.
-            if !dir.is_dir() || !inside(root, &dir)? {
+            // A path that is not a directory simply has no matches; any other failure to
+            // read one is an error, never a reason to pick another candidate. Never list a
+            // directory a link leads to outside the archive.
+            if !is_dir(&dir)? {
                 continue;
+            }
+            if !inside(root, &dir)? {
+                return Err(outside(path));
             }
             for entry in fs::read_dir(&dir).map_err(|e| JtmError::io(&dir, e))? {
                 let entry = entry.map_err(|e| JtmError::io(&dir, e))?;
@@ -151,7 +158,10 @@ fn find_home(plugin: &str, root: &Path, candidate: &str) -> Result<Option<PathBu
     let mut homes = Vec::new();
     for path in paths {
         let dir = root.join(&path);
-        if dir.is_dir() && inside(root, &dir)? {
+        if is_dir(&dir)? {
+            if !inside(root, &dir)? {
+                return Err(outside(&path));
+            }
             homes.push(path);
         }
     }
@@ -160,14 +170,7 @@ fn find_home(plugin: &str, root: &Path, candidate: &str) -> Result<Option<PathBu
         Err(homes) if homes.is_empty() => return Ok(None),
         Err(mut homes) => {
             homes.sort();
-            let found: Vec<String> = homes
-                .iter()
-                .map(|h| {
-                    // `/` on every OS, as in the manifest.
-                    let parts: Vec<_> = h.iter().map(|p| p.to_string_lossy()).collect();
-                    format!("`{}`", parts.join("/"))
-                })
-                .collect();
+            let found: Vec<String> = homes.iter().map(|h| format!("`{}`", shown(h))).collect();
             return Err(mismatch(format!(
                 "home candidate `{candidate}` is ambiguous: it matches {}",
                 found.join(", ")
@@ -185,11 +188,38 @@ fn find_home(plugin: &str, root: &Path, candidate: &str) -> Result<Option<PathBu
             return Err(mismatch(format!(
                 "home candidate `{candidate}` matches `{}`, whose name may hold only ASCII \
                  letters, digits, `.`, `_`, `+` and `-` and may not start with `.` or `-`",
-                name.as_os_str().to_string_lossy()
+                shown(Path::new(name.as_os_str()))
             )));
         }
     }
     Ok(Some(home))
+}
+
+/// Whether `path` is a directory, following links. A path that does not exist, or that runs
+/// through a file, is not one; any other failure to tell is an error.
+fn is_dir(path: &Path) -> Result<bool> {
+    match fs::metadata(path) {
+        Ok(meta) => Ok(meta.is_dir()),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(JtmError::io(path, e)),
+    }
+}
+
+/// A path from the archive for a message: `/`-separated on every OS, as in the manifest, with
+/// control characters and other unprintable text escaped, since the names are untrusted.
+fn shown(path: &Path) -> String {
+    let parts: Vec<String> = path
+        .iter()
+        .map(|p| p.to_string_lossy().escape_debug().to_string())
+        .collect();
+    parts.join("/")
 }
 
 /// Whether a directory name a `*` matched is safe to record as part of a tool home: ASCII
