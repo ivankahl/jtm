@@ -107,9 +107,12 @@ pub(super) fn run(job: Job) -> Result<Json, Failure> {
     lua.set_interrupt(move |_| {
         if shared.cancelled() || Instant::now() >= deadline {
             shared.record(Limit::Time(shared.limits.time));
-            return Err(mlua::Error::external(Refused("the time limit".to_owned())));
         }
-        Ok(VmState::Continue)
+        // Any breach stops the script here too, whatever caught its error.
+        match breach(&shared) {
+            Some(error) => Err(error),
+            None => Ok(VmState::Continue),
+        }
     });
 
     let globals = lua.globals();
@@ -274,11 +277,21 @@ fn protected_call(lua: &Lua, shared: &Shared, args: MultiValue) -> mlua::Result<
     };
     // Fail closed: once any limit is broken, nothing the script wrote after the call runs,
     // neither the code following `pcall` nor an `xpcall` handler.
-    match shared.violation() {
+    match breach(shared) {
         None => Ok(outcome),
-        Some(Limit::Memory(_)) => Err(mlua::Error::MemoryError(MEMORY_ERROR.to_owned())),
-        Some(limit) => Err(mlua::Error::external(Refused(limit.to_string()))),
+        Some(error) => Err(error),
     }
+}
+
+/// The error that stops the script once it has broken a limit, or `None` while it has not.
+pub(super) fn breach(shared: &Shared) -> Option<mlua::Error> {
+    if !shared.breached() {
+        return None;
+    }
+    Some(match shared.violation()? {
+        Limit::Memory(_) => mlua::Error::MemoryError(MEMORY_ERROR.to_owned()),
+        limit => mlua::Error::external(Refused(limit.to_string())),
+    })
 }
 
 /// The error value a script sees: a host error becomes its message, and any other value is

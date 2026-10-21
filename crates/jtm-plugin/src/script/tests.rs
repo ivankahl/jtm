@@ -1039,6 +1039,26 @@ fn pcall_and_xpcall_need_their_arguments() {
 }
 
 #[test]
+fn nothing_runs_after_a_caught_limit_breach() {
+    for body in [
+        // A file mode that would lock jtm out.
+        "pcall(jtm.fs.chmod, 'README', 0) jtm.fs.remove('README')",
+        "xpcall(jtm.fs.chmod, function(e) jtm.fs.remove('README') end, 'README', 0)",
+        // The time limit.
+        "xpcall(function() while true do end end, function(e) jtm.fs.remove('README') end)",
+        "pcall(function() while true do end end) jtm.fs.remove('README')",
+    ] {
+        let dir = install_dir();
+        let result = post_extract(dir.path(), body);
+        assert!(
+            matches!(result, Err(ScriptError::Limit { .. })),
+            "{body}: {result:?}"
+        );
+        assert!(dir.path().join("README").is_file(), "{body}");
+    }
+}
+
+#[test]
 fn nothing_runs_after_a_caught_containment_breach() {
     for body in [
         // Neither the handler nor the code after the call may touch the install dir.
@@ -1134,5 +1154,9 @@ fn pcall_and_xpcall_take_any_value_like_lua() {
             "local okay, err = pcall(jtm.json.decode, '{') return type(err) .. ' ' .. tostring(err:find('invalid JSON') ~= nil)"
         ),
         "string true"
+    );
+    assert_eq!(
+        ok("local _, t = xpcall(jtm.json.decode, function(e) return type(e) end, '{') return t"),
+        "string"
     );
 }

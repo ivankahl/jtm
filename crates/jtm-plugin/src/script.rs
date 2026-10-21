@@ -537,6 +537,8 @@ struct Shared {
     state: AtomicU8,
     /// The first limit the hook broke, kept even when the script catches the error.
     violation: Mutex<Option<Limit>>,
+    /// Whether `violation` is set, readable without the lock on every protected call.
+    breached: AtomicBool,
 }
 
 impl Shared {
@@ -548,6 +550,7 @@ impl Shared {
             busy: Mutex::new(()),
             state: AtomicU8::new(RUNNING),
             violation: Mutex::new(None),
+            breached: AtomicBool::new(false),
         }
     }
 
@@ -591,13 +594,23 @@ impl Shared {
     }
 
     fn record(&self, limit: Limit) {
-        if let Ok(mut slot) = self.violation.lock() {
-            slot.get_or_insert(limit);
-        }
+        let mut slot = self
+            .violation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        slot.get_or_insert(limit);
+        self.breached.store(true, AtomicOrdering::SeqCst);
+    }
+
+    fn breached(&self) -> bool {
+        self.breached.load(AtomicOrdering::SeqCst)
     }
 
     fn violation(&self) -> Option<Limit> {
-        self.violation.lock().ok().and_then(|slot| slot.clone())
+        self.violation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn cancelled(&self) -> bool {

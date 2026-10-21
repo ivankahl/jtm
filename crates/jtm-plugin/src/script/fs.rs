@@ -31,7 +31,7 @@ use std::sync::{Arc, MutexGuard};
 use jtm_archive::tree::{self, ReadError, display_rel};
 use mlua::{Lua, Table};
 
-use super::sandbox::refuse;
+use super::sandbox::{breach, refuse};
 use super::{Limit, Shared};
 
 /// The highest mode `chmod` accepts: permission bits only, never setuid, setgid or sticky.
@@ -53,6 +53,9 @@ impl Root {
     /// Starts one operation; hold the guard until it is done, so a host abandoning the hook
     /// waits for it. Fails once the hook is abandoned.
     fn enter(&self) -> mlua::Result<MutexGuard<'_, ()>> {
+        if let Some(error) = breach(&self.shared) {
+            return Err(error);
+        }
         self.shared
             .enter()
             .ok_or_else(|| refuse(&self.shared, Limit::Time(self.shared.limits.time)))
