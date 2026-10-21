@@ -206,7 +206,7 @@ pub fn install(
     let dest = id.install_dir(dirs)?;
 
     if !request.force
-        && let Some(installed) = already_installed(&dest, entry)
+        && let Some(installed) = already_installed(&dest, entry)?
     {
         return Ok(installed);
     }
@@ -223,7 +223,7 @@ pub fn install(
     let _lock = id.lock(dirs)?;
     // Whoever held the lock may have just installed this version.
     if !request.force
-        && let Some(installed) = already_installed(&dest, entry)
+        && let Some(installed) = already_installed(&dest, entry)?
     {
         return Ok(installed);
     }
@@ -290,14 +290,17 @@ pub fn install(
     })
 }
 
-/// The installed version at `dest`, if its receipt matches `entry`.
-fn already_installed(dest: &Path, entry: &IndexEntry) -> Option<Installed> {
-    let receipt = Receipt::read(dest)?;
-    (receipt.sha256 == entry.sha256).then(|| Installed {
+/// The installed version at `dest`, if its receipt matches `entry`. A receipt that exists and
+/// cannot be read is an error, so a live install is never replaced for want of reading it.
+fn already_installed(dest: &Path, entry: &IndexEntry) -> Result<Option<Installed>> {
+    let Some(receipt) = Receipt::load(dest)? else {
+        return Ok(None);
+    };
+    Ok((receipt.sha256 == entry.sha256).then(|| Installed {
         status: Status::AlreadyInstalled,
         path: dest.to_path_buf(),
         receipt,
-    })
+    }))
 }
 
 /// Removes temporary directories left by killed installs of the version whose lock is held.

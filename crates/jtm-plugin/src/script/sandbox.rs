@@ -61,6 +61,8 @@ pub(super) enum Failure {
     Memory,
     Invalid(String),
     Runtime(String),
+    /// Setting up the sandbox failed before any plugin code ran.
+    Host(String),
 }
 
 /// A host function refused to act because the script broke a limit. The limit is recorded in
@@ -90,14 +92,16 @@ pub(super) fn check_syntax(source: &str) -> Result<(), String> {
 /// Runs the job's hook and returns its first result as JSON.
 pub(super) fn run(job: Job) -> Result<Json, Failure> {
     let runtime = |e: mlua::Error| classify(&e);
+    let setup =
+        |e: mlua::Error| Failure::Host(format!("cannot set up the sandbox: {}", message(&e)));
     let lua = Lua::new_with(
         StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8,
         LuaOptions::default(),
     )
-    .map_err(runtime)?;
-    lua.set_memory_limit(job.limits.memory).map_err(runtime)?;
+    .map_err(setup)?;
+    lua.set_memory_limit(job.limits.memory).map_err(setup)?;
 
-    let deadline = Instant::now() + job.limits.time;
+    let deadline = job.shared.deadline;
     let shared = Arc::clone(&job.shared);
     lua.set_interrupt(move |_| {
         if shared.cancelled() || Instant::now() >= deadline {
@@ -109,12 +113,12 @@ pub(super) fn run(job: Job) -> Result<Json, Failure> {
 
     let globals = lua.globals();
     for name in REMOVED_GLOBALS {
-        globals.raw_set(*name, Value::Nil).map_err(runtime)?;
+        globals.raw_set(*name, Value::Nil).map_err(setup)?;
     }
-    install_protected_calls(&lua, &job.shared).map_err(runtime)?;
-    let api = host_api(&lua, &job).map_err(runtime)?;
-    globals.raw_set("jtm", api).map_err(runtime)?;
-    lua.sandbox(true).map_err(runtime)?;
+    install_protected_calls(&lua, &job.shared).map_err(setup)?;
+    let api = host_api(&lua, &job).map_err(setup)?;
+    globals.raw_set("jtm", api).map_err(setup)?;
+    lua.sandbox(true).map_err(setup)?;
 
     lua.load(&*job.source)
         .set_name(CHUNK_NAME)
@@ -216,6 +220,15 @@ fn host_api(lua: &Lua, job: &Job) -> mlua::Result<Table> {
     if let Some(root) = &job.fs_root {
         api.raw_set("fs", fs::api(lua, root.clone(), Arc::clone(&job.shared))?)?;
     }
+    // A host call that blocks without returning to Lua, as a stuck C function would.
+    #[cfg(test)]
+    api.raw_set(
+        "sleep",
+        lua.create_function(|_, ms: u64| {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            Ok(())
+        })?,
+    )?;
     api.set_readonly(true);
     Ok(api)
 }

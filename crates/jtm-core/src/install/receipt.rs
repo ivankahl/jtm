@@ -32,11 +32,18 @@ pub struct Receipt {
 }
 
 impl Receipt {
-    /// The receipt in `install_dir`, or `None` when it is missing or unreadable. A directory
-    /// without a valid receipt is not an install.
-    pub fn read(install_dir: &Path) -> Option<Receipt> {
-        let bytes = fs::read(install_dir.join(RECEIPT_FILE)).ok()?;
-        serde_json::from_slice(&bytes).ok()
+    /// The receipt in `install_dir`, or `None` when it is missing or invalid: a directory
+    /// without a valid receipt is not an install. A receipt that exists and cannot be read,
+    /// such as for lack of permission, is an error, so an install jtm cannot read is never
+    /// passed off as missing (SPEC.md section 5).
+    pub fn load(install_dir: &Path) -> Result<Option<Receipt>> {
+        let path = install_dir.join(RECEIPT_FILE);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(JtmError::io(&path, e)),
+        };
+        Ok(serde_json::from_slice(&bytes).ok())
     }
 
     /// Writes the receipt into `install_dir`.
