@@ -498,6 +498,7 @@ fn abandoning_a_hook_waits_for_its_file_operation() {
     });
     wait.recv().unwrap_or_else(|e| panic!("{e}"));
     let start = Instant::now();
+    shared.cut_off();
     assert!(shared.abandon(), "the thread was still running");
     assert!(
         start.elapsed() >= Duration::from_millis(200),
@@ -554,14 +555,20 @@ fn a_hook_that_finishes_first_is_not_abandoned() {
 #[test]
 fn too_many_stuck_hooks_refuse_the_next_one() {
     static STUCK: AtomicUsize = AtomicUsize::new(0);
-    let s = tight(
+    // Enough time to reach the sleep on a loaded runner, and a sleep that outlasts all the calls.
+    let limits = Limits {
+        memory: 8 * 1024 * 1024,
+        time: Duration::from_millis(500),
+    };
+    let s = script(
         r#"
         function f()
-            jtm.sleep(6000)
+            jtm.sleep(8000)
             return "1"
         end
         "#,
     )
+    .with_limits(limits)
     .with_stuck_counter(&STUCK);
     for stuck in 1..=MAX_STUCK {
         assert!(matches!(

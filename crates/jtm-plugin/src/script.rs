@@ -483,7 +483,7 @@ const ABANDONED: u8 = 2;
 #[derive(Debug)]
 struct Shared {
     limits: Limits,
-    /// When the hook's time runs out; no file operation starts after it.
+    /// When the hook's time runs out, for both the Lua interrupt and `jtm.fs`.
     deadline: Instant,
     /// Set when the host abandons the hook; its file operations fail from then on.
     cancelled: AtomicBool,
@@ -522,10 +522,9 @@ impl Shared {
         drop(self.busy.lock().unwrap_or_else(PoisonError::into_inner));
     }
 
-    /// Cuts the hook off, as [`Shared::cut_off`] does, and returns whether the hook's thread
-    /// was still running.
+    /// Gives up on the hook, after [`Shared::cut_off`]. Returns whether the hook's thread was
+    /// still running.
     fn abandon(&self) -> bool {
-        self.cut_off();
         self.state
             .compare_exchange(
                 RUNNING,

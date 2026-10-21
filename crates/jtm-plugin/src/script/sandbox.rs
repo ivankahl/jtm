@@ -101,7 +101,7 @@ pub(super) fn run(job: Job) -> Result<Json, Failure> {
     .map_err(setup)?;
     lua.set_memory_limit(job.limits.memory).map_err(setup)?;
 
-    let deadline = Instant::now() + job.limits.time;
+    let deadline = job.shared.deadline;
     let shared = Arc::clone(&job.shared);
     lua.set_interrupt(move |_| {
         if shared.cancelled() || Instant::now() >= deadline {
