@@ -138,17 +138,24 @@ fn every_bin_dir_must_hold_a_file() {
 }
 
 const CANDIDATES: &str = "bin_dirs = [\"bin\"]\nhome_subdir = { macos = [\"Contents/Home\", \"*/Contents/Home\", \"\"] }";
+/// The same candidates without the archive root, so that none may match.
+const BUNDLES_ONLY: &str =
+    "bin_dirs = [\"bin\"]\nhome_subdir = { macos = [\"Contents/Home\", \"*/Contents/Home\"] }";
 
-fn mac_home(files: &[&str]) -> Result<PathBuf> {
+fn mac_home_with(toml: &str, files: &[&str]) -> Result<PathBuf> {
     let dir = tree(files);
-    apply("demo", dir.path(), &layout(CANDIDATES), Os::Macos).map(|p| {
+    apply("demo", dir.path(), &layout(toml), Os::Macos).map(|p| {
         assert_eq!(p.root, dir.path().join("t"));
         p.home
     })
 }
 
+fn mac_home(files: &[&str]) -> Result<PathBuf> {
+    mac_home_with(CANDIDATES, files)
+}
+
 #[test]
-fn the_first_candidate_home_with_bin_files_wins() {
+fn the_first_candidate_home_that_exists_wins() {
     // An app bundle.
     let home = mac_home(&["t/Contents/Home/bin/java", "t/Contents/Info.plist"]).unwrap();
     assert_eq!(home, PathBuf::from("Contents/Home"));
@@ -158,46 +165,33 @@ fn the_first_candidate_home_with_bin_files_wins() {
     // No bundle: the root.
     let home = mac_home(&["t/bin/java", "t/lib/x"]).unwrap();
     assert_eq!(home, PathBuf::new());
-    // A `Contents/Home` without bin files is passed over.
+    // Only existence counts: a `Contents/Home` without bin files still wins, and its bin dirs are
+    // checked after `post_extract`.
     let home = mac_home(&["t/Contents/Home/README", "t/bin/java"]).unwrap();
-    assert_eq!(home, PathBuf::new());
-    // So is a stray directory beside the bundle that `*` also reaches.
-    let home = mac_home(&[
-        "t/zulu-17.jdk/Contents/Home/bin/java",
-        "t/zulu-17.jdk.orig/Contents/Home/legal/LICENSE",
-        "t/bin/java",
-    ])
-    .unwrap();
-    assert_eq!(home, PathBuf::from("zulu-17.jdk/Contents/Home"));
+    assert_eq!(home, PathBuf::from("Contents/Home"));
 }
 
 #[test]
 fn a_star_candidate_needs_exactly_one_match() {
-    // Two bundles: `*` is ambiguous, so the root is tried, and it has no bin files.
-    let err = mac_home(&[
+    // Two bundles: `*` is ambiguous, so the root wins.
+    let files = [
         "t/a.jdk/Contents/Home/bin/java",
         "t/b.jdk/Contents/Home/bin/java",
-    ])
-    .unwrap_err();
+    ];
+    assert_eq!(mac_home(&files).unwrap(), PathBuf::new());
+    // Without the root as a fallback, nothing matches.
+    let err = mac_home_with(BUNDLES_ONLY, &files).unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
     let message = err.to_string();
     assert!(
-        message.contains("`Contents/Home`, `*/Contents/Home`, ``"),
+        message.contains("`Contents/Home`, `*/Contents/Home`"),
         "{message}"
     );
-    // With a root bin dir, the root wins instead.
-    let home = mac_home(&[
-        "t/a.jdk/Contents/Home/bin/java",
-        "t/b.jdk/Contents/Home/bin/java",
-        "t/bin/java",
-    ])
-    .unwrap();
-    assert_eq!(home, PathBuf::new());
 }
 
 #[test]
-fn no_candidate_matching_is_a_layout_mismatch() {
-    let err = mac_home(&["t/lib/x", "t/README"]).unwrap_err();
+fn no_candidate_existing_is_a_layout_mismatch() {
+    let err = mac_home_with(BUNDLES_ONLY, &["t/lib/x", "t/README"]).unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
 }
 
@@ -215,31 +209,23 @@ fn a_star_never_matches_a_link() {
     let outside = tree(&["Contents/Home/bin/java"]);
     let dir = tree(&["t/README"]);
     std::os::unix::fs::symlink(outside.path(), dir.path().join("t/Contents")).unwrap();
-    let err = apply("demo", dir.path(), &layout(CANDIDATES), Os::Macos).unwrap_err();
+    let err = apply("demo", dir.path(), &layout(BUNDLES_ONLY), Os::Macos).unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
 }
 
 /// `post_extract` runs between `apply` and `check_bin_dirs` and may fill the bin dirs, so a
-/// lone home only has to exist.
+/// home only has to exist.
 #[test]
-fn a_lone_home_is_chosen_before_its_bin_dirs_hold_files() {
-    let l = layout("bin_dirs = [\"bin\"]\nhome_subdir = { macos = \"Contents/Home\" }");
-    let dir = tree(&["t/Contents/Home/bin/"]);
-    let placed = apply("demo", dir.path(), &l, Os::Macos).unwrap();
-    assert_eq!(placed.home, PathBuf::from("Contents/Home"));
-    let err = check_bin_dirs("demo", &placed, &l).unwrap_err();
-    assert_eq!(err.code(), "E_PLUGIN_INVALID");
-}
-
-#[test]
-fn a_variant_override_replaces_the_home() {
-    let base = layout(
-        "bin_dirs = [\"bin\"]\nhome_subdir = { macos = \"Contents/Home\" }\n\
-         [layout.variants.default]\nhome_subdir = { macos = \"\" }",
-    );
-    let dir = tree(&["t/bin/demo"]);
-    let err = apply("demo", dir.path(), &base, Os::Macos).unwrap_err();
-    assert_eq!(err.code(), "E_PLUGIN_INVALID");
-    let placed = apply("demo", dir.path(), &base.for_variant("default"), Os::Macos).unwrap();
-    assert_eq!(placed.home, PathBuf::new());
+fn a_home_is_chosen_before_its_bin_dirs_hold_files() {
+    for toml in [
+        "bin_dirs = [\"bin\"]\nhome_subdir = { macos = \"Contents/Home\" }",
+        CANDIDATES,
+    ] {
+        let l = layout(toml);
+        let dir = tree(&["t/Contents/Home/bin/"]);
+        let placed = apply("demo", dir.path(), &l, Os::Macos).unwrap();
+        assert_eq!(placed.home, PathBuf::from("Contents/Home"));
+        let err = check_bin_dirs("demo", &placed, &l).unwrap_err();
+        assert_eq!(err.code(), "E_PLUGIN_INVALID");
+    }
 }

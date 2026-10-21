@@ -5,8 +5,8 @@
 //! directory afterwards, when the archive has exactly one. The per-OS `home_subdir` then names
 //! the tool home inside what remains, such as a macOS app bundle's `Contents/Home`, or lists
 //! candidates for vendors that ship different shapes: the first that is a directory inside
-//! the archive whose bin dirs hold files wins. The whole tree is kept, so links from the home
-//! to elsewhere in the archive keep working.
+//! the archive wins. The whole tree is kept, so links from the home to elsewhere in the
+//! archive keep working.
 
 use std::fs;
 use std::io;
@@ -78,33 +78,25 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
             home: PathBuf::new(),
         });
     }
-    // A single candidate, alone or in a one-item list, only has to exist: its bin dirs are
-    // checked after `post_extract`, which may fill them. Choosing between candidates needs the
-    // bin dirs to hold files already.
-    let bin_dirs = (candidates.len() > 1).then_some(layout.bin_dirs.as_slice());
+    // The first candidate that exists wins. Its bin dirs are checked after `post_extract`,
+    // which may fill them.
     for candidate in candidates {
-        if let Some(home) = find_home(&root, candidate, bin_dirs)? {
+        if let Some(home) = find_home(&root, candidate)? {
             return Ok(Placed { root, home });
         }
     }
     let tried: Vec<String> = candidates.iter().map(|c| format!("`{c}`")).collect();
-    let needs = if bin_dirs.is_some() {
-        " whose bin dirs hold files"
-    } else {
-        ""
-    };
     Err(mismatch(format!(
-        "no home candidate is a directory inside the archive{needs} (a `*` must match exactly \
-         one); tried {}",
+        "no home candidate is a directory inside the archive (a `*` must match exactly one); \
+         tried {}",
         tried.join(", ")
     )))
 }
 
 /// The home `candidate` names inside `root`, relative to it, when it is a directory inside
-/// `root` whose `bin_dirs`, if given, hold files. A `*` segment matches any one real
-/// directory, never a link, and the candidate matches only when exactly one directory fits
-/// it, bin dirs included, so a stray directory beside the real home does not hide it.
-fn find_home(root: &Path, candidate: &str, bin_dirs: Option<&[String]>) -> Result<Option<PathBuf>> {
+/// `root`. A `*` segment matches any one real directory, never a link, and the candidate
+/// matches only when exactly one directory fits the whole path.
+fn find_home(root: &Path, candidate: &str) -> Result<Option<PathBuf>> {
     let Some(rel) = relative(candidate) else {
         return Ok(None);
     };
@@ -141,10 +133,7 @@ fn find_home(root: &Path, candidate: &str, bin_dirs: Option<&[String]>) -> Resul
     let mut homes = Vec::new();
     for path in paths {
         let dir = root.join(&path);
-        if dir.is_dir()
-            && inside(root, &dir)?
-            && bin_dirs.is_none_or(|bins| missing_bin_dir(root, &dir, bins).is_none())
-        {
+        if dir.is_dir() && inside(root, &dir)? {
             homes.push(path);
         }
     }
@@ -156,33 +145,27 @@ fn find_home(root: &Path, candidate: &str, bin_dirs: Option<&[String]>) -> Resul
 /// with nothing to run. Plugins name no executables, so a vendor can rename or add commands in
 /// any version; whatever is in the bin dirs goes on `PATH`. Nothing is executed.
 pub fn check_bin_dirs(plugin: &str, placed: &Placed, layout: &Layout) -> Result<()> {
-    match missing_bin_dir(&placed.root, &placed.home_dir(), &layout.bin_dirs) {
-        None => Ok(()),
-        Some(bin) => Err(JtmError::LayoutMismatch {
-            plugin: plugin.to_owned(),
-            message: format!("bin dir `{bin}` is missing or has no files"),
-        }),
-    }
-}
-
-/// The first of `bin_dirs` under `home` that is not a directory inside `root` holding a file.
-fn missing_bin_dir<'a>(root: &Path, home: &Path, bin_dirs: &'a [String]) -> Option<&'a str> {
-    bin_dirs
-        .iter()
-        .find(|bin| {
-            let dir = relative(bin).map(|bin| home.join(bin));
-            !dir.as_ref().is_some_and(|dir| {
-                inside(root, dir).unwrap_or(false)
-                    && fs::read_dir(dir).is_ok_and(|entries| {
-                        entries.flatten().any(|e| {
-                            let path = e.path();
-                            fs::metadata(&path).is_ok_and(|m| m.is_file())
-                                && inside(root, &path).unwrap_or(false)
-                        })
+    let home = placed.home_dir();
+    for bin in &layout.bin_dirs {
+        let dir = relative(bin).map(|bin| home.join(bin));
+        let has_file = dir.as_ref().is_some_and(|dir| {
+            inside(&placed.root, dir).unwrap_or(false)
+                && fs::read_dir(dir).is_ok_and(|entries| {
+                    entries.flatten().any(|e| {
+                        let path = e.path();
+                        fs::metadata(&path).is_ok_and(|m| m.is_file())
+                            && inside(&placed.root, &path).unwrap_or(false)
                     })
-            })
-        })
-        .map(String::as_str)
+                })
+        });
+        if !has_file {
+            return Err(JtmError::LayoutMismatch {
+                plugin: plugin.to_owned(),
+                message: format!("bin dir `{bin}` is missing or has no files"),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// `path` as a relative path of normal components, or `None`.

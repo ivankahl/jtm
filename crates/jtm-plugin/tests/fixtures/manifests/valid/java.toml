@@ -31,16 +31,7 @@ strip_components = "auto"
 bin_dirs = ["bin"]
 
 [layout.home_subdir]
-macos = "Contents/Home"
-
-# Variants that package the tool differently: one tries candidate homes in order, and one
-# replaces the home and the strip count.
-[layout.variants.zulu]
-home_subdir = { macos = ["*/Contents/Home", ""] }
-
-[layout.variants.liberica]
-strip_components = 1
-home_subdir = { windows = "jdk" }
+macos = ["Contents/Home", "*/Contents/Home", ""]
 
 [env]
 JAVA_HOME = "{home}"

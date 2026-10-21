@@ -470,14 +470,13 @@ fn the_java_manifest_declares_variants_aliases_layout_and_interop() {
         ]
     );
     assert!(m.aliases.contains_key("lts") && m.aliases.contains_key("latest"));
-    // One candidate list covers every vendor's macOS shape, so no variant overrides it.
+    // One candidate list covers every vendor's macOS shape.
     assert_eq!(
         m.layout.home_subdir_for("macos"),
         ["Contents/Home", "*/Contents/Home", ""]
     );
     assert!(m.layout.home_subdir_for("linux").is_empty());
     assert!(m.layout.home_subdir_for("windows").is_empty());
-    assert!(m.layout.variants.is_empty());
     assert_eq!(m.env["JAVA_HOME"], "{home}");
     let files: Vec<&str> = m.interop.iter().map(|i| i.file.as_str()).collect();
     assert_eq!(files, [".sdkmanrc", ".tool-versions", ".java-version"]);
@@ -652,7 +651,7 @@ fn the_java_layout_finds_each_os_home_on_any_host() {
             .map(|variant| (variant.as_str(), "21.0.5+11"))
             .chain([("zulu", LINKED_ZULU)]);
         for (variant, version) in cases {
-            let layout = manifest.layout.for_variant(variant);
+            let layout = &manifest.layout;
             let archive = jdk(os.as_str(), variant, version);
             let tmp = tempfile::tempdir().unwrap();
             let path = tmp.path().join("jdk");
@@ -665,11 +664,11 @@ fn the_java_layout_finds_each_os_home_on_any_host() {
                 jtm_archive::Format::TarGz
             };
             let options = jtm_archive::Options {
-                strip_components: layout::extract_strip(&layout),
+                strip_components: layout::extract_strip(layout),
                 ..jtm_archive::Options::default()
             };
             jtm_archive::extract(&path, format, &out, &options).unwrap();
-            let placed = layout::apply("java", &out, &layout, os)
+            let placed = layout::apply("java", &out, layout, os)
                 .unwrap_or_else(|e| panic!("{os} {variant}: {e}"));
             assert_eq!(
                 placed.root,
@@ -680,7 +679,7 @@ fn the_java_layout_finds_each_os_home_on_any_host() {
                 Path::new(&expected_home(os.as_str(), variant, version)),
                 "{os} {variant} {version}"
             );
-            layout::check_bin_dirs("java", &placed, &layout)
+            layout::check_bin_dirs("java", &placed, layout)
                 .unwrap_or_else(|e| panic!("{os} {variant}: {e}"));
         }
     }

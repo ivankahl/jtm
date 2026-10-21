@@ -240,18 +240,16 @@ pub fn install(
         .prefix(&prefix)
         .tempdir_in(&tmp_root)
         .map_err(|e| JtmError::io(&tmp_root, e))?;
-    // The variant's own layout, for vendors that package the tool differently.
-    let variant_layout = manifest.layout.for_variant(&entry.variant);
     let options = jtm_archive::Options {
         limits: *limits,
-        strip_components: layout::extract_strip(&variant_layout),
+        strip_components: layout::extract_strip(&manifest.layout),
         links: jtm_archive::LinkMode::host(),
     };
     jtm_archive::extract(&archive.path, archive_format(entry), tmp.path(), &options)?;
     progress(Progress::Extracted);
 
     let os = request.platform.os();
-    let placed = layout::apply(plugin, tmp.path(), &variant_layout, os)?;
+    let placed = layout::apply(plugin, tmp.path(), &manifest.layout, os)?;
     if let Some((function, script)) = post_extract {
         // Confined to the directory that becomes the install dir; it only appears through
         // the rename in `commit`, so a failed hook leaves nothing behind.
@@ -265,7 +263,7 @@ pub fn install(
             .post_extract(function, &placed.root, &context)
             .map_err(|e| JtmError::script(plugin, e))?;
     }
-    layout::check_bin_dirs(plugin, &placed, &variant_layout)?;
+    layout::check_bin_dirs(plugin, &placed, &manifest.layout)?;
 
     let receipt = Receipt {
         plugin: plugin.to_owned(),

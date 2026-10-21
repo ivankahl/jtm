@@ -153,19 +153,13 @@ impl Index {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layout {
-    /// Read it through [`Layout::for_variant`], which applies the variant's override.
     #[serde(default)]
     pub strip_components: StripComponents,
     /// The tool home inside the archive per OS, keyed by the names in [`OS_NAMES`], such as
-    /// `macos = "Contents/Home"`, or a list of candidates tried in order. Read it through
-    /// [`Layout::for_variant`], which applies the variant's override.
+    /// `macos = "Contents/Home"`, or a list of candidates tried in order.
     #[serde(default)]
     pub home_subdir: BTreeMap<String, HomeCandidates>,
     pub bin_dirs: Vec<String>,
-    /// `[layout.variants.<variant>]`: how one variant's archives differ, for vendors that
-    /// package the same tool differently, such as a JDK that is no app bundle on macOS.
-    #[serde(default)]
-    pub variants: BTreeMap<String, VariantLayout>,
 }
 
 impl Layout {
@@ -174,41 +168,12 @@ impl Layout {
     pub fn home_subdir_for(&self, os: &str) -> &[String] {
         self.home_subdir.get(os).map_or(&[], |c| c.0.as_slice())
     }
-
-    /// The layout of `variant`'s archives: `[layout]` with each field the variant's override
-    /// sets replaced as a whole. The result has no overrides of its own.
-    pub fn for_variant(&self, variant: &str) -> Layout {
-        let mut layout = Layout {
-            variants: BTreeMap::new(),
-            ..self.clone()
-        };
-        if let Some(over) = self.variants.get(variant) {
-            if let Some(strip) = over.strip_components {
-                layout.strip_components = strip;
-            }
-            if let Some(home) = &over.home_subdir {
-                layout.home_subdir.clone_from(home);
-            }
-        }
-        layout
-    }
-}
-
-/// One `[layout.variants.<variant>]` table. Only the shape of the archive can differ; `bin_dirs`
-/// cannot, since `PATH` reaches a tool through its current link whichever variant that is.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VariantLayout {
-    pub strip_components: Option<StripComponents>,
-    /// Replaces `[layout] home_subdir` whole, so `{}` means the archive root on every OS.
-    pub home_subdir: Option<BTreeMap<String, HomeCandidates>>,
 }
 
 /// The tool home candidates for one OS, written as one path or a list of paths and tried in
-/// order. A single candidate need only be a directory inside the archive; from two or more,
-/// the first that is one whose bin dirs already hold files wins.
-/// `""` is the archive root, and a `*` segment matches any one directory (never a link); a
-/// candidate with a `*` matches only when exactly one directory fits it.
+/// order: the first that is a directory inside the archive wins, and the bin dirs are checked
+/// after `post_extract`. `""` is the archive root, and a `*` segment matches any one directory
+/// (never a link); a candidate with a `*` matches only when exactly one directory fits it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HomeCandidates(pub Vec<String>);
 
@@ -577,18 +542,6 @@ impl Manifest {
     fn validate_layout(&self, p: &mut Problems) {
         let layout = &self.layout;
         check_home_subdir(p, "layout.home_subdir", &layout.home_subdir);
-        for (variant, over) in &layout.variants {
-            let path = format!("layout.variants.{}", quote_key(variant));
-            if !self.has_variant(variant) {
-                p.push(
-                    &path,
-                    format!("`{variant}` is not a variant of this plugin"),
-                );
-            }
-            if let Some(home) = &over.home_subdir {
-                check_home_subdir(p, &format!("{path}.home_subdir"), home);
-            }
-        }
         if layout.bin_dirs.is_empty() {
             p.push("layout.bin_dirs", "at least one bin directory is required");
         }
@@ -895,13 +848,7 @@ fn toml_error(text: &str, error: &toml::de::Error, path: &str) -> ManifestError 
         }
         _ => path.to_owned(),
     };
-    // The table itself, at `layout.home_subdir` or `layout.variants.<variant>.home_subdir`,
-    // not a variant that happens to be named `home_subdir`.
-    let variant_home = path
-        .strip_prefix("layout.variants.")
-        .and_then(|rest| rest.strip_suffix(".home_subdir"))
-        .is_some_and(|variant| !variant.is_empty());
-    let message = if path == "layout.home_subdir" || variant_home {
+    let message = if path == "layout.home_subdir" {
         format!("{message}; set it per OS, such as `home_subdir = {{ macos = \"Contents/Home\" }}`")
     } else {
         message
