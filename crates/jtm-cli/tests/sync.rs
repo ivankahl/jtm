@@ -193,6 +193,18 @@ fn no_lock_resolves_fresh_and_leaves_the_lock_alone() {
 }
 
 #[test]
+fn no_lock_fails_a_tool_whose_installs_cannot_be_read() {
+    let f = ready();
+    let tools = f.home.path().join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(tools.join("demo"), "not a directory").unwrap();
+    let p = project("1");
+    let (code, value) = json_in(&f, p.path(), &["--no-lock", "sync"]);
+    assert_eq!(code, 4, "{value}");
+    assert_eq!(value["error"]["code"], "E_IO", "{value}");
+}
+
+#[test]
 fn no_lock_prefers_an_installed_match() {
     let f = ready();
     let (code, value) = f.json(&["install", "demo@1.0.0"]);

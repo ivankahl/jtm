@@ -155,7 +155,7 @@ fn installs_and_writes_a_receipt() {
     assert!(f.dest().join("README").is_file());
     assert_eq!(events, [Progress::Verified, Progress::Extracted]);
 
-    let receipt = Receipt::read(&f.dest()).unwrap();
+    let receipt = Receipt::load(&f.dest()).unwrap().unwrap();
     assert_eq!(receipt, done.receipt);
     assert_eq!(receipt.plugin, "demo");
     assert_eq!(receipt.manifest_sha256, "ab");
@@ -198,7 +198,7 @@ fn a_receipt_for_other_bytes_is_reinstalled() {
     let f = Fixture::new();
     let entry = f.seed(&good_archive());
     f.install(&entry, false).unwrap();
-    let mut receipt = Receipt::read(&f.dest()).unwrap();
+    let mut receipt = Receipt::load(&f.dest()).unwrap().unwrap();
     receipt.sha256 = "0".repeat(64);
     receipt.write(&f.dest()).unwrap();
     assert_eq!(f.install(&entry, false).unwrap().status, Status::Installed);
@@ -394,7 +394,19 @@ fn a_directory_without_a_receipt_is_not_an_install() {
     let entry = f.seed(&good_archive());
     fs::create_dir_all(f.dest().join("bin")).unwrap();
     assert_eq!(f.install(&entry, false).unwrap().status, Status::Installed);
-    assert!(Receipt::read(&f.dest()).is_some());
+    assert!(Receipt::load(&f.dest()).unwrap().is_some());
+}
+
+#[test]
+fn a_receipt_that_cannot_be_read_fails_rather_than_reinstall() {
+    let f = Fixture::new();
+    let entry = f.seed(&good_archive());
+    // A receipt path that is a directory exists but cannot be read as a file, on every OS.
+    fs::create_dir_all(f.dest().join(RECEIPT_FILE)).unwrap();
+    fs::write(f.dest().join("kept"), "live install").unwrap();
+    let err = f.install(&entry, false).unwrap_err();
+    assert!(matches!(err.code(), "E_IO" | "E_PERMISSION"), "{err}");
+    assert!(f.dest().join("kept").is_file());
 }
 
 #[test]
