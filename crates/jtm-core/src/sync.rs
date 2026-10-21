@@ -362,12 +362,17 @@ impl Session<'_> {
                 let installed = self
                     .plugin(tool)
                     .and_then(|plugin| self.installed_match(&plugin, Some(&pin.selector)));
+                // Installs that cannot be read fail this tool, rather than passing for none.
                 let selector = match installed {
                     Ok(Some(found)) => Selector {
                         variant: Some(found.variant),
                         value: found.version,
                     },
-                    _ => pin.selector.clone(),
+                    Ok(None) => pin.selector.clone(),
+                    Err(err) => {
+                        results.push((tool.clone(), Err(err)));
+                        continue;
+                    }
                 };
                 let spec = ToolSpec {
                     tool: tool.clone(),
