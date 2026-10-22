@@ -24,7 +24,7 @@ use reqwest::header::{CONTENT_RANGE, RANGE};
 use reqwest::redirect;
 
 use crate::error::{Error, Result};
-use crate::proxy::{ProxyConfig, ProxyReport, redact_proxy_url};
+use crate::proxy::{ProxyConfig, ProxyReport, redact_url};
 use crate::tls::load_extra_ca_file;
 
 /// The most redirects followed for one request.
@@ -118,7 +118,7 @@ impl fmt::Debug for ClientOptions {
             .field("retry", &self.retry)
             .field("connect_timeout", &self.connect_timeout)
             .field("read_timeout", &self.read_timeout)
-            .field("proxy", &self.proxy.as_deref().map(redact_proxy_url))
+            .field("proxy", &self.proxy.as_deref().map(redact_url))
             .field("extra_ca_file", &self.extra_ca_file)
             .finish()
     }
@@ -182,13 +182,16 @@ impl Client {
                 Err(reason) => attempt.error(reason),
             }
         });
-        let report = proxies.report();
-        tracing::debug!(
-            http = report.http.as_ref().map(|r| r.url.as_str()),
-            https = report.https.as_ref().map(|r| r.url.as_str()),
-            no_proxy = report.no_proxy.as_deref(),
-            "proxy configuration"
-        );
+        // The report copies and redacts every route, so build it only when it will be logged.
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let report = proxies.report();
+            tracing::debug!(
+                http = report.http.as_ref().map(|r| r.url.as_str()),
+                https = report.https.as_ref().map(|r| r.url.as_str()),
+                no_proxy = report.no_proxy.as_deref(),
+                "proxy configuration"
+            );
+        }
         let mut builder = proxies.apply(reqwest::blocking::Client::builder())?;
         if let Some(path) = &options.extra_ca_file {
             // Merged, not substituted: the platform verifier keeps vouching for what the OS
@@ -225,8 +228,24 @@ impl Client {
     /// Fetches `url` in full, refusing a body larger than `limit` bytes. `Ok(None)` means the
     /// server has no such file (HTTP 404 or 410). Transient failures are retried.
     pub fn get_bytes(&self, url: &str, limit: u64) -> Result<Option<Vec<u8>>> {
+        self.fetch_bytes(url, limit, None)
+    }
+
+    /// Like [`Client::get_bytes`], sending `token` as a bearer token, for APIs that rate-limit
+    /// anonymous callers. The header is marked sensitive and reqwest drops it on a redirect to
+    /// another origin, so the token reaches only the host that was asked.
+    pub fn get_bytes_with_bearer(
+        &self,
+        url: &str,
+        limit: u64,
+        token: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        self.fetch_bytes(url, limit, Some(token))
+    }
+
+    fn fetch_bytes(&self, url: &str, limit: u64, bearer: Option<&str>) -> Result<Option<Vec<u8>>> {
         self.options.retry.run(|_| {
-            let mut response = match self.open(url, 0) {
+            let mut response = match self.open_with(url, 0, bearer) {
                 Ok(response) => response,
                 Err(Error::Status { status, .. }) if status == 404 || status == 410 => {
                     return Ok(None);
@@ -254,12 +273,30 @@ impl Client {
         })
     }
 
+    /// Checks that `url` can be reached and its certificate accepted, as `jtm doctor` does. Any
+    /// answer from the server counts, even an error status, since it proves the connection;
+    /// only a failure to connect, a TLS failure or a proxy that refuses the request is an
+    /// error. Not retried, and the body is never read.
+    pub fn probe(&self, url: &str) -> Result<()> {
+        match self.open(url, 0) {
+            Ok(_) | Err(Error::Status { .. }) => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Opens `url` for streaming, asking for the body from byte `offset` on. A server that
     /// ignores the range sends the whole body, which [`Response::resumed`] reports. Not
     /// retried; callers decide how to resume.
     pub fn open(&self, url: &str, offset: u64) -> Result<Response> {
+        self.open_with(url, offset, None)
+    }
+
+    fn open_with(&self, url: &str, offset: u64, bearer: Option<&str>) -> Result<Response> {
         check_scheme(url, self.options.allow_http)?;
         let mut request = self.http.get(url);
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
         if offset > 0 {
             request = request.header(RANGE, format!("bytes={offset}-"));
         }
@@ -378,7 +415,7 @@ fn request_error(url: &str, err: reqwest::Error) -> Error {
 }
 
 /// Whether a TLS error, such as an untrusted certificate, lies anywhere in `err`'s causes.
-fn is_tls_failure(err: &(dyn std::error::Error + 'static)) -> bool {
+pub(crate) fn is_tls_failure(err: &(dyn std::error::Error + 'static)) -> bool {
     let mut next = Some(err);
     while let Some(e) = next {
         if e.is::<rustls::Error>() {

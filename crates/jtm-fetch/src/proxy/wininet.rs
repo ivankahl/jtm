@@ -47,8 +47,10 @@ impl WinInetSettings {
         let mut system = SystemProxy::default();
         if let Some(url) = non_empty(self.auto_config_url.as_deref()) {
             system.notes.push(format!(
-                "Windows is configured with a PAC file ({url}), which jtm does not support; \
-                 set `network.proxy` to use a proxy"
+                "Windows is configured with a PAC file ({}), which jtm does not support; \
+                 set `network.proxy` to use a proxy",
+                // The URL may hold credentials, and notes are printed by `jtm doctor`.
+                super::redact_url(url)
             ));
         }
         let servers = non_empty(self.proxy_server.as_deref());
@@ -61,6 +63,13 @@ impl WinInetSettings {
         system.http = http;
         system.https = https;
         if system.http.is_none() && system.https.is_none() {
+            // Only `ftp=` or `socks=` entries: requests connect directly, which the person
+            // should be told rather than left to find out.
+            system.notes.push(
+                "the Windows proxy settings name no proxy for http or https, so jtm connects \
+                 directly; set `network.proxy` to use a proxy"
+                    .to_owned(),
+            );
             return system;
         }
         let (bypass, notes) = convert_bypass(self.proxy_override.as_deref().unwrap_or_default());

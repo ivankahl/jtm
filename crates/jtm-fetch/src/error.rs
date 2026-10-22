@@ -80,6 +80,19 @@ impl Error {
         )
     }
 
+    /// Whether the request failed because of TLS, such as a certificate the platform does not
+    /// trust, as opposed to the host being unreachable. Behind a TLS-inspecting proxy this is
+    /// what a missing `network.extra_ca_file` looks like.
+    pub fn is_tls_failure(&self) -> bool {
+        match self {
+            Error::Network {
+                source: Some(source),
+                ..
+            } => crate::client::is_tls_failure(source.as_ref()),
+            _ => false,
+        }
+    }
+
     pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Error {
         Error::Io {
             path: path.into(),

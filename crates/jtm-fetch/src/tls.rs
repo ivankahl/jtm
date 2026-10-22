@@ -45,9 +45,9 @@ pub(crate) fn load_extra_ca_file(path: &Path) -> Result<Vec<Certificate>> {
             .map_err(|e| reject(format!("certificate {n} is not usable: {e}")))?;
         certs.push(cert);
     }
-    // SPEC-QUESTION: section 13 wants `jtm doctor` to print "certificate ... is not trusted; add
-    // it with `network.extra_ca_file`" for an untrusted certificate. Doctor does not exist yet,
-    // so the client's TLS error carries no such hint.
+    // SPEC-QUESTION: section 13 wants "certificate ... is not trusted; add it with
+    // `network.extra_ca_file`" for an untrusted certificate. `jtm doctor` gives that hint when
+    // its TLS check fails; the client's own TLS error carries none.
     if certs.is_empty() {
         return Err(reject("holds no PEM certificates".to_owned()));
     }
@@ -67,4 +67,11 @@ fn unsupported_certificate_label(pem: &[u8]) -> Option<String> {
         (label.contains("CERTIFICATE") && label != "CERTIFICATE" && !label.contains("REQUEST"))
             .then(|| label.to_owned())
     })
+}
+
+/// Checks that the PEM bundle at `path`, as `network.extra_ca_file` names it, would be accepted
+/// when a [`Client`](crate::Client) is built with it, and returns how many certificates it
+/// holds. It fails exactly as building the client would.
+pub fn check_ca_bundle(path: &Path) -> Result<usize> {
+    load_extra_ca_file(path).map(|certs| certs.len())
 }

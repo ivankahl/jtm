@@ -69,6 +69,29 @@ fn an_empty_server_is_no_proxy() {
 }
 
 #[test]
+fn a_pac_url_with_credentials_is_redacted_in_the_note() {
+    let pac_only = WinInetSettings {
+        auto_config_url: Some("http://user:s3cret@wpad.corp/proxy.pac".to_owned()),
+        ..settings(None, None)
+    };
+    let proxy = pac_only.interpret();
+    assert!(
+        proxy.notes.iter().all(|note| !note.contains("s3cret")),
+        "{:?}",
+        proxy.notes
+    );
+}
+
+#[test]
+fn servers_for_other_protocols_only_are_reported_as_a_direct_connection() {
+    let proxy = settings(Some("ftp=ftp.corp:21;socks=socks.corp:1080"), None).interpret();
+    assert_eq!(proxy.http, None);
+    assert_eq!(proxy.https, None);
+    assert_eq!(proxy.notes.len(), 1, "{:?}", proxy.notes);
+    assert!(proxy.notes[0].contains("directly"), "{:?}", proxy.notes);
+}
+
+#[test]
 fn a_pac_file_is_reported_and_never_followed() {
     let pac_only = WinInetSettings {
         auto_config_url: Some("http://wpad.corp/proxy.pac".to_owned()),

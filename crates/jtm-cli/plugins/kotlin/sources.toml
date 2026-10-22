@@ -1,0 +1,25 @@
+# How CI discovers Kotlin versions and hashes (SPEC.md section 15). Only the index generator
+# reads this file; it is not embedded in the jtm binary.
+
+schema = 1
+
+# The digest GitHub records for each release asset.
+[[source]]
+id = "github-digest"
+adapter = "github-releases"
+role = "primary"
+repo = "JetBrains/kotlin"
+tag_pattern = 'v(?P<version>\d+\.\d+\.\d+)'
+assets = { any = "kotlin-compiler-{version}.zip" }
+hash_from = "digest"
+
+# The `.sha256` file the project uploads beside the compiler, where it published one.
+[[source]]
+id = "github-sidecar"
+adapter = "github-releases"
+role = "confirm"
+repo = "JetBrains/kotlin"
+tag_pattern = 'v(?P<version>\d+\.\d+\.\d+)'
+assets = { any = "kotlin-compiler-{version}.zip" }
+hash_from = "sidecar"
+sidecar_suffix = ".sha256"
