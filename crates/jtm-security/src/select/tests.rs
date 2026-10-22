@@ -155,6 +155,7 @@ fn rolled_back_copies_are_skipped_quietly() {
     f.state.record_index(
         "demo",
         "linux-x64",
+        &[f.key.public().id()],
         Seen {
             sequence: 8,
             sha256: sha,

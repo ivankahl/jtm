@@ -5,6 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::index::LoadedIndex;
+use crate::key::KeyId;
 use crate::keys_json::{KEYS_FILE, KeysFile};
 use crate::time::Timestamp;
 use crate::trust::{Seen, SourceKind, TrustState};
@@ -41,6 +42,8 @@ pub const W_INDEX_EXPIRED: &str = "W_INDEX_EXPIRED";
 pub struct Accepted {
     /// What to record in the trust state once this copy is used.
     pub seen: Seen,
+    /// The keys whose floors this copy must be recorded under.
+    pub signers: Vec<KeyId>,
     pub warnings: Vec<Warning>,
 }
 
@@ -64,19 +67,33 @@ pub fn check_index(
         });
     }
 
-    let previous = state.seen_index(request.plugin, request.platform);
-    if let Some(seen) = previous {
-        check_rollback(file, seen, index.sequence, &loaded.sha256)?;
+    // Each signing key has its own floor. A key that was revoked or rotated therefore stops
+    // constraining copies signed by its replacement, which is what lets a poisoned record
+    // (say, an attacker-published `u64::MAX`) be recovered from by rotating the key.
+    for signer in &loaded.verified.signers {
+        if let Some(seen) = state.index_floor(request.plugin, request.platform, signer) {
+            check_rollback(file, seen, index.sequence, &loaded.sha256)?;
+        }
     }
 
     // A cached copy carries the expiry policy of the source it was saved from. A cache file
     // whose origin is not on record is held to the strictest policy.
     let origin = match source {
-        SourceKind::Cache => previous
-            .filter(|seen| seen.sequence == index.sequence && seen.sha256 == loaded.sha256)
-            .and_then(|seen| seen.source)
-            .filter(|kind| *kind != SourceKind::Cache)
-            .unwrap_or(SourceKind::Remote),
+        SourceKind::Cache => {
+            // The same bytes may have been recorded under more than one signing key. If any
+            // record came from the canonical remote, keep its stricter expiry policy.
+            let sources: Vec<SourceKind> = state
+                .index_floors(request.plugin, request.platform)
+                .filter(|seen| seen.sequence == index.sequence && seen.sha256 == loaded.sha256)
+                .filter_map(|seen| seen.source)
+                .filter(|kind| *kind != SourceKind::Cache)
+                .collect();
+            if sources.contains(&SourceKind::Remote) {
+                SourceKind::Remote
+            } else {
+                sources.first().copied().unwrap_or(SourceKind::Remote)
+            }
+        }
         other => other,
     };
 
@@ -106,14 +123,18 @@ pub fn check_index(
             sha256: loaded.sha256.clone(),
             source: Some(origin),
         },
+        signers: loaded.verified.signers.clone(),
         warnings,
     })
 }
 
-/// Refuses a keys file for `plugin` older than one already seen. Returns what to record.
+/// Refuses a keys file for `plugin` older than one already seen under any of the anchors that
+/// signed it. Returns what to record.
 pub fn check_keys_file(keys: &KeysFile, plugin: &str, state: &TrustState) -> Result<Seen> {
-    if let Some(seen) = state.keys_files.get(plugin) {
-        check_rollback(KEYS_FILE, seen, keys.sequence, &keys.sha256)?;
+    for signer in &keys.verified.signers {
+        if let Some(seen) = state.keys_file_floor(plugin, signer) {
+            check_rollback(KEYS_FILE, seen, keys.sequence, &keys.sha256)?;
+        }
     }
     Ok(Seen {
         sequence: keys.sequence,

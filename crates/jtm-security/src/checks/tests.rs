@@ -1,14 +1,28 @@
 use super::*;
 use crate::index::{IndexFile, LoadedIndex};
+use crate::key::KeyId;
 use crate::signature::Verified;
 
 const NOW: Timestamp = Timestamp::from_unix(1_800_000_000);
+const SIGNER: KeyId = KeyId([1; 8]);
+const OTHER: KeyId = KeyId([2; 8]);
 const REQUEST: IndexRequest<'static> = IndexRequest {
     plugin: "demo",
     platform: "linux-x64",
 };
 
 fn loaded(plugin: &str, platform: &str, sequence: u64, sha: &str, expires: i64) -> LoadedIndex {
+    loaded_signed(plugin, platform, sequence, sha, expires, vec![SIGNER])
+}
+
+fn loaded_signed(
+    plugin: &str,
+    platform: &str,
+    sequence: u64,
+    sha: &str,
+    expires: i64,
+    signers: Vec<KeyId>,
+) -> LoadedIndex {
     LoadedIndex {
         index: IndexFile {
             plugin: plugin.into(),
@@ -21,7 +35,7 @@ fn loaded(plugin: &str, platform: &str, sequence: u64, sha: &str, expires: i64) 
         sha256: sha.into(),
         verified: Verified {
             group: "test".into(),
-            signers: Vec::new(),
+            signers,
         },
     }
 }
@@ -56,6 +70,7 @@ fn state_with(sequence: u64, sha: &str, source: SourceKind) -> TrustState {
     state.record_index(
         "demo",
         "linux-x64",
+        &[SIGNER],
         Seen {
             sequence,
             sha256: sha.into(),
@@ -232,6 +247,7 @@ fn a_remote_record_is_not_downgraded_by_an_embedded_copy() {
     state.record_index(
         "demo",
         "linux-x64",
+        &[SIGNER],
         Seen {
             sequence: 1,
             sha256: "a".into(),
@@ -250,6 +266,115 @@ fn a_remote_record_is_not_downgraded_by_an_embedded_copy() {
     )
     .unwrap_err();
     assert!(matches!(err, Error::IndexExpired { .. }), "{err:?}");
+}
+
+#[test]
+fn a_poisoned_floor_binds_only_the_key_that_signed_it() {
+    let mut state = TrustState::default();
+    state.record_index(
+        "demo",
+        "linux-x64",
+        &[SIGNER],
+        Seen {
+            sequence: u64::MAX,
+            sha256: "poison".into(),
+            source: Some(SourceKind::Remote),
+        },
+    );
+    // A genuine index signed by the replacement key has no floor of its own, so it passes.
+    let accepted = run(
+        &loaded_signed(
+            "demo",
+            "linux-x64",
+            1,
+            "genuine",
+            NOW.unix() + 1,
+            vec![OTHER],
+        ),
+        SourceKind::Remote,
+        &state,
+        ExpiryPolicy::RemoteOnly,
+    )
+    .unwrap();
+    assert_eq!(accepted.signers, vec![OTHER]);
+    // The key that signed the poisoned record is still held to it.
+    let err = run(
+        &fresh(1, "genuine"),
+        SourceKind::Remote,
+        &state,
+        ExpiryPolicy::RemoteOnly,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::IndexRollback {
+                seen: u64::MAX,
+                got: 1,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_copy_signed_by_several_keys_is_checked_against_each_floor() {
+    let mut state = TrustState::default();
+    state.record_index(
+        "demo",
+        "linux-x64",
+        &[SIGNER],
+        Seen {
+            sequence: 10,
+            sha256: "a".into(),
+            source: Some(SourceKind::Remote),
+        },
+    );
+    state.record_index(
+        "demo",
+        "linux-x64",
+        &[OTHER],
+        Seen {
+            sequence: 5,
+            sha256: "b".into(),
+            source: Some(SourceKind::Remote),
+        },
+    );
+    // Below SIGNER's floor, even though it is above OTHER's.
+    let err = run(
+        &loaded_signed(
+            "demo",
+            "linux-x64",
+            6,
+            "c",
+            NOW.unix() + 1,
+            vec![SIGNER, OTHER],
+        ),
+        SourceKind::Remote,
+        &state,
+        ExpiryPolicy::RemoteOnly,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::IndexRollback {
+                seen: 10,
+                got: 6,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    // Signed by OTHER alone, the same sequence still satisfies that key's floor.
+    run(
+        &loaded_signed("demo", "linux-x64", 6, "c", NOW.unix() + 1, vec![OTHER]),
+        SourceKind::Remote,
+        &state,
+        ExpiryPolicy::RemoteOnly,
+    )
+    .unwrap();
 }
 
 #[test]

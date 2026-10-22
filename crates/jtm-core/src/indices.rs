@@ -321,7 +321,7 @@ impl IndexLoader<'_> {
 
         TrustState::update(&trust_path(self.dirs), |state| {
             let seen = jtm_security::check_keys_file(&file, plugin, state)?;
-            let changed = state.record_keys_file(plugin, seen);
+            let changed = state.record_keys_file(plugin, &file.verified.signers, seen);
             Ok(((), changed))
         })?;
         if matches!(copy.source, SourceKind::Remote | SourceKind::Mirror) {
@@ -479,6 +479,7 @@ impl IndexLoader<'_> {
             let changed = state.record_index(
                 sources.plugin,
                 sources.platform,
+                &selected.accepted.signers,
                 selected.accepted.seen.clone(),
             );
             Ok(((), changed))

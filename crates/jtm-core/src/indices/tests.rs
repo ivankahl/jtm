@@ -538,7 +538,7 @@ fn a_keys_file_delegates_and_rotates_index_keys_without_prompts() {
         .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
         .unwrap();
     assert_eq!(loaded.index.sequence, 2);
-    assert_eq!(f.state().keys_files["demo"].sequence, 2);
+    assert_eq!(f.state().keys_file_newest("demo").unwrap().sequence, 2);
 
     // The retired key no longer verifies anything.
     net.serve(REMOTE_EXPANDED, index_signed_by(&old, 3));
@@ -742,7 +742,7 @@ fn a_keys_file_copy_colliding_with_the_record_is_refused() {
         .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
         .unwrap();
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
-    assert_eq!(f.state().keys_files["demo"].sequence, 5);
+    assert_eq!(f.state().keys_file_newest("demo").unwrap().sequence, 5);
 
     // The network now serves a different keys file claiming the recorded sequence.
     net.serve(KEYS_URL, keys_file(5, &[&b], &[&root]));
@@ -761,7 +761,7 @@ fn a_keys_file_copy_colliding_with_the_record_is_refused() {
             .contains("same as the newest copy already seen"),
         "{warning:?}"
     );
-    assert_eq!(f.state().keys_files["demo"].sequence, 5);
+    assert_eq!(f.state().keys_file_newest("demo").unwrap().sequence, 5);
 }
 
 #[test]
@@ -929,7 +929,7 @@ fn a_file_mirror_serves_the_index_and_keys_file_offline() {
     let loaded = loader.load(&sources, &keyring, &offline).unwrap();
     assert_eq!(loaded.index.sequence, 7);
     assert_eq!(loaded.source, SourceKind::Mirror);
-    assert_eq!(f.state().keys_files["demo"].sequence, 1);
+    assert_eq!(f.state().keys_file_newest("demo").unwrap().sequence, 1);
     // Both are kept for the next run, which may not see the mirror.
     assert!(f.cache().exists());
     assert!(keys_cache_path(&f.dirs, "demo").exists());

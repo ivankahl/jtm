@@ -3,12 +3,26 @@
 //!
 //! ```json
 //! {
-//!   "format": 1,
+//!   "format": 2,
 //!   "keys": [{ "key": "RW...", "scope": ["acme/flyway"], "added": "2026-10-19T03:00:00Z" }],
-//!   "keys_files": { "java": { "sequence": 7, "sha256": "..." } },
-//!   "indices": { "java": { "linux-x64": { "sequence": 412, "sha256": "...", "source": "remote" } } }
+//!   "keys_files": { "java": { "A1B2C3D4E5F60708": { "sequence": 7, "sha256": "..." } } },
+//!   "indices": {
+//!     "java": {
+//!       "linux-x64": {
+//!         "A1B2C3D4E5F60708": { "sequence": 412, "sha256": "...", "source": "remote" }
+//!       }
+//!     }
+//!   }
 //! }
 //! ```
+//!
+//! Rollback state is kept per signing key as well as per plugin and platform. A key that is
+//! retired (removed from a manifest or keys file, or expired) therefore stops constraining the
+//! indices signed by its replacement. A leaked index key that claims `sequence = u64::MAX`
+//! poisons only that key's own record; the genuine index signed by the next key is not blocked
+//! and no manual state repair is needed. Format 1 kept one record per file with no signer, so it
+//! cannot be attributed. It is migrated by dropping those records; the next load records fresh
+//! ones per signer.
 //!
 //! The file lives in the user's data directory, which project files cannot touch. Updates take
 //! an exclusive lock on `trust.json.lock`, re-read the file, and replace it atomically, so
@@ -22,11 +36,14 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::key::{KeyGroup, PublicKey, Scope, TrustedKey, plugin_set};
+use crate::key::{KeyGroup, KeyId, PublicKey, Scope, TrustedKey, plugin_set};
 use crate::time::Timestamp;
 
 /// The only `trust.json` format this build reads and writes.
-pub const TRUST_FORMAT: u64 = 1;
+pub const TRUST_FORMAT: u64 = 2;
+/// The first format, read only to migrate the user's trusted keys. Its rollback records carry no
+/// signing key, so they are dropped.
+const TRUST_FORMAT_LEGACY: u64 = 1;
 
 /// Where an index copy came from. It decides whether an expired index is an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -78,38 +95,83 @@ pub struct UserKey {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrustState {
     pub keys: Vec<UserKey>,
-    /// Newest keys file seen per plugin. First-party plugins share one file, recorded under
-    /// each of them.
-    pub keys_files: BTreeMap<String, Seen>,
-    /// Highest sequence seen per plugin, then per platform.
-    pub indices: BTreeMap<String, BTreeMap<String, Seen>>,
+    /// Newest keys file seen per plugin, then per signing key. First-party plugins share one
+    /// file, recorded under each of them.
+    pub keys_files: BTreeMap<String, BTreeMap<String, Seen>>,
+    /// Highest sequence seen per plugin, then platform, then signing key.
+    pub indices: BTreeMap<String, BTreeMap<String, BTreeMap<String, Seen>>>,
 }
 
 impl TrustState {
-    /// The newest index seen for `plugin` on `platform`.
+    /// The newest index seen for `plugin` on `platform`, across every signing key.
     pub fn seen_index(&self, plugin: &str, platform: &str) -> Option<&Seen> {
-        self.indices.get(plugin)?.get(platform)
+        self.index_floors(plugin, platform)
+            .max_by_key(|seen| seen.sequence)
     }
 
-    /// Records an accepted index, keeping whichever copy has the higher sequence.
-    pub fn record_index(&mut self, plugin: &str, platform: &str, seen: Seen) -> bool {
-        let slot = self
+    /// Every rollback floor recorded for `plugin` on `platform`, one per signing key.
+    pub fn index_floors<'a>(
+        &'a self,
+        plugin: &str,
+        platform: &str,
+    ) -> impl Iterator<Item = &'a Seen> + 'a {
+        self.indices
+            .get(plugin)
+            .and_then(|platforms| platforms.get(platform))
+            .into_iter()
+            .flat_map(|floors| floors.values())
+    }
+
+    /// The floor recorded for an index signed by `signer`.
+    pub fn index_floor(&self, plugin: &str, platform: &str, signer: &KeyId) -> Option<&Seen> {
+        self.indices
+            .get(plugin)?
+            .get(platform)?
+            .get(&signer.to_string())
+    }
+
+    /// Records an accepted index for every key that signed it, keeping whichever copy has the
+    /// higher sequence per key. A copy with no recorded signer cannot be attributed, so it
+    /// records nothing.
+    pub fn record_index(
+        &mut self,
+        plugin: &str,
+        platform: &str,
+        signers: &[KeyId],
+        seen: Seen,
+    ) -> bool {
+        if signers.is_empty() {
+            return false;
+        }
+        let floors = self
             .indices
             .entry(plugin.to_owned())
             .or_default()
-            .entry(platform.to_owned());
-        record(slot, seen)
+            .entry(platform.to_owned())
+            .or_default();
+        record_all(floors, signers, seen)
     }
 
-    /// Records an accepted keys file for `plugin`.
-    pub fn record_keys_file(&mut self, plugin: &str, seen: Seen) -> bool {
-        match self.keys_files.get(plugin) {
-            Some(old) if old.sequence >= seen.sequence => false,
-            _ => {
-                self.keys_files.insert(plugin.to_owned(), seen);
-                true
-            }
+    /// The newest keys file seen for `plugin`, across every signing key.
+    pub fn keys_file_newest(&self, plugin: &str) -> Option<&Seen> {
+        self.keys_files
+            .get(plugin)?
+            .values()
+            .max_by_key(|seen| seen.sequence)
+    }
+
+    /// The floor recorded for a keys file signed by `signer`.
+    pub fn keys_file_floor(&self, plugin: &str, signer: &KeyId) -> Option<&Seen> {
+        self.keys_files.get(plugin)?.get(&signer.to_string())
+    }
+
+    /// Records an accepted keys file for every anchor that signed it.
+    pub fn record_keys_file(&mut self, plugin: &str, signers: &[KeyId], seen: Seen) -> bool {
+        if signers.is_empty() {
+            return false;
         }
+        let floors = self.keys_files.entry(plugin.to_owned()).or_default();
+        record_all(floors, signers, seen)
     }
 
     /// Whether the user trusts `key` for `plugin`.
@@ -181,26 +243,34 @@ impl TrustState {
             path: path.to_path_buf(),
             message,
         };
-        let raw: RawTrust = serde_json::from_slice(text).map_err(|e| corrupt(e.to_string()))?;
-        if raw.format != TRUST_FORMAT {
-            return Err(corrupt(format!(
-                "format {} is not supported; this jtm reads format {TRUST_FORMAT}",
-                raw.format
-            )));
+        let header: RawHeader = serde_json::from_slice(text).map_err(|e| corrupt(e.to_string()))?;
+        match header.format {
+            TRUST_FORMAT => {
+                let raw: RawTrust =
+                    serde_json::from_slice(text).map_err(|e| corrupt(e.to_string()))?;
+                Ok(TrustState {
+                    keys: parse_keys(raw.keys, path)?,
+                    keys_files: raw.keys_files,
+                    indices: raw.indices,
+                })
+            }
+            TRUST_FORMAT_LEGACY => {
+                let raw: RawTrustV1 =
+                    serde_json::from_slice(text).map_err(|e| corrupt(e.to_string()))?;
+                // Format 1 recorded one floor per file without attributing it to a key. Keeping
+                // it as a global floor would let one leaked signer block every later key, which
+                // is the poisoning this format exists to prevent. Drop the records; the next
+                // load records fresh floors per signer. The trusted keys are preserved.
+                Ok(TrustState {
+                    keys: parse_keys(raw.keys, path)?,
+                    keys_files: BTreeMap::new(),
+                    indices: BTreeMap::new(),
+                })
+            }
+            other => Err(corrupt(format!(
+                "format {other} is not supported; this jtm reads format {TRUST_FORMAT}"
+            ))),
         }
-        let mut keys = Vec::with_capacity(raw.keys.len());
-        for (i, k) in raw.keys.into_iter().enumerate() {
-            let key = PublicKey::parse(&k.key).map_err(|e| corrupt(format!("keys[{i}]: {e}")))?;
-            let scope = plugin_set(k.scope).map_err(|e| corrupt(format!("keys[{i}]: {e}")))?;
-            let added = Timestamp::parse(&k.added)
-                .ok_or_else(|| corrupt(format!("keys[{i}].added is not a UTC time")))?;
-            keys.push(UserKey { key, scope, added });
-        }
-        Ok(TrustState {
-            keys,
-            keys_files: raw.keys_files,
-            indices: raw.indices,
-        })
     }
 
     /// Serialises the state as pretty JSON with a trailing newline.
@@ -258,6 +328,15 @@ impl TrustState {
         drop(lock);
         Ok((value, changed))
     }
+}
+
+/// Records `seen` under every signing key, merging each with that key's existing floor.
+fn record_all(floors: &mut BTreeMap<String, Seen>, signers: &[KeyId], seen: Seen) -> bool {
+    let mut changed = false;
+    for signer in signers {
+        changed |= record(floors.entry(signer.to_string()), seen.clone());
+    }
+    changed
 }
 
 /// Keeps the higher sequence. An equal sequence keeps the first hash seen; the rollback check
@@ -321,6 +400,12 @@ fn io_error(path: &Path, source: io::Error) -> Error {
     }
 }
 
+/// Just the format tag, read first so the right body can be decoded.
+#[derive(Deserialize)]
+struct RawHeader {
+    format: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTrust {
@@ -328,9 +413,41 @@ struct RawTrust {
     #[serde(default)]
     keys: Vec<RawKey>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    keys_files: BTreeMap<String, BTreeMap<String, Seen>>,
+    #[serde(default)]
+    indices: BTreeMap<String, BTreeMap<String, BTreeMap<String, Seen>>>,
+}
+
+/// Format 1 kept one floor per file, with no signing key. Only `keys` is migrated.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTrustV1 {
+    #[allow(dead_code)]
+    format: u64,
+    #[serde(default)]
+    keys: Vec<RawKey>,
+    #[serde(default)]
+    #[allow(dead_code)]
     keys_files: BTreeMap<String, Seen>,
     #[serde(default)]
+    #[allow(dead_code)]
     indices: BTreeMap<String, BTreeMap<String, Seen>>,
+}
+
+fn parse_keys(keys: Vec<RawKey>, path: &Path) -> Result<Vec<UserKey>> {
+    let corrupt = |message: String| Error::State {
+        path: path.to_path_buf(),
+        message,
+    };
+    let mut out = Vec::with_capacity(keys.len());
+    for (i, k) in keys.into_iter().enumerate() {
+        let key = PublicKey::parse(&k.key).map_err(|e| corrupt(format!("keys[{i}]: {e}")))?;
+        let scope = plugin_set(k.scope).map_err(|e| corrupt(format!("keys[{i}]: {e}")))?;
+        let added = Timestamp::parse(&k.added)
+            .ok_or_else(|| corrupt(format!("keys[{i}].added is not a UTC time")))?;
+        out.push(UserKey { key, scope, added });
+    }
+    Ok(out)
 }
 
 #[derive(Serialize, Deserialize)]

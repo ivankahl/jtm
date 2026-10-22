@@ -417,7 +417,7 @@ A key the user trusts for a plugin may also re-sign that plugin's indices on its
 
 **Rotation never breaks clients.** The same rules apply to every plugin with a keys file; the first-party set is described here.
 
-- **Index keys** rotate by publishing a new `keys.json` with a higher `sequence`, signed by the root keys. Clients accept the new key without a prompt or a jtm release. During an overlap period, `keys.json` lists both the old and the new key, so indices signed by either verify. The old key is then removed or left to expire. Rollback checks on `keys.json` stop an older copy that still lists a removed key from being replayed.
+- **Index keys** rotate by publishing a new `keys.json` with a higher `sequence`, signed by the root keys. Clients accept the new key without a prompt or a jtm release. During an overlap period, `keys.json` lists both the old and the new key, so indices signed by either verify. The old key is then removed or left to expire. Rollback checks on `keys.json` stop an older copy that still lists a removed key from being replayed; they too are kept per anchoring key, so a leaked root that publishes an extreme sequence cannot block a `keys.json` signed by a rotation successor.
 - **Root keys** rotate through a jtm release that embeds the new root keys. Until every supported release knows them, `keys.json` is cross-signed by the old and the new root keys, so older and newer releases both accept it. A root key list that a runtime file could update would itself be a delegated keys file, so jtm never offers one: rotating roots is a release operation by design.
 
 **Where pre-approval comes from.** Anchors are pre-approved only when their manifest is compiled into the jtm binary; pre-approval is provenance, never a property of a key or of a file's contents. The unpacked `<data>/plugins/builtin` working copy, a marketplace entry, a project directory and the network are never authority: jtm checks the working copy against the embedded bytes, repairs it when it differs, and `jtm doctor` reports it. A manifest that claims a first-party name but does not ship in the binary is external, and its anchors need confirmation.
@@ -434,7 +434,7 @@ These run on embedded, cached, mirrored and freshly downloaded copies alike, bef
 
 1. **Signature** over the raw bytes, by a trusted key whose scope includes this plugin.
 2. **Binding:** the signed `plugin` and `platform` equal what was requested.
-3. **Rollback:** `sequence` is at least the highest previously seen for that plugin and platform, stored in `<JTM_HOME>/state/trust.json`. Equal is accepted only if the file hash also matches.
+3. **Rollback:** `sequence` is at least the highest previously seen for that plugin, platform and signing key, stored in `<JTM_HOME>/state/trust.json`. Equal is accepted only if the file hash also matches. A copy signed by several keys must satisfy every one of their records. Scoping the record to the signing key means a retired key never constrains its replacement: a leaked key that publishes `sequence = u64::MAX` blocks only copies that key signs, and replacing it through a root-signed `keys.json` restores service with no edit to local state and no prompt.
 4. **Expiry:** an expired index from the canonical remote is rejected (`E_INDEX_EXPIRED`). From the embedded snapshot, a `file` path or a configured mirror, expiry is a warning, because air-gapped mirrors go stale by design. `security.expiry = "enforce"` makes it an error everywhere.
 5. **Lock consistency:** if `jtm.lock` pins a version whose hash differs from the index entry for the same version, install stops with `E_LOCK_INDEX_MISMATCH`. A changed hash for an existing version is treated as an attack until proven otherwise.
 
@@ -451,10 +451,11 @@ These run on embedded, cached, mirrored and freshly downloaded copies alike, bef
 | Man-in-the-middle on index or artifact | Signed index, SHA-256 and size check on artifacts |
 | Compromised mirror, CDN or proxy | Same; overrides never change trusted keys |
 | Compromised GitHub repository or release | Index key and root key are not stored in GitHub; signature fails |
-| Rollback to an old, vulnerable index | Monotonic `sequence` per plugin and platform |
+| Rollback to an old, vulnerable index | Monotonic `sequence` per plugin, platform and signing key |
 | Freeze (serving stale data forever) | `expires` field, enforced for canonical remote |
 | Swapping one plugin's or platform's index for another | Signed `plugin` and `platform` fields |
 | Stolen index key | Short `keys.json` expiry, rotation via root, scope limits blast radius |
+| Stolen key poisoning rollback records | Floors are per signing key, so an extreme `sequence` binds only the leaked key; rotating it restores service without editing local state |
 | Malicious third-party plugin | Luau sandbox, no network, path containment, explicit trust, commit pinning |
 | Malicious archive contents | Extraction rules in section 10 |
 | Typosquatted marketplace plugin | Namespaced names, review, CI checks (section 16) |
@@ -695,7 +696,7 @@ All state lives in per-user directories following each OS's conventions, and set
     builtin/              # first-party manifests, unpacked from the binary (working copy; the binary is authoritative)
     <name>@<rev>/          # third-party plugins at a pinned commit
   state/
-    trust.json            # trusted keys, highest seen index sequences
+    trust.json            # trusted keys, highest seen index sequences per signing key
     defaults.toml         # user defaults set by `jtm default`
     resolve-cache.bin     # shell hook fast path for project pin lookups
   locks/

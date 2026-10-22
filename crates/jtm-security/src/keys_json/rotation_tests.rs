@@ -38,7 +38,7 @@ fn keys_json(sequence: u64, keys: &[(&TestKey, &str)]) -> Vec<u8> {
 fn accept(data: &[u8], sig: &[u8], root: &TrustAnchors, state: &mut TrustState) -> Result<Keyring> {
     let file = KeysFile::load(data, sig, root, NOW)?;
     let seen = check_keys_file(&file, "demo", state)?;
-    state.record_keys_file("demo", seen);
+    state.record_keys_file("demo", &file.verified.signers, seen);
     Ok(Keyring::new().with(file.group()))
 }
 
@@ -127,6 +127,46 @@ fn cross_signed_keys_json_carries_releases_across_a_root_rotation() {
     // Signed by the new root alone, it is refused by a release that predates it.
     let err = KeysFile::load(&data, &new_root.sign(&data), &root(&[&old_root]), NOW).unwrap_err();
     assert!(matches!(err, Error::KeyUntrusted { .. }), "{err:?}");
+}
+
+#[test]
+fn a_poisoned_keys_file_floor_does_not_block_its_successor_root() {
+    let (old_root, new_root, idx) = (
+        TestKey::generate(),
+        TestKey::generate(),
+        TestKey::generate(),
+    );
+    let mut state = TrustState::default();
+    // A leaked old root publishes the largest possible sequence.
+    let poison = keys_json(u64::MAX, &[(&idx, LATER)]);
+    accept(
+        &poison,
+        &old_root.sign(&poison),
+        &root(&[&old_root]),
+        &mut state,
+    )
+    .unwrap();
+
+    // The same root still cannot publish a lower sequence...
+    let data = keys_json(1, &[(&idx, LATER)]);
+    let err = accept(
+        &data,
+        &old_root.sign(&data),
+        &root(&[&old_root]),
+        &mut state,
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::IndexRollback { .. }), "{err:?}");
+
+    // ...but a release that trusts the new root has no floor for it, so recovery needs no
+    // manual edit of trust.json.
+    accept(
+        &data,
+        &new_root.sign(&data),
+        &root(&[&new_root]),
+        &mut state,
+    )
+    .unwrap();
 }
 
 #[test]
