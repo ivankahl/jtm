@@ -24,7 +24,7 @@ use reqwest::header::{CONTENT_RANGE, RANGE};
 use reqwest::{Certificate, redirect};
 
 use crate::error::{Error, Result};
-use crate::proxy::{ProxyConfig, ProxyReport, redact_url};
+use crate::proxy::{ProxyConfig, ProxyReport, redact_proxy_url};
 
 /// The most redirects followed for one request.
 pub const MAX_REDIRECTS: usize = 10;
@@ -114,7 +114,7 @@ impl fmt::Debug for ClientOptions {
             .field("retry", &self.retry)
             .field("connect_timeout", &self.connect_timeout)
             .field("read_timeout", &self.read_timeout)
-            .field("proxy", &self.proxy.as_deref().map(redact_url))
+            .field("proxy", &self.proxy.as_deref().map(redact_proxy_url))
             .field("extra_ca_file", &self.extra_ca_file)
             .finish()
     }

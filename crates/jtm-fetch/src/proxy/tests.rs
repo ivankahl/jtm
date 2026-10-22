@@ -202,6 +202,21 @@ fn assert_rejected(explicit: Option<&str>, vars: &[(&str, &str)], origin: &str) 
 }
 
 #[test]
+fn redact_proxy_url_hides_a_password_that_holds_url_delimiters() {
+    // A proxy URL has no path, so everything before the last `@` is credentials.
+    assert_eq!(
+        redact_proxy_url("http://alice:p#ss@proxy:8080"),
+        "http://***@proxy:8080"
+    );
+    assert_eq!(
+        redact_proxy_url("http://alice:p/s?s@proxy:8080/"),
+        "http://***@proxy:8080/"
+    );
+    assert_eq!(redact_proxy_url("alice:p@ss@proxy:1"), "***@proxy:1");
+    assert_eq!(redact_proxy_url("http://proxy:8080"), "http://proxy:8080");
+}
+
+#[test]
 fn an_invalid_proxy_names_its_origin_and_never_echoes_the_url() {
     assert_rejected(Some("ftp://u:s3cret@proxy.corp"), &[], "network.proxy");
     assert_rejected(

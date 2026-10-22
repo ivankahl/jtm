@@ -70,7 +70,7 @@ struct Route {
 impl fmt::Debug for Route {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Route")
-            .field("url", &redact_url(&self.url))
+            .field("url", &redact_proxy_url(&self.url))
             .field("source", &self.source)
             .finish()
     }
@@ -114,7 +114,13 @@ impl ProxyConfig {
     /// The configuration for this process: `explicit` is `network.proxy`, then the real
     /// environment, then the Windows system proxy.
     pub fn detect(explicit: Option<&str>) -> Result<ProxyConfig> {
-        ProxyConfig::resolve(explicit, &|name| std::env::var(name).ok(), &wininet::read)
+        // A value that is not valid Unicode is passed on lossily, so it fails validation as a
+        // proxy URL instead of reading as unset, which would connect directly.
+        ProxyConfig::resolve(
+            explicit,
+            &|name| std::env::var_os(name).map(|v| v.to_string_lossy().into_owned()),
+            &wininet::read,
+        )
     }
 
     /// [`ProxyConfig::detect`] with the environment and the Windows settings passed in.
@@ -172,7 +178,7 @@ impl ProxyConfig {
     pub fn report(&self) -> ProxyReport {
         let show = |route: &Option<Route>| {
             route.as_ref().map(|route| ProxyRoute {
-                url: redact_url(&route.url),
+                url: redact_proxy_url(&route.url),
                 source: route.source.clone(),
             })
         };
@@ -271,6 +277,19 @@ pub fn redact_url(url: &str) -> String {
     };
     let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
     match authority.rfind('@') {
+        Some(at) => format!("{scheme}***@{}", &rest[at + 1..]),
+        None => url.to_owned(),
+    }
+}
+
+/// Like [`redact_url`], for a proxy URL, which has no path: everything before the last `@` is
+/// credentials, even when an unescaped password holds `/`, `?` or `#`.
+pub fn redact_proxy_url(url: &str) -> String {
+    let (scheme, rest) = match url.find("://") {
+        Some(at) => url.split_at(at + 3),
+        None => ("", url),
+    };
+    match rest.rfind('@') {
         Some(at) => format!("{scheme}***@{}", &rest[at + 1..]),
         None => url.to_owned(),
     }

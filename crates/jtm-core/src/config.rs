@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use jtm_fetch::proxy::redact_url as redact;
+use jtm_fetch::proxy::{redact_proxy_url, redact_url as redact};
 use jtm_plugin::names::{check_name_segment, check_plugin_name};
 
 use crate::error::{JtmError, Result};
@@ -783,7 +783,7 @@ fn convert_text(kind: Kind, text: String) -> std::result::Result<Value, String> 
         {
             Err(format!(
                 "`{}` must be an http, https, socks5 or socks5h URL",
-                redact(&text)
+                redact_proxy_url(&text)
             ))
         }
         _ => Ok(Value::Text(text)),

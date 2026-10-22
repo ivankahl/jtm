@@ -232,7 +232,8 @@ fn credentials_stay_out_of_debug_output() {
     let proxies =
         ProxyConfig::resolve(Some("http://alice:s3cret@127.0.0.1:9"), &|_| None, &|| None).unwrap();
     let options = ClientOptions {
-        proxy: Some("http://alice:s3cret@127.0.0.1:9".to_owned()),
+        // The `#` ends the authority of an ordinary URL; the password must stay hidden anyway.
+        proxy: Some("http://alice:s3#cret@127.0.0.1:9".to_owned()),
         ..options(true)
     };
     let client = Client::with_proxies(options.clone(), proxies).unwrap();
@@ -242,6 +243,7 @@ fn credentials_stay_out_of_debug_output() {
         format!("{:?}", client.proxy_report()),
     ] {
         assert!(!text.contains("s3cret"), "{text}");
+        assert!(!text.contains("s3#cret"), "{text}");
         assert!(!text.contains("alice"), "{text}");
     }
 }

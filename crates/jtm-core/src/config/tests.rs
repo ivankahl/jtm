@@ -375,12 +375,14 @@ fn errors_never_repeat_url_credentials() {
     for text in [
         "[network]\nproxy = \"user:s3cret@proxy:8080\"",
         "[network]\nproxy = \"ftp://user:s3cret@proxy:8080\"",
+        "[network]\nproxy = \"ftp://user:s3#cret@proxy:8080\"",
         "[mirrors]\n\"https://github.com/\" = \"http://user:s3cret@mirror.example/\"",
         "[mirrors]\n\"https://github.com/\" = \"ftp://user:s3cret@mirror.example/\"",
     ] {
         let err = Fixture::default().user(text).err();
         let shown = format!("{err} {}", serde_json::Value::Object(err.details()));
         assert!(!shown.contains("s3cret"), "{text}: {shown}");
+        assert!(!shown.contains("s3#cret"), "{text}: {shown}");
         assert!(shown.contains("***@"), "{text}: {shown}");
     }
 }
