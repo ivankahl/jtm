@@ -700,6 +700,77 @@ fn a_download_larger_than_the_cap_is_aborted() {
         ])
         .unwrap_err();
     assert_eq!(error.code().as_str(), "E_SIZE_EXCEEDED");
+    let reasons = rejections(error);
+    assert!(
+        matches!(reasons[0], Reason::TooLarge { limit: 1000, .. }),
+        "{reasons:?}"
+    );
+}
+
+#[test]
+fn a_download_shorter_than_claimed_is_not_the_claimed_content() {
+    let world = World::new();
+    let mut a = candidate("src-a", Some((HashAlgorithm::Sha256, SHA256)));
+    a.size = Some(10);
+    let error = world
+        .confirm(
+            &two_sources(),
+            BTreeMap::new(),
+            vec![a, candidate("src-b", Some((HashAlgorithm::Sha256, SHA256)))],
+        )
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "E_HASH_MISMATCH");
+}
+
+#[test]
+fn every_bad_download_is_reported_not_only_the_first() {
+    let world = World::new();
+    let mut candidates = Vec::new();
+    for (version, claimed) in [
+        ("1.0.0", SHA256),
+        ("2.0.0", OTHER_SHA256),
+        ("3.0.0", OTHER_SHA256),
+    ] {
+        for source in ["src-a", "src-b"] {
+            let mut c = candidate(source, Some((HashAlgorithm::Sha256, claimed)));
+            c.version = version.to_owned();
+            candidates.push(c);
+        }
+    }
+    let Error::Rejected { rejections } = world
+        .confirm(&two_sources(), BTreeMap::new(), candidates)
+        .unwrap_err()
+    else {
+        panic!("expected a rejection");
+    };
+    let versions: Vec<_> = rejections.iter().map(|r| r.version.as_str()).collect();
+    assert_eq!(versions, ["2.0.0", "3.0.0"]);
+    assert_eq!(world.downloads(), 3, "the good one was checked as well");
+}
+
+#[test]
+fn signatures_nobody_can_check_are_not_even_requested() {
+    let world = World::new();
+    world.mock.status("/vendor/a.zip.asc", 500);
+    let confirmed = world
+        .confirm(
+            &two_sources(),
+            BTreeMap::new(),
+            vec![
+                signed_candidate("src-a", Some((HashAlgorithm::Sha256, SHA256))),
+                candidate("src-b", Some((HashAlgorithm::Sha256, SHA256))),
+            ],
+        )
+        .unwrap();
+    assert!(matches!(
+        confirmed.entries[0].provenance.signatures[0].status,
+        SignatureStatus::Unverified { .. }
+    ));
+    assert!(
+        world.mock.requested().iter().all(|p| !p.ends_with(".asc")),
+        "{:?}",
+        world.mock.requested()
+    );
 }
 
 #[test]

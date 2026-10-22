@@ -20,7 +20,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use pgp::composed::{Deserializable, DetachedSignature, SignedPublicKey};
 use pgp::crypto::hash::HashAlgorithm;
-use pgp::packet::{PublicKey, PublicSubkey};
+use pgp::packet::{PublicKey, PublicSubkey, SignatureType};
 use pgp::types::{Fingerprint, KeyDetails, KeyId};
 
 const BEGIN: &str = "-----BEGIN PGP PUBLIC KEY BLOCK-----";
@@ -134,6 +134,16 @@ impl Keyring {
             Ok(signature) => signature,
             Err(message) => return Verification::Invalid(message),
         };
+        // rPGP does not restrict a parsed signature to the document types, and for a
+        // standalone or timestamp signature it hashes only the first byte of the data. Only a
+        // binary signature is bound to every byte of the download; a text signature would also
+        // accept the bytes with their line endings rewritten.
+        if signature.signature.typ() != Some(SignatureType::Binary) {
+            return Verification::Unsupported(format!(
+                "signature type {:?} does not cover a binary download",
+                signature.signature.typ()
+            ));
+        }
         if let Some(weak) = signature.signature.hash_alg().filter(|alg| is_weak(*alg)) {
             return Verification::Unsupported(format!("signed with the weak hash {weak:?}"));
         }

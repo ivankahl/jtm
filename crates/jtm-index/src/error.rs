@@ -80,6 +80,9 @@ pub enum Reason {
         claimed: String,
         computed: String,
     },
+    /// The download is larger than allowed: the largest size a source claimed, or the cap on
+    /// one artifact. It was abandoned there.
+    TooLarge { url: String, limit: u64 },
     /// The download is not the size a source claimed.
     SizeMismatch {
         source_id: String,
@@ -104,9 +107,18 @@ impl Reason {
             Reason::SourcesDisagree { .. } | Reason::ClaimMismatch { .. } => {
                 ErrorCode::HashMismatch
             }
+            Reason::TooLarge { .. } => ErrorCode::SizeExceeded,
+            // A download longer than claimed exceeds its size; a shorter one is not the
+            // content that was claimed, like any other digest that does not match.
             Reason::SizeMismatch {
                 claimed, measured, ..
-            } if *measured > *claimed => ErrorCode::SizeExceeded,
+            } => {
+                if *measured > *claimed {
+                    ErrorCode::SizeExceeded
+                } else {
+                    ErrorCode::HashMismatch
+                }
+            }
             Reason::SignatureInvalid { .. } => ErrorCode::SignatureInvalid,
             // SPEC-QUESTION: SPEC.md section 12 has no code for "not enough independent
             // evidence for a hash" or "the generator's input is inconsistent". Like an
@@ -162,6 +174,12 @@ impl fmt::Display for Reason {
                 "the download has {algorithm} {computed}, but {source_id} ({origin}) says \
                  {claimed}"
             ),
+            Reason::TooLarge { url, limit } => {
+                write!(
+                    f,
+                    "{url} is larger than {limit} bytes; the download was abandoned"
+                )
+            }
             Reason::SizeMismatch {
                 source_id,
                 claimed,
@@ -196,7 +214,10 @@ impl fmt::Display for Rejection {
 const LISTED: usize = 10;
 
 fn summarize(rejections: &[Rejection]) -> String {
-    let mut text = format!("{} index entries refused", rejections.len());
+    let mut text = match rejections.len() {
+        1 => "1 index entry refused".to_owned(),
+        n => format!("{n} index entries refused"),
+    };
     for rejection in rejections.iter().take(LISTED) {
         text.push_str("\n  ");
         text.push_str(&rejection.to_string());

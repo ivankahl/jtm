@@ -68,6 +68,24 @@ fn the_right_key_is_found_among_several() {
 }
 
 #[test]
+fn a_text_mode_signature_is_not_evidence_for_a_binary_download() {
+    let key = TestKey::primary("Release Manager <rm@example.test>");
+    let ring = keyring(&[&key]);
+    let signature = DetachedSignature::sign_text_data(
+        rand::thread_rng(),
+        &key.secret.primary_key,
+        &pgp::types::Password::empty(),
+        HashAlgorithm::Sha256,
+        DATA,
+    )
+    .unwrap()
+    .to_armored_bytes(ArmorOptions::default())
+    .unwrap();
+    let result = verify(&ring, &signature, DATA);
+    assert!(matches!(result, Verification::Unsupported(_)), "{result:?}");
+}
+
+#[test]
 fn a_signature_over_other_bytes_is_invalid() {
     let key = TestKey::primary("Release Manager <rm@example.test>");
     let ring = keyring(&[&key]);

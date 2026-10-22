@@ -306,6 +306,10 @@ impl<'a> Confirmer<'a> {
             });
             return Err(Error::Rejected { rejections });
         }
+        // A problem with one artifact does not stop the others from being checked, so a
+        // maintainer sees every bad entry in one run. Only a failure to fetch (network, disk)
+        // stops at once: it says nothing about the entries not yet reached.
+        let mut refused = Vec::new();
         for group in groups {
             tracing::info!(
                 "downloading {} {} ({})",
@@ -313,7 +317,16 @@ impl<'a> Confirmer<'a> {
                 group.key.version,
                 group.key.target
             );
-            confirmed.entries.push(self.verify(group)?);
+            match self.verify(group) {
+                Ok(entry) => confirmed.entries.push(entry),
+                Err(Error::Rejected { rejections }) => refused.extend(rejections),
+                Err(other) => return Err(other),
+            }
+        }
+        if !refused.is_empty() {
+            return Err(Error::Rejected {
+                rejections: refused,
+            });
         }
         Ok(confirmed)
     }
@@ -460,13 +473,26 @@ impl<'a> Confirmer<'a> {
             .map_or(self.options.max_artifact_bytes, |claimed| {
                 claimed.min(self.options.max_artifact_bytes)
             });
-        let (mut file, computed) =
-            self.ctx
-                .download(&group.primary.source, &group.primary.url, limit)?;
-        let fetched_at = Timestamp::now().to_string();
         let refuse = |reason| Error::Rejected {
             rejections: vec![group.key.reject(reason)],
         };
+        // The bytes are only kept on disk when a signature can be checked against them.
+        let spool = group
+            .candidates()
+            .any(|c| c.signature_url.is_some() && self.keyring(&c.source).is_some());
+        let (mut file, computed) =
+            match self
+                .ctx
+                .download(&group.primary.source, &group.primary.url, limit, spool)
+            {
+                Ok(downloaded) => downloaded,
+                Err(Error::Fetch {
+                    error: jtm_fetch::Error::TooLarge { url, limit },
+                    ..
+                }) => return Err(refuse(Reason::TooLarge { url, limit })),
+                Err(other) => return Err(other),
+            };
+        let fetched_at = Timestamp::now().to_string();
 
         for candidate in group.candidates() {
             if let Some(claimed) = candidate.size.filter(|s| *s != computed.size) {
@@ -500,7 +526,7 @@ impl<'a> Confirmer<'a> {
                 continue;
             }
             let status = self
-                .check_signature(&candidate.source, url, &mut file)?
+                .check_signature(&candidate.source, url, file.as_mut())?
                 .map_err(|message| {
                     refuse(Reason::SignatureInvalid {
                         source_id: candidate.source.clone(),
@@ -577,15 +603,17 @@ impl<'a> Confirmer<'a> {
         &self,
         source: &str,
         url: &str,
-        file: &mut File,
+        file: Option<&mut File>,
     ) -> Result<std::result::Result<SignatureStatus, String>> {
-        let Some(bytes) = self.ctx.get_optional(source, url, SIGNATURE_LIMIT)? else {
-            return Ok(Ok(SignatureStatus::NotPublished));
-        };
-        let Some(keyring) = self.keyring(source) else {
+        // Without a keyring the answer is the same whatever the vendor serves, so do not spend a
+        // request on it, or let a failing signature host abort a run over a non-evidence file.
+        let (Some(keyring), Some(file)) = (self.keyring(source), file) else {
             return Ok(Ok(SignatureStatus::Unverified {
                 reason: format!("source `{source}` lists no signing_keys"),
             }));
+        };
+        let Some(bytes) = self.ctx.get_optional(source, url, SIGNATURE_LIMIT)? else {
+            return Ok(Ok(SignatureStatus::NotPublished));
         };
         Ok(match keyring.verify(&bytes, file) {
             Verification::Valid { fingerprint } => Ok(SignatureStatus::Verified { fingerprint }),

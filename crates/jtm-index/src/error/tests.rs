@@ -103,7 +103,14 @@ fn each_reason_maps_to_a_stable_code() {
         measured,
     };
     assert_eq!(code(size(10, 11)), "E_SIZE_EXCEEDED");
-    assert_eq!(code(size(10, 9)), "E_INDEX_INVALID");
+    assert_eq!(code(size(10, 9)), "E_HASH_MISMATCH");
+    assert_eq!(
+        code(Reason::TooLarge {
+            url: "u".to_owned(),
+            limit: 1
+        }),
+        "E_SIZE_EXCEEDED"
+    );
     assert_eq!(code(not_confirmed()), "E_INDEX_INVALID");
     assert_eq!(
         code(Reason::AmbiguousPrimary { urls: Vec::new() }),
@@ -143,6 +150,7 @@ fn the_message_names_each_entry_and_caps_a_long_list() {
         rejections: vec![rejection(disagree())],
     }
     .to_string();
+    assert!(one.starts_with("1 index entry refused"), "{one}");
     assert!(one.contains("temurin 21.0.5+11 (any)"), "{one}");
     assert!(one.contains("a says "), "{one}");
     assert!(one.contains("b says "), "{one}");

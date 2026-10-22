@@ -110,26 +110,42 @@ impl Context {
             .map_err(|error| fetch_error(source, error))
     }
 
-    /// Downloads the artifact at `url` into an anonymous temporary file, hashing it as the
-    /// bytes arrive, and returns the file rewound to its start together with its digests.
+    /// Downloads the artifact at `url`, hashing it as the bytes arrive, and returns its
+    /// digests. With `keep`, the bytes are also spooled to an anonymous temporary file that
+    /// is returned rewound to its start, for a signature check; without it nothing touches
+    /// the disk.
     ///
     /// The transfer is aborted the moment it passes `limit` bytes, whatever the server
     /// declared, so a hostile or broken upstream cannot fill the disk. A dropped connection
     /// restarts the transfer from byte 0 under the client's retry policy, so a half-read body
     /// is never mistaken for a whole one.
-    pub(crate) fn download(&self, source: &str, url: &str, limit: u64) -> Result<(File, Computed)> {
+    pub(crate) fn download(
+        &self,
+        source: &str,
+        url: &str,
+        limit: u64,
+        keep: bool,
+    ) -> Result<(Option<File>, Computed)> {
         let target = mirrors::rewrite(url, &self.mirrors);
-        let mut file = tempfile::tempfile().map_err(Error::Io)?;
+        let mut file = if keep {
+            Some(tempfile::tempfile().map_err(Error::Io)?)
+        } else {
+            None
+        };
         let retry: RetryPolicy = self.client.options().retry;
         let computed = retry
             .run(|_| {
-                file.set_len(0).map_err(|e| temp_error(&e))?;
-                file.seek(SeekFrom::Start(0)).map_err(|e| temp_error(&e))?;
+                if let Some(file) = file.as_mut() {
+                    file.set_len(0).map_err(|e| temp_error(&e))?;
+                    file.seek(SeekFrom::Start(0)).map_err(|e| temp_error(&e))?;
+                }
                 let response = self.client.open(&target, 0)?;
-                stream_into(response, &mut file, url, limit)
+                stream_into(response, file.as_mut(), url, limit)
             })
             .map_err(|error| fetch_error(source, error))?;
-        file.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
+        if let Some(file) = file.as_mut() {
+            file.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
+        }
         Ok((file, computed))
     }
 
@@ -141,10 +157,11 @@ impl Context {
     }
 }
 
-/// Copies `response` into `file` and hashes it, refusing more than `limit` bytes.
+/// Hashes `response`, copying it into `file` if there is one, and refuses more than `limit`
+/// bytes.
 fn stream_into(
     mut response: Response,
-    file: &mut File,
+    mut file: Option<&mut File>,
     url: &str,
     limit: u64,
 ) -> jtm_fetch::Result<Computed> {
@@ -175,8 +192,10 @@ fn stream_into(
             return Err(too_large());
         }
         digests.update(&buffer[..read]);
-        file.write_all(&buffer[..read])
-            .map_err(|e| temp_error(&e))?;
+        if let Some(file) = file.as_mut() {
+            file.write_all(&buffer[..read])
+                .map_err(|e| temp_error(&e))?;
+        }
     }
 }
 
