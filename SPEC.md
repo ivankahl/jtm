@@ -764,13 +764,23 @@ The index generator (section 18, milestone M6) uses each plugin's `sources.toml`
 | Plugin | Primary source | Second source or signature |
 | --- | --- | --- |
 | `java` (Temurin) | Adoptium API checksum field | GitHub release `.sha256.txt` sidecar, and Adoptium GPG `.sig` |
-| `java` (other vendors) | Vendor API or checksum page | Foojay Disco API checksum |
+| `java` (other vendors) | Foojay Disco API checksum | The generator's own SHA-256 of the download, and the vendor signature where one exists |
 | `maven` | `downloads.apache.org` `.sha512` | `.asc` signature against Apache `KEYS`, and Maven Central sidecar |
 | `gradle` | `services.gradle.org` `.sha256` | Gradle versions API checksum URL |
 | `kotlin` | GitHub release asset digest | Release `.sha256` sidecar where published |
 | `spring-boot-cli` | Maven Central `.sha1` and `.asc` | Download and compute SHA-256, then verify the `.asc` signature |
 
-The generator stores SHA-256 for every entry regardless of what the vendor publishes, so clients need only one hash algorithm.
+The generator stores SHA-256 for every entry regardless of what the vendor publishes, so clients need only one hash algorithm. It downloads every artifact (streaming, with a size cap) and computes the digest itself, so the index never holds a hash that only a vendor vouched for.
+
+#### Confirmation rule
+
+Candidates are grouped by variant, version and platform. A group becomes an entry only when its hash is confirmed in one of three ways, tried in this order, and every hash any source claims must also equal the digest the generator computed:
+
+1. **Two independent sources** each claim a SHA-256 or SHA-512. Each `id` in `sources.toml` is one source, however many files it reads, and `sources.toml` decides what is independent: the two Gradle sources count, although both come from `services.gradle.org`.
+2. **One source plus a valid vendor signature.** At least one source claims a hash, and a detached OpenPGP signature of the download verifies against a key the plugin pins in `signing_keys`. This is the path for an upstream that publishes only a SHA-1.
+3. **One source plus the generator's own download**, for an upstream with no second source. This is how the Java vendors other than Temurin work: Foojay is their only source, so each is marked `sole_source` and the Foojay checksum is accepted once the generator's download computes the same SHA-256. A vendor signature that Foojay links to is also checked where a key is pinned. The entry's `provenance` ends in `computed:sha256`, so it can be told from an entry with two independent sources.
+
+A SHA-1 never confirms anything alone; it can only corroborate a stronger claim, and MD5 is not accepted at all. Sources that disagree, a download that differs from any claim, a claimed size that is not the measured size, or a signature that a pinned key is named in but does not verify fails the whole run with `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED` or `E_SIGNATURE_INVALID`, and an entry with too little evidence fails it with `E_INDEX_INVALID`. Nothing is dropped and no partial index is written; the error lists every entry at fault. A signature that cannot be used (no pinned key, a key that is not pinned, a weak hash, a file the vendor does not serve) is recorded in the entry's provenance and is not evidence. Keys come only from files committed beside `sources.toml`, never from a download.
 
 #### `sources.toml`
 
@@ -782,6 +792,8 @@ The generator stores SHA-256 for every entry regardless of what the vendor publi
 | `adapter` | `adoptium`, `foojay`, `apache`, `gradle`, `github-releases` or `maven-central`. The remaining keys belong to the adapter, and an unknown key is an error. |
 | `role` | `primary` supplies the entry (version, URL, size, tags); `confirm` only reports a second opinion on the hash. Each variant has exactly one primary. |
 | `variant` | The index variant the source covers; omitted for a tool without variants. |
+| `sole_source` | `true` on the `primary` of a variant that has no other source: its hash is confirmed by the generator's own download (see the confirmation rule). Refused when the variant lists another source. |
+| `signing_keys` | Files beside `sources.toml` holding the armored OpenPGP public keys (or an Apache `KEYS` file) whose signatures count for what this source reports. |
 
 An adapter queries its upstream and returns one candidate per artifact: version, platform, URL, archive kind, tags, and the hash the upstream claims, with the algorithm it used. A candidate is a claim. Agreement between sources, vendor signatures and the SHA-256 that goes into an index are decided after the adapters run. Candidates with a URL that is not `https`, a version or name an index would refuse, or a malformed hash are dropped with a warning, and a response that does not have the expected shape fails the run.
 
