@@ -1,0 +1,14 @@
+{
+  "result": [
+    {
+      "filename": "zulu21.38.21-ca-jdk21.0.5-linux_x64.tar.gz",
+      "direct_download_uri": "https://cdn.azul.com/zulu/bin/zulu21.38.21-ca-jdk21.0.5-linux_x64.tar.gz",
+      "download_site_uri": "https://www.azul.com/downloads/",
+      "signature_uri": "",
+      "checksum_uri": "https://cdn.azul.com/zulu/bin/zulu21.38.21-ca-jdk21.0.5-linux_x64.tar.gz.sha256.txt",
+      "checksum": "5555555555555555555555555555555555555555555555555555555555555555",
+      "checksum_type": "sha256"
+    }
+  ],
+  "message": ""
+}

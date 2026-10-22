@@ -1138,6 +1138,22 @@ dependencies = [
 [[package]]
 name = "jtm-index"
 version = "0.1.0"
+dependencies = [
+ "jtm-core",
+ "jtm-fetch",
+ "jtm-plugin",
+ "jtm-security",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "wiremock",
+]
 
 [[package]]
 name = "jtm-plugin"
