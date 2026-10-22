@@ -1,0 +1,41 @@
+[
+  {
+    "tag_name": "jdk-21.0.5+11",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz",
+        "size": 206102334,
+        "digest": "sha256:553a1c7c0f43e0ffe6ba9ad8b0a3b6b8ed4c7e4ae2a8a4f1b1ce3a0b8d1f1d5",
+        "browser_download_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz"
+      },
+      {
+        "name": "OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz.sha256.txt",
+        "size": 105,
+        "browser_download_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz.sha256.txt"
+      },
+      {
+        "name": "OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz.sig",
+        "size": 310,
+        "browser_download_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz.sig"
+      },
+      {
+        "name": "OpenJDK21U-jdk_x64_windows_hotspot_21.0.5_11.zip",
+        "size": 205123456,
+        "browser_download_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_windows_hotspot_21.0.5_11.zip"
+      },
+      {
+        "name": "OpenJDK21U-jdk_x64_windows_hotspot_21.0.5_11.zip.sha256.txt",
+        "size": 105,
+        "browser_download_url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_windows_hotspot_21.0.5_11.zip.sha256.txt"
+      }
+    ]
+  },
+  {
+    "tag_name": "jdk-21.0.6+7-ea-beta",
+    "draft": false,
+    "prerelease": true,
+    "assets": []
+  }
+]

@@ -1,0 +1,128 @@
+# How CI discovers Java versions and hashes (SPEC.md section 15). Only the index generator
+# reads this file; it is not embedded in the jtm binary.
+#
+# SPEC-QUESTION: SPEC.md section 15 gives Temurin two independent sources (the Adoptium API and
+# the GitHub release sidecar) and the other vendors "vendor API or checksum page" plus the
+# Foojay Disco API. The adapters of this ticket cover Foojay but no vendor API, so each other
+# variant lists Foojay as its only source for now. Two-source confirmation (T6.2) will refuse
+# those variants until a second source is added here.
+#
+# The Foojay query parameters and the feature release lists below were written from the
+# documented APIs and have not been run against the live services yet; the first CI run of the
+# index workflow (T6.4) is where they get confirmed.
+
+schema = 1
+
+# ---------------------------------------------------------------------------------------------
+# temurin
+# ---------------------------------------------------------------------------------------------
+
+# The Adoptium API lists every feature release it knows and the SHA-256 of each package.
+[[source]]
+id = "adoptium-api"
+adapter = "adoptium"
+role = "primary"
+variant = "temurin"
+
+# The `.sha256.txt` file Adoptium uploads beside each package in its GitHub release.
+[[source]]
+id = "github-sidecar"
+adapter = "github-releases"
+role = "confirm"
+variant = "temurin"
+repo = "adoptium/temurin{feature}-binaries"
+features = [11, 17, 21, 25]
+tag_pattern = 'jdk-(?P<version>\d+(?:\.\d+)*)\+(?P<build>\d+(?:\.\d+)?)'
+version = "{version}+{build}"
+hash_from = "sidecar"
+sidecar_suffix = ".sha256.txt"
+signature_suffix = ".sig"
+[source.assets]
+linux-x64 = "OpenJDK{feature}U-jdk_x64_linux_hotspot_{version}_{build}.tar.gz"
+linux-aarch64 = "OpenJDK{feature}U-jdk_aarch64_linux_hotspot_{version}_{build}.tar.gz"
+linux-musl-x64 = "OpenJDK{feature}U-jdk_x64_alpine-linux_hotspot_{version}_{build}.tar.gz"
+windows-x64 = "OpenJDK{feature}U-jdk_x64_windows_hotspot_{version}_{build}.zip"
+windows-aarch64 = "OpenJDK{feature}U-jdk_aarch64_windows_hotspot_{version}_{build}.zip"
+macos-x64 = "OpenJDK{feature}U-jdk_x64_mac_hotspot_{version}_{build}.tar.gz"
+macos-aarch64 = "OpenJDK{feature}U-jdk_aarch64_mac_hotspot_{version}_{build}.tar.gz"
+
+# Java 8 tags are written `jdk8u432-b06`, which is `8.0.432+6` in the index.
+[[source]]
+id = "github-sidecar-8"
+adapter = "github-releases"
+role = "confirm"
+variant = "temurin"
+repo = "adoptium/temurin8-binaries"
+tag_pattern = 'jdk8u(?P<update>\d+)-b(?P<pad>0*)(?P<build>\d+)'
+version = "8.0.{update}+{build}"
+hash_from = "sidecar"
+sidecar_suffix = ".sha256.txt"
+signature_suffix = ".sig"
+[source.assets]
+linux-x64 = "OpenJDK8U-jdk_x64_linux_hotspot_8u{update}b{pad}{build}.tar.gz"
+linux-aarch64 = "OpenJDK8U-jdk_aarch64_linux_hotspot_8u{update}b{pad}{build}.tar.gz"
+linux-musl-x64 = "OpenJDK8U-jdk_x64_alpine-linux_hotspot_8u{update}b{pad}{build}.tar.gz"
+windows-x64 = "OpenJDK8U-jdk_x64_windows_hotspot_8u{update}b{pad}{build}.zip"
+windows-aarch64 = "OpenJDK8U-jdk_aarch64_windows_hotspot_8u{update}b{pad}{build}.zip"
+macos-x64 = "OpenJDK8U-jdk_x64_mac_hotspot_8u{update}b{pad}{build}.tar.gz"
+macos-aarch64 = "OpenJDK8U-jdk_aarch64_mac_hotspot_8u{update}b{pad}{build}.tar.gz"
+
+# ---------------------------------------------------------------------------------------------
+# corretto
+# ---------------------------------------------------------------------------------------------
+
+[[source]]
+id = "foojay-corretto"
+adapter = "foojay"
+role = "primary"
+variant = "corretto"
+distro = "corretto"
+features = [8, 11, 17, 21, 25]
+
+# ---------------------------------------------------------------------------------------------
+# zulu
+# ---------------------------------------------------------------------------------------------
+
+[[source]]
+id = "foojay-zulu"
+adapter = "foojay"
+role = "primary"
+variant = "zulu"
+distro = "zulu"
+features = [8, 11, 17, 21, 25]
+
+# ---------------------------------------------------------------------------------------------
+# liberica
+# ---------------------------------------------------------------------------------------------
+
+[[source]]
+id = "foojay-liberica"
+adapter = "foojay"
+role = "primary"
+variant = "liberica"
+distro = "liberica"
+features = [8, 11, 17, 21, 25]
+
+# ---------------------------------------------------------------------------------------------
+# microsoft
+# ---------------------------------------------------------------------------------------------
+
+[[source]]
+id = "foojay-microsoft"
+adapter = "foojay"
+role = "primary"
+variant = "microsoft"
+distro = "microsoft"
+features = [8, 11, 17, 21, 25]
+
+# ---------------------------------------------------------------------------------------------
+# graalvm-community
+# ---------------------------------------------------------------------------------------------
+
+[[source]]
+id = "foojay-graalvm-community"
+adapter = "foojay"
+role = "primary"
+variant = "graalvm-community"
+distro = "graalvm_community"
+features = [8, 11, 17, 21, 25]

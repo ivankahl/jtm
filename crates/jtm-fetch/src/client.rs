@@ -186,8 +186,24 @@ impl Client {
     /// Fetches `url` in full, refusing a body larger than `limit` bytes. `Ok(None)` means the
     /// server has no such file (HTTP 404 or 410). Transient failures are retried.
     pub fn get_bytes(&self, url: &str, limit: u64) -> Result<Option<Vec<u8>>> {
+        self.fetch_bytes(url, limit, None)
+    }
+
+    /// Like [`Client::get_bytes`], sending `token` as a bearer token, for APIs that rate-limit
+    /// anonymous callers. The header is marked sensitive and reqwest drops it on a redirect to
+    /// another origin, so the token reaches only the host that was asked.
+    pub fn get_bytes_with_bearer(
+        &self,
+        url: &str,
+        limit: u64,
+        token: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        self.fetch_bytes(url, limit, Some(token))
+    }
+
+    fn fetch_bytes(&self, url: &str, limit: u64, bearer: Option<&str>) -> Result<Option<Vec<u8>>> {
         self.options.retry.run(|_| {
-            let mut response = match self.open(url, 0) {
+            let mut response = match self.open_with(url, 0, bearer) {
                 Ok(response) => response,
                 Err(Error::Status { status, .. }) if status == 404 || status == 410 => {
                     return Ok(None);
@@ -219,8 +235,15 @@ impl Client {
     /// ignores the range sends the whole body, which [`Response::resumed`] reports. Not
     /// retried; callers decide how to resume.
     pub fn open(&self, url: &str, offset: u64) -> Result<Response> {
+        self.open_with(url, offset, None)
+    }
+
+    fn open_with(&self, url: &str, offset: u64, bearer: Option<&str>) -> Result<Response> {
         check_scheme(url, self.options.allow_http)?;
         let mut request = self.http.get(url);
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
         if offset > 0 {
             request = request.header(RANGE, format!("bytes={offset}-"));
         }
