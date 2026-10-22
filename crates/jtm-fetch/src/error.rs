@@ -34,6 +34,12 @@ pub enum Error {
     #[error("invalid proxy in {origin}: {message}")]
     Proxy { origin: String, message: String },
 
+    /// The `network.extra_ca_file` bundle cannot be trusted as given: it holds no certificates,
+    /// or a block in it is not a valid certificate. The file is rejected whole, never trusted
+    /// in part. A file that cannot be read at all is [`Error::Io`]. Maps to `E_USAGE`.
+    #[error("`network.extra_ca_file` {}: {reason}", path.display())]
+    CaFile { path: PathBuf, reason: String },
+
     /// The body is larger than allowed. Maps to `E_SIZE_EXCEEDED`.
     #[error("{url} is larger than the limit of {limit} bytes")]
     TooLarge { url: String, limit: u64 },

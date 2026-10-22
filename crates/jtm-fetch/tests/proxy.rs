@@ -3,7 +3,8 @@
 
 mod common;
 
-use common::proxy::{client_with_proxy, connect_proxy, socks5_proxy, tls_server};
+use common::proxy::{client_with_proxy, connect_proxy, socks5_proxy};
+use common::tls::tls_server;
 use common::{Mock, options};
 use jtm_fetch::proxy::{ProxyConfig, ProxySource};
 use jtm_fetch::{Client, ClientOptions, Error};

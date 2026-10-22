@@ -257,7 +257,7 @@ fn an_extra_ca_file_is_loaded() {
         ..options(false)
     })
     .unwrap_err();
-    assert!(matches!(err, Error::Io { .. }), "{err:?}");
+    assert!(matches!(err, Error::CaFile { .. }), "{err:?}");
 }
 
 #[test]
@@ -322,11 +322,9 @@ fn a_ca_bundle_is_checked_without_building_a_client() {
 
     let garbage = dir.path().join("garbage.pem");
     std::fs::write(&garbage, b"not a certificate").unwrap();
+    // Refused as building the client refuses it: a bundle it would not use.
     let err = jtm_fetch::check_ca_bundle(&garbage).unwrap_err();
-    assert!(
-        matches!(&err, Error::Io { source, .. } if source.kind() == std::io::ErrorKind::InvalidData),
-        "{err:?}"
-    );
+    assert!(matches!(err, Error::CaFile { .. }), "{err:?}");
 }
 
 #[test]
