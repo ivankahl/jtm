@@ -189,6 +189,7 @@ fn resolves_for_the_running_os() {
         &crate::context::GlobalFlags::default(),
         |_| None,
         crate::context::Terminal::default(),
+        &[],
     )
     .unwrap();
     let host_home = if cfg!(windows) {

@@ -71,11 +71,13 @@ fn main() -> ExitCode {
         stdin: io::stdin().is_terminal(),
         stderr: io::stderr().is_terminal(),
     };
-    let ctx = match Context::resolve(&flags, |key| std::env::var_os(key), terminal) {
-        Ok(ctx) => Context {
-            builtin: builtin::MANIFESTS,
-            ..ctx
-        },
+    let ctx = match Context::resolve(
+        &flags,
+        |key| std::env::var_os(key),
+        terminal,
+        builtin::MANIFESTS,
+    ) {
+        Ok(ctx) => ctx,
         Err(err) => return fail(&mut renderer, "jtm", &err),
     };
     logging::init(&ctx);

@@ -74,8 +74,7 @@ pub struct Context {
     pub use_lockfile: bool,
     /// Running under CI, from the `CI` variable.
     pub ci: bool,
-    /// The plugin manifests compiled into this binary. Only these have pre-approved anchors;
-    /// [`Context::resolve`] leaves it empty, and the binary sets it.
+    /// The plugin manifests compiled into this binary. Only these have pre-approved anchors.
     pub builtin: &'static [BuiltinManifest],
 }
 
@@ -83,11 +82,14 @@ const DEFAULT_LOG_FILTER: &str = "warn";
 
 impl Context {
     /// Resolves `flags` against the environment. `env` looks up one variable, so tests can pass
-    /// a fake environment instead of the process one.
+    /// a fake environment instead of the process one. `builtin` is the set of manifests the
+    /// binary embeds; it has no default, so a context that embeds only some of them is never
+    /// built by accident.
     pub fn resolve(
         flags: &GlobalFlags,
         env: impl Fn(&str) -> Option<OsString>,
         terminal: Terminal,
+        builtin: &'static [BuiltinManifest],
     ) -> Result<Context> {
         let ci = ci_detected(env("CI"));
         let offline = flags.offline || env_flag("JTM_OFFLINE", env("JTM_OFFLINE"))?;
@@ -139,7 +141,7 @@ impl Context {
             home: non_empty(env("JTM_HOME")).map(PathBuf::from),
             use_lockfile: !flags.no_lock,
             ci,
-            builtin: &[],
+            builtin,
         })
     }
 }
