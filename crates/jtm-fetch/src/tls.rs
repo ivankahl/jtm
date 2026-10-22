@@ -25,6 +25,13 @@ pub(crate) fn load_extra_ca_file(path: &Path) -> Result<Vec<Certificate>> {
         path: path.to_owned(),
         reason,
     };
+    // Sections the PEM reader would skip as "not a certificate" but that are meant as one.
+    if let Some(label) = unsupported_certificate_label(&pem) {
+        return Err(reject(format!(
+            "holds a `{label}` section, which jtm cannot read; convert it to a plain \
+             `CERTIFICATE` section, for example with `openssl x509`"
+        )));
+    }
     let mut certs = Vec::new();
     for (n, item) in CertificateDer::pem_slice_iter(&pem).enumerate() {
         let n = n + 1;
@@ -38,9 +45,26 @@ pub(crate) fn load_extra_ca_file(path: &Path) -> Result<Vec<Certificate>> {
             .map_err(|e| reject(format!("certificate {n} is not usable: {e}")))?;
         certs.push(cert);
     }
+    // SPEC-QUESTION: section 13 wants `jtm doctor` to print "certificate ... is not trusted; add
+    // it with `network.extra_ca_file`" for an untrusted certificate. Doctor does not exist yet,
+    // so the client's TLS error carries no such hint.
     if certs.is_empty() {
         return Err(reject("holds no PEM certificates".to_owned()));
     }
     tracing::debug!(path = %path.display(), count = certs.len(), "loaded extra CA certificates");
     Ok(certs)
+}
+
+/// The label of the first PEM section that names a certificate in some form other than a plain
+/// `CERTIFICATE`, such as OpenSSL's `TRUSTED CERTIFICATE`. Requests and keys are not meant as
+/// certificates, so they do not count.
+fn unsupported_certificate_label(pem: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(pem).lines().find_map(|line| {
+        let label = line
+            .trim()
+            .strip_prefix("-----BEGIN ")?
+            .strip_suffix("-----")?;
+        (label.contains("CERTIFICATE") && label != "CERTIFICATE" && !label.contains("REQUEST"))
+            .then(|| label.to_owned())
+    })
 }

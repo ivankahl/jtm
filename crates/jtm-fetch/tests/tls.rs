@@ -199,3 +199,27 @@ fn a_bundle_of_several_certificates_trusts_each() {
         assert_eq!(body.as_deref(), Some(&b"tls-ok"[..]));
     }
 }
+
+#[test]
+fn a_certificate_in_a_format_jtm_cannot_read_is_an_error_not_a_skipped_block() {
+    // OpenSSL's `TRUSTED CERTIFICATE` and `X509 CERTIFICATE` labels are not plain PEM
+    // certificates. Skipping them would trust the rest of the bundle and drop, say, the
+    // proxy's own CA, which then shows up as an unexplained TLS failure.
+    let server = tls_server();
+    let good = std::fs::read_to_string(&server.ca_file).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for label in ["TRUSTED CERTIFICATE", "X509 CERTIFICATE"] {
+        let path = dir.path().join("bundle.pem");
+        let odd = format!("-----BEGIN {label}-----\nAAAA\n-----END {label}-----\n");
+        std::fs::write(&path, format!("{good}{odd}")).unwrap();
+        let err = jtm_fetch::Client::new(with_ca(&path)).unwrap_err();
+        assert!(matches!(err, Error::CaFile { .. }), "{label}: {err:?}");
+        assert!(err.to_string().contains(label), "{err}");
+    }
+    // Keys and certificate requests are not certificates and stay ignored.
+    let path = dir.path().join("mixed.pem");
+    let other = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n\
+                 -----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n";
+    std::fs::write(&path, format!("{good}{other}")).unwrap();
+    jtm_fetch::Client::new(with_ca(&path)).unwrap();
+}
