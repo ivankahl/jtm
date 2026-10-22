@@ -61,6 +61,22 @@ fn mirrors_change_where_bytes_come_from() {
 }
 
 #[test]
+fn a_mirror_to_a_local_directory_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "local bytes").unwrap();
+    let mirrors = BTreeMap::from([(
+        "https://upstream.example/".to_owned(),
+        format!("{}/", dir.path().display()),
+    )]);
+    let err = Context::new(client())
+        .with_mirrors(mirrors)
+        .get("s", "https://upstream.example/a.txt", 1024)
+        .unwrap_err();
+    assert_eq!(err.code().as_str(), "E_USAGE", "{err}");
+    assert!(err.to_string().contains("network only"), "{err}");
+}
+
+#[test]
 fn the_github_token_goes_to_the_github_api_only() {
     let mock = Mock::start();
     mock.serve("/api.github.com/repos/o/r/releases", "[]");
