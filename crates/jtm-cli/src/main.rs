@@ -3,6 +3,7 @@
 mod activate;
 mod builtin;
 mod cli;
+mod doctor;
 mod ide;
 mod logging;
 mod output;
@@ -25,7 +26,7 @@ use jtm_core::{Context, ExitCode as JtmExitCode, GlobalFlags, JtmError, Terminal
 use serde::Serialize;
 
 use crate::cli::{Cli, Command, IdeCommand, SelfCommand};
-use crate::output::{Format, Human, JTM_VERSION, Outcome, Renderer};
+use crate::output::{Diagnosis, Format, Human, JTM_VERSION, Outcome, Renderer};
 use crate::trust::TrustOutcome;
 
 #[derive(Debug, Serialize)]
@@ -274,6 +275,25 @@ fn main() -> ExitCode {
             "self uninstall",
             uninstall::uninstall(&ctx, uninstall::UninstallOptions { dry_run, purge }),
         ),
+        Some(Command::Doctor) => match doctor::doctor(&ctx) {
+            Ok(report) => match report.first_error() {
+                None => {
+                    let _ = renderer.success(&doctor::outcome(report));
+                    JtmExitCode::Success.into()
+                }
+                Some(finding) => {
+                    let diagnosis = Diagnosis {
+                        code: finding.code,
+                        message: &finding.message,
+                        retryable: finding.retryable(),
+                        details: finding.details.clone(),
+                    };
+                    let _ = renderer.report_failure("doctor", &diagnosis, &report);
+                    report.exit_code().into()
+                }
+            },
+            Err(err) => fail(&mut renderer, "doctor", &err),
+        },
         Some(Command::Trust(cmd)) => {
             let name = trust::command_name(&cmd);
             let _ = match trust::run(&ctx, cmd) {
