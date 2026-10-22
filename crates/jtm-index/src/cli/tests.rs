@@ -640,6 +640,96 @@ fn human_errors_name_the_code_on_stderr() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Verifying a release
+// ---------------------------------------------------------------------------------------------
+
+fn verify_args(setup: &Setup, extra: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "jtm-index".to_owned(),
+        "verify".to_owned(),
+        "--published".to_owned(),
+        setup.out.path().display().to_string(),
+        "--plugin-dir".to_owned(),
+        setup.plugin.path().display().to_string(),
+        "--now".to_owned(),
+        NOW.to_owned(),
+    ];
+    args.extend(extra.iter().map(|s| (*s).to_owned()));
+    args
+}
+
+#[test]
+fn verify_accepts_what_generate_wrote_and_reports_one_envelope() {
+    let setup = Setup::new();
+    let key = minisign_key();
+    let secret = setup.secret_file(&key.secret_file);
+    run(setup.args(&["--json", "--secret-key", &secret]), &[]);
+
+    let outcome = run(
+        verify_args(&setup, &["--json", "--root-key", &key.public]),
+        &[],
+    );
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    let json = outcome.json();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "verify");
+    assert_eq!(json["changed"], false);
+    assert_eq!(json["data"]["plugins"][0]["plugin"], "demo");
+    assert_eq!(
+        json["data"]["plugins"][0]["files"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn verify_refuses_a_signer_the_manifest_does_not_trust_with_the_clients_code() {
+    let setup = Setup::new();
+    let secret = setup.secret_file(&minisign_key().secret_file);
+    run(setup.args(&["--json", "--secret-key", &secret]), &[]);
+    let other = minisign_key();
+
+    let outcome = run(
+        verify_args(&setup, &["--json", "--root-key", &other.public]),
+        &[],
+    );
+
+    assert_eq!(outcome.code, 7);
+    let json = outcome.json();
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "E_KEY_UNTRUSTED");
+}
+
+#[test]
+fn verify_rejects_a_root_key_that_is_not_a_key() {
+    let setup = Setup::new();
+    let outcome = run(
+        verify_args(&setup, &["--json", "--root-key", "not a key"]),
+        &[],
+    );
+    assert_eq!(outcome.code, 2);
+    assert_eq!(outcome.json()["error"]["code"], "E_USAGE");
+}
+
+#[test]
+fn verify_says_what_it_checked_in_plain_text() {
+    let setup = Setup::new();
+    let key = minisign_key();
+    let secret = setup.secret_file(&key.secret_file);
+    run(setup.args(&["--secret-key", &secret]), &[]);
+    let outcome = run(verify_args(&setup, &["--root-key", &key.public]), &[]);
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert!(
+        outcome.stdout.contains("ok demo-linux-x64.json"),
+        "{}",
+        outcome.stdout
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
 // Confirmed files
 // ---------------------------------------------------------------------------------------------
 

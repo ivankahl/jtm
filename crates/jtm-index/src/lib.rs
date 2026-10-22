@@ -18,6 +18,7 @@ pub mod digest;
 pub mod error;
 pub mod plugin;
 pub mod publish;
+pub mod release;
 pub mod signature;
 pub mod signing;
 pub mod sources;

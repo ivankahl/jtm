@@ -448,7 +448,7 @@ pub const INDEX_VERSION_LATEST: &str = "latest";
 
 /// Fills `{os}` and `{arch}` from a platform such as `linux-musl-x64` (`linux-musl`, `x64`),
 /// and `{index_version}` with [`INDEX_VERSION_LATEST`].
-fn expand(url: &str, platform: &str) -> String {
+pub fn expand(url: &str, platform: &str) -> String {
     let (os, arch) = platform.rsplit_once('-').unwrap_or((platform, platform));
     url.replace("{os}", os)
         .replace("{arch}", arch)
