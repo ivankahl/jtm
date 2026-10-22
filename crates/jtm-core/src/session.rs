@@ -21,7 +21,7 @@ use crate::dirs::{Dirs, dir_name};
 use crate::error::{JtmError, Result};
 use crate::indices::{
     EmbeddedIndex, EmbeddedKeysFile, Fetcher, IndexLoader, IndexSources, LoadOptions, PluginIndex,
-    PluginKeys, cache_path,
+    PluginKeys, SignedCopy, cache_path,
 };
 use crate::install::{self, Archives, InstallRequest, Progress, Receipt, Status, VersionId};
 use crate::links;
@@ -43,6 +43,15 @@ pub const PATH_SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
 // Embedded by T6.6; until then every index comes from the cache or the network.
 const EMBEDDED_INDICES: &[EmbeddedIndex] = &[];
 const EMBEDDED_KEYS: &[EmbeddedKeysFile] = &[];
+
+/// The keys `plugin`'s indices are checked against, and the keys file they came from.
+#[derive(Debug)]
+pub(crate) struct PluginTrust {
+    keyring: jtm_security::Keyring,
+    /// The verified bytes of the plugin's keys file, when its manifest has one.
+    pub(crate) keys_file: Option<SignedCopy>,
+    warnings: Vec<Warning>,
+}
 
 /// Everything an operation needs: directories, configuration, the platform and the network.
 #[derive(Debug)]
@@ -252,29 +261,71 @@ impl<'a> Session<'a> {
     /// Loads and verifies `plugin`'s index for `platform`. `refresh` fetches a new copy as
     /// `jtm update` does.
     pub fn index(&self, plugin: &Plugin, platform: Platform, refresh: bool) -> Result<PluginIndex> {
-        let manifest = &plugin.manifest;
-        let name = manifest.name.as_str();
-        let loader = IndexLoader {
+        Ok(self.index_with_keys_file(plugin, platform, refresh)?.0)
+    }
+
+    /// [`Session::index`], and also the verified keys file the index was checked with, if the
+    /// plugin has one. `jtm mirror export` copies both.
+    pub(crate) fn index_with_keys_file(
+        &self,
+        plugin: &Plugin,
+        platform: Platform,
+        refresh: bool,
+    ) -> Result<(PluginIndex, Option<SignedCopy>)> {
+        let trust = self.plugin_trust(plugin, refresh)?;
+        let index = self.index_with_trust(plugin, platform, refresh, &trust)?;
+        Ok((index, trust.keys_file))
+    }
+
+    fn index_loader(&self) -> Result<IndexLoader<'_>> {
+        Ok(IndexLoader {
             dirs: &self.dirs,
             embedded: EMBEDDED_INDICES,
             embedded_keys: EMBEDDED_KEYS,
             fetcher: self.client()?.map(|c| c as &dyn Fetcher),
             mirrors: &self.settings.mirrors,
-        };
-        let options = LoadOptions {
+        })
+    }
+
+    fn load_options(&self, refresh: bool) -> LoadOptions {
+        LoadOptions {
             refresh,
             offline: self.ctx.offline,
             policy: self.settings.security.expiry.into(),
             now: Timestamp::now(),
-        };
+        }
+    }
+
+    /// The keys that may sign `plugin`'s indices, loaded once for all its platforms.
+    pub(crate) fn plugin_trust(&self, plugin: &Plugin, refresh: bool) -> Result<PluginTrust> {
+        let manifest = &plugin.manifest;
         let keys = PluginKeys {
-            plugin: name,
+            plugin: &manifest.name,
             signing_keys: &manifest.index.signing_keys,
             threshold: manifest.index.threshold(),
             keys_url: manifest.index.keys_url.as_deref(),
             origin: plugin.origin,
         };
-        let (keyring, mut warnings) = loader.keyring(&keys, &options)?;
+        let (keyring, keys_file, warnings) = self
+            .index_loader()?
+            .keyring_with_keys_file(&keys, &self.load_options(refresh))?;
+        Ok(PluginTrust {
+            keyring,
+            keys_file,
+            warnings,
+        })
+    }
+
+    /// Loads and verifies `plugin`'s index for `platform` against `trust`.
+    pub(crate) fn index_with_trust(
+        &self,
+        plugin: &Plugin,
+        platform: Platform,
+        refresh: bool,
+        trust: &PluginTrust,
+    ) -> Result<PluginIndex> {
+        let manifest = &plugin.manifest;
+        let name = manifest.name.as_str();
         let override_url = self
             .settings
             .plugins
@@ -282,19 +333,30 @@ impl<'a> Session<'a> {
             .and_then(|p| p.index_url.as_deref());
         // What fills `{index_version}` is decided with index publishing (T6.4); until then such
         // a URL is usable only through `plugins.<name>.index_url` or an embedded or cached copy.
-        let mut index = loader.load(
+        let mut index = self.index_loader()?.load(
             &IndexSources {
                 plugin: name,
                 platform: manifest.index.index_platform(platform.as_str()),
                 remote_url: &manifest.index.url,
                 override_url,
             },
-            &keyring,
-            &options,
+            &trust.keyring,
+            &self.load_options(refresh),
         )?;
+        let mut warnings = trust.warnings.clone();
         warnings.append(&mut index.warnings);
         index.warnings = warnings;
         Ok(index)
+    }
+
+    /// Where verified archives come from for this session: the download cache, the HTTP
+    /// client (none offline) and `[mirrors]`.
+    pub(crate) fn archives(&self) -> Result<Archives<'_>> {
+        Ok(Archives {
+            cache: &self.cache,
+            client: self.client()?,
+            mirrors: &self.settings.mirrors,
+        })
     }
 
     /// Whether a spec that local data cannot resolve may refresh the index (SPEC.md section
@@ -386,11 +448,7 @@ impl<'a> Session<'a> {
             size: entry.size,
             cached,
         };
-        let archives = Archives {
-            cache: &self.cache,
-            client: self.client()?,
-            mirrors: &self.settings.mirrors,
-        };
+        let archives = self.archives()?;
 
         let dest = id.install_dir(&self.dirs)?;
         if options.dry_run {

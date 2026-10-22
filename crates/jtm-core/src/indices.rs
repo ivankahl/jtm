@@ -118,10 +118,20 @@ pub struct LoadOptions {
     pub now: Timestamp,
 }
 
+/// The exact bytes of a verified file and the detached signature that verified them. These are
+/// what `jtm mirror export` copies: a mirror holds the signed bytes, never a re-serialisation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedCopy {
+    pub data: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
 /// The index that was chosen, and where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginIndex {
     pub index: IndexFile,
+    /// The raw bytes `index` was parsed from, and their signature, after verification.
+    pub copy: SignedCopy,
     pub source: SourceKind,
     /// The path or URL the chosen copy was read from.
     pub origin: String,
@@ -181,6 +191,16 @@ impl IndexLoader<'_> {
         keys: &PluginKeys<'_>,
         options: &LoadOptions,
     ) -> Result<(Keyring, Vec<Warning>)> {
+        let (keyring, _, warnings) = self.keyring_with_keys_file(keys, options)?;
+        Ok((keyring, warnings))
+    }
+
+    /// [`IndexLoader::keyring`], and also the verified bytes of the keys file it used, if any.
+    pub fn keyring_with_keys_file(
+        &self,
+        keys: &PluginKeys<'_>,
+        options: &LoadOptions,
+    ) -> Result<(Keyring, Option<SignedCopy>, Vec<Warning>)> {
         let trust_file = trust_path(self.dirs);
         let state = TrustState::load(&trust_file)?;
         let anchors = match keys.origin {
@@ -194,7 +214,7 @@ impl IndexLoader<'_> {
         let mut warnings = Vec::new();
         let keys_file = match keys.keys_url {
             Some(url) => match self.load_keys_file(url, &anchors, &state, options)? {
-                Ok(file) => Some(file),
+                Ok(loaded) => Some(loaded),
                 Err(reason) => {
                     warnings.push(Warning {
                         code: W_KEYS_FILE_UNAVAILABLE,
@@ -208,10 +228,12 @@ impl IndexLoader<'_> {
             },
             None => None,
         };
-        Ok((
-            jtm_security::plugin_keyring(&anchors, keys_file.as_ref(), &state),
-            warnings,
-        ))
+        let keyring = jtm_security::plugin_keyring(
+            &anchors,
+            keys_file.as_ref().map(|(file, _)| file),
+            &state,
+        );
+        Ok((keyring, keys_file.map(|(_, copy)| copy), warnings))
     }
 
     /// Finds the newest valid copy of the keys file at `url`, records it and caches it. The
@@ -222,7 +244,7 @@ impl IndexLoader<'_> {
         anchors: &TrustAnchors,
         state: &TrustState,
         options: &LoadOptions,
-    ) -> Result<std::result::Result<KeysFile, String>> {
+    ) -> Result<std::result::Result<(KeysFile, SignedCopy), String>> {
         let plugin = anchors.plugin.as_str();
         let cache_file = keys_cache_path(self.dirs, plugin);
         let mut copies: Vec<IndexCopy> = self
@@ -327,7 +349,13 @@ impl IndexLoader<'_> {
         if matches!(copy.source, SourceKind::Remote | SourceKind::Mirror) {
             write_cache(&cache_file, &copy.data, &copy.signature)?;
         }
-        Ok(Ok(file))
+        Ok(Ok((
+            file,
+            SignedCopy {
+                data: copy.data,
+                signature: copy.signature,
+            },
+        )))
     }
 
     /// Applies `[mirrors]` to the canonical `url` of an index or keys file, and to the URL of
@@ -489,6 +517,10 @@ impl IndexLoader<'_> {
 
         Ok(PluginIndex {
             index: selected.loaded.index,
+            copy: SignedCopy {
+                data: selected.data,
+                signature: selected.signature,
+            },
             source: selected.source,
             origin: selected.origin,
             warnings,
@@ -497,7 +529,7 @@ impl IndexLoader<'_> {
 }
 
 /// Fills `{os}` and `{arch}` from a platform such as `linux-musl-x64` (`linux-musl`, `x64`).
-fn expand(url: &str, platform: &str) -> String {
+pub fn expand(url: &str, platform: &str) -> String {
     let (os, arch) = platform.rsplit_once('-').unwrap_or((platform, platform));
     url.replace("{os}", os).replace("{arch}", arch)
 }

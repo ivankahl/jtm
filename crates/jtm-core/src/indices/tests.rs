@@ -606,6 +606,50 @@ fn an_embedded_keys_file_works_offline() {
 }
 
 #[test]
+fn the_verified_bytes_of_the_index_and_keys_file_are_available_for_export() {
+    let f = Fixture::new();
+    let (root, idx) = (TestKey::generate(), TestKey::generate());
+    let anchors = [root.public_str()];
+    let (keys_data, keys_sig) = keys_file(1, &[&idx], &[&root]);
+    let (index_data, index_sig) = index_signed_by(&idx, 3);
+    let mut net = FakeNet::default();
+    net.serve(KEYS_URL, (keys_data.clone(), keys_sig.clone()));
+    net.serve(REMOTE_EXPANDED, (index_data.clone(), index_sig.clone()));
+
+    let loader = f.loader(Some(&net), &[]);
+    let keys = PluginKeys {
+        plugin: "demo",
+        signing_keys: &anchors,
+        threshold: 1,
+        keys_url: Some(KEYS_URL),
+        origin: ManifestOrigin::Builtin,
+    };
+    let (keyring, copy, _) = loader.keyring_with_keys_file(&keys, &refresh()).unwrap();
+    let copy = copy.expect("a keys file was used");
+    assert_eq!((copy.data, copy.signature), (keys_data, keys_sig));
+
+    let sources = IndexSources {
+        plugin: "demo",
+        platform: "linux-x64",
+        remote_url: REMOTE,
+        override_url: None,
+    };
+    let loaded = loader.load(&sources, &keyring, &refresh()).unwrap();
+    assert_eq!(
+        (loaded.copy.data, loaded.copy.signature),
+        (index_data, index_sig)
+    );
+
+    // No keys file in the manifest, nothing to export.
+    let keys = PluginKeys {
+        keys_url: None,
+        ..keys
+    };
+    let (_, copy, _) = loader.keyring_with_keys_file(&keys, &refresh()).unwrap();
+    assert!(copy.is_none());
+}
+
+#[test]
 fn a_third_party_plugin_needs_its_key_confirmed() {
     let f = Fixture::new();
     let author = TestKey::generate();

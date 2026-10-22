@@ -54,6 +54,67 @@ pub fn resolve(url: &str, mirrors: &BTreeMap<String, String>) -> Result<Location
     Ok(Location::File { path, display })
 }
 
+/// Where `jtm mirror export` puts the file served at `url`, relative to the export directory:
+/// `<host>/<path>`, with the path percent-decoded exactly as [`resolve`] decodes the tail of a
+/// URL for a local target. A `[mirrors]` entry whose prefix ends at a host or deeper, aimed at
+/// `<export dir>/<host>/` plus the rest of that prefix, therefore finds the file again.
+///
+/// The host is lowercased and a `:port` becomes `+port`, since a colon is not allowed in a
+/// Windows file name. The scheme is not part of the place, so `http` and `https` mirrors can
+/// share one tree. Anything that is not a plain `http(s)` URL to a file is refused with
+/// [`Error::Scheme`]: user info, IP literals, a query or fragment, a trailing slash, empty or
+/// `.`/`..` segments, backslashes and NUL bytes.
+pub fn export_path(url: &str) -> Result<PathBuf> {
+    let refuse = |reason: &str| Error::Scheme {
+        url: url.to_owned(),
+        reason: format!("it cannot be exported to a mirror directory: {reason}"),
+    };
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| refuse("only http and https URLs can be exported"))?;
+    if rest.contains(['?', '#']) {
+        return Err(refuse("it has a query or fragment"));
+    }
+    let (authority, path) = rest
+        .split_once('/')
+        .ok_or_else(|| refuse("it names no file"))?;
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    let host_ok = !host.is_empty()
+        && !host.starts_with(['.', '-'])
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let port_ok = port.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    if !host_ok || !port_ok {
+        return Err(refuse("its host is not a plain host name"));
+    }
+    let decoded = decode_rest(url, path)?;
+    if decoded.is_empty() || decoded.ends_with('/') {
+        return Err(refuse("it names no file"));
+    }
+    if decoded.split('/').any(str::is_empty) {
+        return Err(refuse("it has an empty path segment"));
+    }
+    // A colon would make `C:` a drive prefix that `PathBuf` joins by replacing the export
+    // directory on Windows; the others are not allowed in Windows file names either.
+    if decoded.contains(|c: char| c.is_control() || "<>:\"|?*".contains(c)) {
+        return Err(refuse(
+            "it has a character that file names cannot hold on Windows",
+        ));
+    }
+    let dir = match port {
+        Some(port) => format!("{}+{port}", host.to_ascii_lowercase()),
+        None => host.to_ascii_lowercase(),
+    };
+    let mut out = PathBuf::from(dir);
+    out.extend(decoded.split('/'));
+    Ok(out)
+}
+
 /// The local path a `file://` URL or plain path names, or `None` for a network URL.
 pub fn local_path(location: &str) -> Option<PathBuf> {
     if !is_local(location) {

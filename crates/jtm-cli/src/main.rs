@@ -5,6 +5,7 @@ mod builtin;
 mod cli;
 mod ide;
 mod logging;
+mod mirror;
 mod output;
 mod project;
 mod prompt;
@@ -24,7 +25,7 @@ use clap::error::ErrorKind;
 use jtm_core::{Context, ExitCode as JtmExitCode, GlobalFlags, JtmError, Terminal};
 use serde::Serialize;
 
-use crate::cli::{Cli, Command, IdeCommand, SelfCommand};
+use crate::cli::{Cli, Command, IdeCommand, MirrorCommand, SelfCommand};
 use crate::output::{Format, Human, JTM_VERSION, Outcome, Renderer};
 use crate::trust::TrustOutcome;
 
@@ -273,6 +274,26 @@ fn main() -> ExitCode {
             &mut renderer,
             "self uninstall",
             uninstall::uninstall(&ctx, uninstall::UninstallOptions { dry_run, purge }),
+        ),
+        Some(Command::Mirror(MirrorCommand::Export {
+            dir,
+            plugin,
+            platform,
+            artifacts,
+            dry_run,
+        })) => render(
+            &mut renderer,
+            "mirror export",
+            mirror::export(
+                &ctx,
+                mirror::ExportArgs {
+                    dir,
+                    plugins: plugin,
+                    platforms: platform,
+                    artifacts,
+                    dry_run,
+                },
+            ),
         ),
         Some(Command::Trust(cmd)) => {
             let name = trust::command_name(&cmd);
