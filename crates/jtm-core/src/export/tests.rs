@@ -161,6 +161,28 @@ fn indices_are_written_after_everything_they_advertise() {
 }
 
 #[test]
+fn one_archive_listed_with_different_tags_is_still_one_file() {
+    let bytes = b"archive";
+    let listed = |tags: &[&str], provenance: &[&str]| {
+        let mut e = entry("https://dl.test/a.tar.gz", bytes);
+        e.tags = tags.iter().map(|t| (*t).to_owned()).collect();
+        e.provenance = provenance.iter().map(|p| (*p).to_owned()).collect();
+        Item {
+            kind: FileKind::Artifact,
+            plugin: "a".to_owned(),
+            platform: None,
+            url: e.url.clone(),
+            rel: PathBuf::from("dl.test/a.tar.gz"),
+            content: Content::Artifact(e),
+        }
+    };
+    let mut plan = Plan::default();
+    plan.add(listed(&["lts"], &[])).unwrap();
+    plan.add(listed(&[], &["vendor"])).unwrap();
+    assert_eq!(plan.ordered().len(), 1);
+}
+
+#[test]
 fn a_host_prefix_ends_at_the_first_slash_after_the_scheme() {
     assert_eq!(
         host_prefix("https://github.com/adoptium/x.zip").as_deref(),

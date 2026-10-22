@@ -139,6 +139,18 @@ impl Content {
         }
     }
 
+    /// Whether `other` would put the same bytes in the file. Two index entries for one archive
+    /// may differ in tags or provenance and still promise the same bytes.
+    fn same_bytes(&self, other: &Content) -> bool {
+        match (self, other) {
+            (Content::Bytes(a), Content::Bytes(b)) => a == b,
+            (Content::Artifact(a), Content::Artifact(b)) => {
+                a.sha256 == b.sha256 && a.size == b.size
+            }
+            _ => false,
+        }
+    }
+
     /// Whether the file at `path` already holds exactly this content.
     pub(crate) fn is_current(&self, path: &Path) -> Result<bool> {
         let io_err = |e| JtmError::io(path, e);
@@ -189,7 +201,7 @@ impl Plan {
                 self.items.insert(item.rel.clone(), item);
                 Ok(())
             }
-            Some(existing) if existing.content == item.content => Ok(()),
+            Some(existing) if existing.content.same_bytes(&item.content) => Ok(()),
             Some(existing) => Err(JtmError::SignedFileInvalid {
                 file: existing.url.clone(),
                 message: format!(
@@ -216,10 +228,9 @@ impl Plan {
 
 /// Replaces `dest` with `bytes`, atomically.
 pub(crate) fn write_bytes(dest: &Path, bytes: &[u8]) -> Result<()> {
-    write_through(dest, |tmp| {
-        tmp.write_all(bytes)
-            .map_err(|e| JtmError::io(dest.to_path_buf(), e))
-    })
+    let dir = dest.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(dir).map_err(|e| JtmError::io(dir, e))?;
+    Ok(jtm_security::trust::write_atomically(dest, bytes)?)
 }
 
 /// Copies the cached archive at `source` to `dest`, atomically, after checking that it is
@@ -308,7 +319,8 @@ impl Session<'_> {
     /// All indices are loaded and verified before anything is written, so a bad index, an
     /// untrusted key or an unknown plugin leaves the directory untouched. Indices are
     /// refreshed first when online, since a mirror is only worth as much as what it was
-    /// copied from; offline, the local copies are exported.
+    /// copied from; offline, the local copies are exported. A dry run never refreshes, since
+    /// that would write the index cache and the trust state.
     pub fn export_mirror(&self, options: &ExportOptions) -> Result<ExportReport> {
         // SPEC-QUESTION: section 8 says `mirror export` copies "indices, signatures and
         // optionally every artifact" and gives no layout, no default for `--plugin` and
@@ -320,30 +332,45 @@ impl Session<'_> {
             self.plugins()?
         } else {
             let mut names = options.plugins.clone();
-            names.dedup();
+            let mut seen = std::collections::BTreeSet::new();
+            names.retain(|name| seen.insert(name.clone()));
             names
                 .iter()
                 .map(|name| self.plugin(name))
                 .collect::<Result<_>>()?
         };
-        let explicit = !options.platforms.is_empty();
-        let platforms: &[Platform] = if explicit {
+        let platforms_named = !options.platforms.is_empty();
+        let plugins_named = !options.plugins.is_empty();
+        let platforms: &[Platform] = if platforms_named {
             &options.platforms
         } else {
             Platform::ALL
         };
 
+        // A platform a plugin has no index for is an error only when both were asked for by
+        // name; otherwise it is skipped with a warning, as long as something is exported.
+        let strict = platforms_named && plugins_named;
         let mut plan = Plan::default();
         let mut warnings = Vec::new();
+        let mut skipped = None;
+        let mut exported = false;
         for plugin in &plugins {
-            self.plan_plugin(
-                plugin,
-                platforms,
-                explicit,
-                options,
-                &mut plan,
-                &mut warnings,
-            )?;
+            match self.plan_plugin(plugin, platforms, strict, options, &mut plan, &mut warnings) {
+                Ok(()) => exported = true,
+                Err(err @ (JtmError::PlatformUnsupported { .. } | JtmError::Offline { .. }))
+                    if !plugins_named =>
+                {
+                    warnings.push(Warning {
+                        code: W_MIRROR_PLATFORM_SKIPPED,
+                        message: format!("skipping a plugin with nothing to export: {err}"),
+                    });
+                    skipped.get_or_insert(err);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        if let (false, Some(err)) = (exported, skipped) {
+            return Err(err);
         }
         let items = plan.ordered();
 
@@ -399,7 +426,7 @@ impl Session<'_> {
         &self,
         plugin: &Plugin,
         platforms: &[Platform],
-        explicit: bool,
+        strict: bool,
         options: &ExportOptions,
         plan: &mut Plan,
         warnings: &mut Vec<Warning>,
@@ -412,14 +439,17 @@ impl Session<'_> {
         } else {
             platforms
         };
+        let refresh = !options.dry_run;
+        // The keys are loaded once for every platform of the plugin.
+        let trust = self.plugin_trust(plugin, refresh)?;
+        let mut keys = trust.keys_file.clone();
         let mut skipped: Option<JtmError> = None;
         let mut exported = false;
-        let mut keys_planned = false;
         for &platform in platforms {
-            let (index, keys) = match self.index_with_keys_file(plugin, platform, true) {
+            let index = match self.index_with_trust(plugin, platform, refresh, &trust) {
                 Ok(loaded) => loaded,
                 Err(err @ (JtmError::PlatformUnsupported { .. } | JtmError::Offline { .. }))
-                    if !explicit =>
+                    if !strict =>
                 {
                     warnings.push(Warning {
                         code: W_MIRROR_PLATFORM_SKIPPED,
@@ -441,10 +471,8 @@ impl Session<'_> {
                 &url,
                 index.copy,
             )?;
-            if let (Some(keys_url), Some(keys), false) =
-                (manifest.index.keys_url.as_deref(), keys, keys_planned)
+            if let (Some(keys_url), Some(keys)) = (manifest.index.keys_url.as_deref(), keys.take())
             {
-                keys_planned = true;
                 self.plan_signed(
                     plan,
                     (FileKind::Keys, FileKind::KeysSignature),

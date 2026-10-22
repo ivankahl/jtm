@@ -180,6 +180,8 @@ fn a_url_that_cannot_be_a_file_is_refused() {
         "https://example.test/a/%2E%2E/b.zip",
         "https://example.test/a%5Cb.zip",
         "https://example.test/a//b.zip",
+        "https://example.test/C%3A/b.zip",
+        "https://example.test/a%3Ab.zip",
         "ftp://example.test/a.zip",
         "file:///etc/passwd",
         "/etc/passwd",

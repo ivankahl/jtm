@@ -99,6 +99,13 @@ pub fn export_path(url: &str) -> Result<PathBuf> {
     if decoded.split('/').any(str::is_empty) {
         return Err(refuse("it has an empty path segment"));
     }
+    // A colon would make `C:` a drive prefix that `PathBuf` joins by replacing the export
+    // directory on Windows; the others are not allowed in Windows file names either.
+    if decoded.contains(|c: char| c.is_control() || "<>:\"|?*".contains(c)) {
+        return Err(refuse(
+            "it has a character that file names cannot hold on Windows",
+        ));
+    }
     let dir = match port {
         Some(port) => format!("{}+{port}", host.to_ascii_lowercase()),
         None => host.to_ascii_lowercase(),
