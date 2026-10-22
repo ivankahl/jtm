@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use jtm_security::testing::TestKey;
 use serde_json::json;
@@ -47,6 +47,7 @@ struct Fixture {
     dirs: Dirs,
     key: TestKey,
     keyring: Keyring,
+    mirrors: BTreeMap<String, String>,
 }
 
 impl Fixture {
@@ -62,6 +63,7 @@ impl Fixture {
             dirs,
             key,
             keyring,
+            mirrors: BTreeMap::new(),
         }
     }
 
@@ -109,6 +111,7 @@ impl Fixture {
             embedded,
             embedded_keys: &[],
             fetcher: net.map(|n| n as &dyn Fetcher),
+            mirrors: &self.mirrors,
         };
         let sources = IndexSources {
             plugin: "demo",
@@ -475,6 +478,7 @@ impl Fixture {
             embedded: &[],
             embedded_keys,
             fetcher: net.map(|n| n as &dyn Fetcher),
+            mirrors: &self.mirrors,
         }
     }
 
@@ -798,4 +802,203 @@ fn files_over_their_format_limit_are_refused_before_reading() {
             .contains("larger than the limit for a keys file"),
         "{err}"
     );
+}
+
+/// `dir` as a `file://` URL ending in a slash, `file:///C:/x/` on Windows.
+fn file_url(dir: &Path) -> String {
+    let path = dir.display().to_string().replace('\\', "/");
+    let slash = if path.starts_with('/') { "" } else { "/" };
+    format!("file://{slash}{path}/")
+}
+
+const CORP: &str = "https://corp.test/idx/";
+
+#[test]
+fn mirrors_apply_to_the_index_the_keys_file_and_their_signatures() {
+    let mut f = Fixture::new();
+    f.mirrors
+        .insert("https://index.example.test/".into(), CORP.into());
+    let (root, idx) = (TestKey::generate(), TestKey::generate());
+    let mut net = FakeNet::default();
+    net.serve(&format!("{CORP}keys.json"), keys_file(1, &[&idx], &[&root]));
+    net.serve(
+        &format!("{CORP}demo-linux-x64.json"),
+        index_signed_by(&idx, 1),
+    );
+
+    let loaded = f
+        .load_plugin(
+            &[root.public_str()],
+            ManifestOrigin::Builtin,
+            &net,
+            refresh(),
+        )
+        .unwrap();
+    assert_eq!(loaded.index.sequence, 1);
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    assert_eq!(loaded.origin, format!("{CORP}demo-linux-x64.json"));
+    // Nothing reached the original host, including the signatures.
+    assert_eq!(
+        *net.requests.borrow(),
+        vec![
+            format!("{CORP}keys.json"),
+            format!("{CORP}keys.json.minisig"),
+            format!("{CORP}demo-linux-x64.json"),
+            format!("{CORP}demo-linux-x64.json.minisig"),
+        ]
+    );
+}
+
+#[test]
+fn an_expired_index_from_a_rewritten_url_only_warns() {
+    // Section 9: expiry is enforced for the canonical remote, and is a warning for a
+    // configured mirror, because mirrors go stale by design.
+    let mut f = Fixture::new();
+    f.mirrors
+        .insert("https://index.example.test/".into(), CORP.into());
+    let mut net = FakeNet::default();
+    net.serve(&format!("{CORP}demo-linux-x64.json"), f.signed(4, PAST));
+    let loaded = f.load(&[], Some(&net), None, refresh()).unwrap();
+    assert_eq!(loaded.source, SourceKind::Mirror);
+    assert_eq!(loaded.warnings[0].code, "W_INDEX_EXPIRED");
+
+    // Without the rewrite the same copy is the canonical remote and is refused.
+    let f = Fixture::new();
+    let mut net = FakeNet::default();
+    net.serve(REMOTE_EXPANDED, f.signed(4, PAST));
+    let err = f.load(&[], Some(&net), None, refresh()).unwrap_err();
+    assert_eq!(err.code(), "E_INDEX_EXPIRED");
+}
+
+#[test]
+fn a_signature_can_be_mirrored_apart_from_its_file() {
+    let mut f = Fixture::new();
+    f.mirrors
+        .insert("https://index.example.test/".into(), CORP.into());
+    f.mirrors.insert(
+        format!("{REMOTE_EXPANDED}.minisig"),
+        "https://sig.test/demo.minisig".into(),
+    );
+    let (data, sig) = f.signed(3, FUTURE);
+    let mut net = FakeNet::default();
+    net.files.insert(format!("{CORP}demo-linux-x64.json"), data);
+    net.files
+        .insert("https://sig.test/demo.minisig".into(), sig);
+
+    let loaded = f.load(&[], Some(&net), None, options()).unwrap();
+    assert_eq!(loaded.index.sequence, 3);
+    assert_eq!(
+        *net.requests.borrow(),
+        vec![
+            format!("{CORP}demo-linux-x64.json"),
+            "https://sig.test/demo.minisig".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_file_mirror_serves_the_index_and_keys_file_offline() {
+    let mut f = Fixture::new();
+    let dir = f.dirs.data.join("mirror");
+    f.mirrors
+        .insert("https://index.example.test/".into(), file_url(&dir));
+    let (root, idx) = (TestKey::generate(), TestKey::generate());
+    f.write(&dir.join("keys.json"), keys_file(1, &[&idx], &[&root]));
+    f.write(&dir.join("demo-linux-x64.json"), index_signed_by(&idx, 7));
+
+    let offline = LoadOptions {
+        offline: true,
+        ..options()
+    };
+    let loader = f.loader(None, &[]);
+    let keys = PluginKeys {
+        plugin: "demo",
+        signing_keys: &[root.public_str()],
+        threshold: 1,
+        keys_url: Some(KEYS_URL),
+        origin: ManifestOrigin::Builtin,
+    };
+    let (keyring, warnings) = loader.keyring(&keys, &offline).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let sources = IndexSources {
+        plugin: "demo",
+        platform: "linux-x64",
+        remote_url: REMOTE,
+        override_url: None,
+    };
+    let loaded = loader.load(&sources, &keyring, &offline).unwrap();
+    assert_eq!(loaded.index.sequence, 7);
+    assert_eq!(loaded.source, SourceKind::Mirror);
+    assert_eq!(f.state().keys_files["demo"].sequence, 1);
+    // Both are kept for the next run, which may not see the mirror.
+    assert!(f.cache().exists());
+    assert!(keys_cache_path(&f.dirs, "demo").exists());
+}
+
+#[test]
+fn a_tampered_file_mirror_index_fails_verification_and_is_not_cached() {
+    let mut f = Fixture::new();
+    let dir = f.dirs.data.join("mirror");
+    f.mirrors
+        .insert("https://index.example.test/".into(), file_url(&dir));
+    let (mut data, sig) = f.signed(9, FUTURE);
+    data.extend_from_slice(b" ");
+    f.write(&dir.join("demo-linux-x64.json"), (data, sig));
+
+    let net = FakeNet::default();
+    let err = f.load(&[], Some(&net), None, options()).unwrap_err();
+    assert_eq!(err.code(), "E_SIGNATURE_INVALID");
+    assert!(!f.cache().exists());
+    assert!(net.requests.borrow().is_empty());
+}
+
+#[test]
+fn a_tampered_file_mirror_keys_file_delegates_nothing() {
+    let mut f = Fixture::new();
+    let dir = f.dirs.data.join("mirror");
+    f.mirrors
+        .insert("https://index.example.test/".into(), file_url(&dir));
+    let (root, idx) = (TestKey::generate(), TestKey::generate());
+    let (mut keys, sig) = keys_file(1, &[&idx], &[&root]);
+    keys.extend_from_slice(b" ");
+    f.write(&dir.join("keys.json"), (keys, sig));
+    f.write(&dir.join("demo-linux-x64.json"), index_signed_by(&idx, 1));
+
+    let offline = LoadOptions {
+        offline: true,
+        ..options()
+    };
+    let loader = f.loader(None, &[]);
+    let keys = PluginKeys {
+        plugin: "demo",
+        signing_keys: &[root.public_str()],
+        threshold: 1,
+        keys_url: Some(KEYS_URL),
+        origin: ManifestOrigin::Builtin,
+    };
+    let (keyring, warnings) = loader.keyring(&keys, &offline).unwrap();
+    assert_eq!(warnings[0].code, W_KEYS_FILE_UNAVAILABLE);
+    assert!(!keys_cache_path(&f.dirs, "demo").exists());
+    let sources = IndexSources {
+        plugin: "demo",
+        platform: "linux-x64",
+        remote_url: REMOTE,
+        override_url: None,
+    };
+    // The index key was only delegated by the file that failed verification.
+    let err = loader.load(&sources, &keyring, &offline).unwrap_err();
+    assert_eq!(err.code(), "E_KEY_UNTRUSTED", "{err}");
+}
+
+#[test]
+fn a_file_mirror_with_nothing_in_it_is_not_a_reason_to_hit_the_network() {
+    let mut f = Fixture::new();
+    let dir = f.dirs.data.join("empty-mirror");
+    f.mirrors
+        .insert("https://index.example.test/".into(), file_url(&dir));
+    let mut net = FakeNet::default();
+    net.serve(REMOTE_EXPANDED, f.signed(2, FUTURE));
+    // The rewritten location is the only one that is asked, and it holds no index.
+    assert!(f.load(&[], Some(&net), None, refresh()).is_err());
+    assert!(net.requests.borrow().is_empty());
 }
