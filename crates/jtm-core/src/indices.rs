@@ -38,9 +38,9 @@ pub const W_KEYS_FILE_UNAVAILABLE: &str = "W_KEYS_FILE_UNAVAILABLE";
 /// Where a plugin manifest came from, which decides whether its anchors are pre-approved.
 ///
 /// Pre-approval is provenance, never a property of a key or of a file's contents: `Builtin` is
-/// only for manifests compiled into the jtm binary. The unpacked `<data>/plugins/builtin`
-/// working copy, the marketplace, a project directory and the network are all `External`, so
-/// their anchors count only once the user trusts them.
+/// only for manifests compiled into the jtm binary. The unpacked `<data>/plugins/builtin-<key>`
+/// working copies, the marketplace, a project directory and the network are all `External`,
+/// so their anchors count only once the user trusts them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManifestOrigin {
     /// Compiled into the jtm binary, as the first-party plugins are.

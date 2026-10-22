@@ -421,7 +421,7 @@ A key the user trusts for a plugin may also re-sign that plugin's indices on its
 - **Index keys** rotate by publishing a new `keys.json` with a higher `sequence`, signed by the root keys. Clients accept the new key without a prompt or a jtm release. During an overlap period, `keys.json` lists both the old and the new key, so indices signed by either verify. The old key is then removed or left to expire. Rollback checks on `keys.json` stop an older copy that still lists a removed key from being replayed.
 - **Root keys** rotate through a jtm release that embeds the new root keys. Until every supported release knows them, `keys.json` is cross-signed by the old and the new root keys, so older and newer releases both accept it. A root key list that a runtime file could update would itself be a delegated keys file, so jtm never offers one: rotating roots is a release operation by design. Raising the root threshold needs no code: list the new keys and raise `threshold` in the manifests, and cross-sign `keys.json` so releases on either side of the change accept it. A single root key at threshold 1 is the v1 configuration because one maintainer holds it; a threshold is only meaningful when the keys have independent holders ([ADR-0001](docs/adr/0001-signing-and-trust-model.md)).
 
-**Where pre-approval comes from.** Anchors are pre-approved only when their manifest is compiled into the jtm binary; pre-approval is provenance, never a property of a key or of a file's contents. The unpacked `<data>/plugins/builtin` working copy, a marketplace entry, a project directory and the network are never authority: jtm checks the working copy against the embedded bytes, repairs it when it differs, and `jtm doctor` reports it. A manifest that claims a first-party name but does not ship in the binary is external, and its anchors need confirmation.
+**Where pre-approval comes from.** Anchors are pre-approved only when their manifest is compiled into the jtm binary; pre-approval is provenance, never a property of a key or of a file's contents. The unpacked `<data>/plugins/builtin-<key>` working copies, a marketplace entry, a project directory and the network are never authority: jtm checks its own working copy against the embedded bytes, repairs it when it differs, and `jtm doctor` reports it. A manifest that claims a first-party name but does not ship in the binary is external, and its anchors need confirmation.
 
 **Why the embedded keys are not signed at build time.** A signature checked inside the same binary cannot protect the binary's own contents: anyone able to alter the embedded anchors can alter the embedded verification key and the checking code with it. Build-time signing applies to release artifacts — the binaries and `SHA256SUMS`, verified outside jtm by package managers, installers and users — not to data inside the binary. The compiled-in root key list is the fixed root of trust, and changing it is a release (see the root rotation bullet above).
 
@@ -462,7 +462,7 @@ These run on embedded, cached, mirrored and freshly downloaded copies alike, bef
 | Prompt-injected agent adding plugins | Non-interactive modes refuse untrusted plugins and keys without an allowlist entry or `--trust-key`; a marketplace listing never grants trust |
 | Compromised marketplace entry | Keys are confirmed by a human when first added and pinned afterwards; a later key change needs a rotation signed by a trusted key or a human |
 | Tampered local cache | Signatures re-verified on every load; installs record their hash |
-| Tampered `plugins/builtin` working copy | Trust decisions read only the compiled-in manifests; the working copy is checked against them, repaired, and reported by `jtm doctor` |
+| Tampered `plugins/builtin-<key>` working copy | Trust decisions read only the compiled-in manifests; the working copy is checked against them, repaired, and reported by `jtm doctor` |
 | Tampered jtm update | Release signature verified before `self update` swaps the binary |
 
 ### Explicitly out of scope
@@ -695,7 +695,7 @@ All state lives in per-user directories following each OS's conventions, and set
     maven/default-3.9.9/
     .tmp/  .trash/
   plugins/
-    builtin/              # first-party manifests, unpacked from the binary (working copy; the binary is authoritative)
+    builtin-<key>/        # first-party manifests, unpacked from the binary (working copy; the binary is authoritative)
     <name>@<rev>/          # third-party plugins at a pinned commit
   state/
     trust.json            # trusted keys, highest seen index sequences
@@ -709,6 +709,8 @@ All state lives in per-user directories following each OS's conventions, and set
 ```
 
 Tools without variants use the variant name `default`.
+
+**Builtin working copies.** Each embedded set of first-party manifests has its own working copy, `plugins/builtin-<key>/`, where `<key>` is the first 16 hex digits of a SHA-256 over every file the copy holds (its plugin directory, file name and bytes, in name order). Binaries that embed the same set share a copy; two jtm versions running side by side, such as an MCP server started before an upgrade, two installs on `PATH` or `cargo run` next to an installed jtm, each keep their own and never rewrite the other's. A copy holds one `<name>/` directory per plugin with its `plugin.toml` and any `plugin.lua`, and a `.last-used` file whose modification time each jtm process sets when it uses the copy. Every process syncs its copy and collects the others under one lock in `locks/`: a copy other than its own last used more than 30 days ago is removed, and its binary unpacks it again if it ever runs. The `plugins/builtin/` copy older versions shared is treated the same way, aged by the directory's modification time. Nothing reads a working copy to make a decision (section 9).
 
 ### Configuration keys
 
@@ -744,7 +746,7 @@ Project files can never set `security.*`, `network.*`, `[mirrors]`, `extract.*`,
 
 The five v1 tools ship as ordinary plugins embedded in the binary, which proves the plugin API before any third party depends on it; no line of core code may mention a specific tool.
 
-They also use the same trust model as any other plugin (section 9). Each manifest lists jtm's root key as `signing_keys` with `threshold = 1` and points `keys_url` at the shared `keys.json`, whose CI-held index keys sign the indices. Their signing keys are pre-approved only because the manifests are compiled into jtm. The compiled-in manifests are the only authority for their anchors; the unpacked `plugins/builtin` copy is a working copy, never a trust decision (section 9).
+They also use the same trust model as any other plugin (section 9). Each manifest lists jtm's root key as `signing_keys` with `threshold = 1` and points `keys_url` at the shared `keys.json`, whose CI-held index keys sign the indices. Their signing keys are pre-approved only because the manifests are compiled into jtm. The compiled-in manifests are the only authority for their anchors; the unpacked `plugins/builtin-<key>` copy is a working copy, never a trust decision (section 9).
 
 | Plugin | Variants | Scheme | Aliases | Env | Typical executables on PATH (whatever the bin dir holds) |
 | --- | --- | --- | --- | --- | --- |
@@ -903,7 +905,7 @@ None of these block M0 or M1; each should be decided before the milestone named 
 - [x] **Marketplace trust:** does a marketplace listing make a plugin's signing keys trusted? Decided: no. A human confirms each third-party key (or names it with `--trust-key` or `jtm trust add`); later rotations signed by a trusted key are accepted without a prompt. First-party plugins stay trusted through the embedded root key, and their key rotations never need user action (sections 7, 9 and 16). \[M9\]
 - [x] **Offline marketplace search:** decided: not supported. `marketplace.json` is not embedded in releases; marketplace commands need the network, while installed plugins work offline (section 16). \[M9\]
 - [x] **One trust model:** decided: first-party and third-party plugins share one model. Every manifest's `signing_keys` are the plugin's trust anchors, with an optional keys file of short-lived index keys; first-party manifests list jtm's root key and share `keys.json`. Only how the anchors become trusted differs (sections 7 and 9). \[M2\]
-- [x] **Build-signed builtin keys file:** should the first-party anchor keys live in a separate JSON file signed at build time, so an altered builtin file could be detected? Decided: no. A signature checked by the same binary cannot protect the binary's own contents, and pre-approval must come from provenance, not file contents. Anchors are pre-approved only when the manifest is compiled into jtm, the unpacked `plugins/builtin` directory is a working copy checked against the embedded bytes, and build-time signing is applied to release artifacts instead. Root keys still rotate through a release with a cross-signed `keys.json`, while index keys rotate without a release (section 9). \[M2\]
+- [x] **Build-signed builtin keys file:** should the first-party anchor keys live in a separate JSON file signed at build time, so an altered builtin file could be detected? Decided: no. A signature checked by the same binary cannot protect the binary's own contents, and pre-approval must come from provenance, not file contents. Anchors are pre-approved only when the manifest is compiled into jtm, the unpacked `plugins/builtin-<key>` directory is a working copy checked against the embedded bytes, and build-time signing is applied to release artifacts instead. Root keys still rotate through a release with a cross-signed `keys.json`, while index keys rotate without a release (section 9). \[M2\]
 - [x] **Name availability:** the crate name `jtm` is taken on crates.io by an unrelated crypto library (Just The Math, last released September 2025). Decided: publish the crate as jtm-cli with a binary named jtm. winget IDs, Scoop buckets and Homebrew taps are namespaced by publisher, so they are fine; check homebrew-core before submitting there. \[M0\]
 
 ## 18. Task breakdown

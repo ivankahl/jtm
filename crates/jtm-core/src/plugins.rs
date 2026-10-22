@@ -3,12 +3,14 @@
 //! First-party manifests are compiled into the binary and are the only ones whose anchors are
 //! pre-approved. Every other manifest lives at `<data>/plugins/<name>@<rev>/plugin.toml`, where
 //! `<name>` is the plugin name with `/` written as `--`, and its anchors count only once the
-//! user trusts them. The unpacked `<data>/plugins/builtin` working copy is never read here.
+//! user trusts them. The unpacked `<data>/plugins/builtin-<key>` working copies are never read
+//! here.
 
 use std::fs;
 use std::io;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use jtm_plugin::Manifest;
 use jtm_plugin::script::{Host, Script};
@@ -21,6 +23,22 @@ use crate::platform::Platform;
 /// The name prefix of the files the working copy repair writes in `<data>/plugins`.
 const TEMP_PREFIX: &str = ".jtm-builtin-";
 
+/// The name prefix of the working copies in `<data>/plugins`, one per embedded set.
+const COPY_PREFIX: &str = "builtin-";
+
+/// The one working copy that jtm versions before per-set copies shared.
+const LEGACY_COPY: &str = "builtin";
+
+/// The number of hex digits in a working copy key.
+const KEY_LEN: usize = 16;
+
+/// The file in a working copy whose modification time is when a jtm process last used it.
+/// Plugin names start with a letter, so no plugin directory can take this name.
+const LAST_USED: &str = ".last-used";
+
+/// How long a working copy that no jtm process uses is kept: 30 days.
+const STALE_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 /// The working copy files of one builtin plugin, as `(file name, bytes)`.
 fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> {
     let mut files = vec![("plugin.toml", found.text.as_bytes())];
@@ -30,22 +48,55 @@ fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> 
     files
 }
 
-/// Makes the `<data>/plugins/builtin` working copy match `builtin` byte for byte (SPEC.md
-/// sections 9 and 14): one directory per plugin holding its `plugin.toml` and any
-/// `plugin.lua`. A file that differs, or is a link or a directory, is replaced; anything else
-/// in the working copy is removed, and links are removed, never followed. Returns the paths it
-/// repaired, so `jtm doctor` can report them.
+/// The key of the working copy for `builtin`: the first 16 hex digits of a SHA-256 over every
+/// file the copy holds, its directory, name and bytes, in name order. Binaries that embed the
+/// same set share a copy; any difference, such as a `cargo run` build with an edited manifest,
+/// gets a copy of its own.
+pub fn working_copy_key(builtin: &[BuiltinManifest]) -> String {
+    let mut sorted: Vec<&BuiltinManifest> = builtin.iter().collect();
+    sorted.sort_by_key(|b| b.name);
+    let mut framed = Vec::new();
+    for found in sorted {
+        let dir = dir_name(found.name);
+        for (file, bytes) in working_files(found) {
+            // Each part is length-prefixed, so no two different sets frame to the same bytes.
+            for part in [dir.as_bytes(), file.as_bytes(), bytes] {
+                framed.extend_from_slice(&(part.len() as u64).to_le_bytes());
+                framed.extend_from_slice(part);
+            }
+        }
+    }
+    let mut key = jtm_security::sha256_hex(&framed);
+    key.truncate(KEY_LEN);
+    key
+}
+
+/// `<data>/plugins/builtin-<key>`, the working copy of `builtin`.
+pub fn working_copy_dir(dirs: &Dirs, builtin: &[BuiltinManifest]) -> PathBuf {
+    dirs.builtin_plugins(&working_copy_key(builtin))
+}
+
+/// Makes the working copy of `builtin`, `<data>/plugins/builtin-<key>` (see
+/// [`working_copy_key`]), match it byte for byte (SPEC.md sections 7, 9 and 14): one directory
+/// per plugin holding its `plugin.toml` and any `plugin.lua`. A file that differs, or is a link
+/// or a directory, is replaced; anything else in the working copy is removed, and links are
+/// removed, never followed. Returns the paths it repaired, so `jtm doctor` can report them.
 ///
 /// The working copy is for people and tools to read. jtm never reads it, so a modified copy
 /// cannot change a trust decision; [`Registry`] reads only the compiled-in manifests.
 ///
+/// Each embedded set has its own copy, so two jtm versions running side by side, such as an
+/// MCP server started before an upgrade and the shell hook of the new binary, never rewrite
+/// each other's copy. Every sync sets the copy's `.last-used` marker to now and removes the
+/// copies of other sets that no process has used for 30 days (see [`remove_stale_copies`]).
+///
 /// Several jtm processes may start a repair at once, such as two shells' prompt hooks, so a
-/// repair holds an exclusive lock in `<data>/locks`. While another process holds it, the sync
-/// is skipped and reports no repairs rather than waiting, so a stopped process never stalls
-/// every prompt. New files are also written in `<data>/plugins`, outside the copy, and renamed
-/// into place, so nothing that does not take the lock sees a half-written file in the copy.
-/// Without any `builtin` manifests, such as from a context that embeds none, there is nothing
-/// to compare against, so the copy is left alone.
+/// repair holds an exclusive lock in `<data>/locks`, shared by every copy. While another
+/// process holds it, the sync is skipped and reports no repairs rather than waiting, so a
+/// stopped process never stalls every prompt. New files are also written in `<data>/plugins`,
+/// outside the copy, and renamed into place, so nothing that does not take the lock sees a
+/// half-written file in the copy. Without any `builtin` manifests, such as from a context that
+/// embeds none, there is nothing to compare against, so every copy is left alone.
 pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec<PathBuf>> {
     if builtin.is_empty() {
         return Ok(Vec::new());
@@ -54,16 +105,19 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
         tracing::debug!("another process is repairing the builtin plugin working copy");
         return Ok(Vec::new());
     };
-    let root = dirs.builtin_plugins();
+    let root = working_copy_dir(dirs, builtin);
     let scratch = dirs.plugins();
     let mut repaired = Vec::new();
     ensure_dir(&root, &mut repaired)?;
+    // Marked before the repair, so a copy in use is never stale even while repairs fail.
+    mark_used(&scratch, &root.join(LAST_USED))?;
     sweep_temp_files(&scratch);
+    remove_stale_copies(&scratch, &root, SystemTime::now());
     let wanted: Vec<(String, &BuiltinManifest)> =
         builtin.iter().map(|b| (dir_name(b.name), b)).collect();
     for entry in read_entries(&root)? {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !wanted.iter().any(|(dir, _)| *dir == name) {
+        if name != LAST_USED && !wanted.iter().any(|(dir, _)| *dir == name) {
             remove_entry(&entry.path())?;
             repaired.push(entry.path());
         }
@@ -103,6 +157,83 @@ pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec
         );
     }
     Ok(repaired)
+}
+
+/// Sets the modification time of a working copy's `.last-used` marker to now, creating the
+/// marker if it is missing. A marker that is not a plain file, such as a link, is replaced,
+/// never followed.
+fn mark_used(scratch: &Path, marker: &Path) -> Result<()> {
+    if fs::symlink_metadata(marker).is_ok_and(|meta| meta.is_file()) {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(marker)
+            .map_err(|e| JtmError::io(marker, e))?;
+        return file
+            .set_modified(SystemTime::now())
+            .map_err(|e| JtmError::io(marker, e));
+    }
+    remove_entry(marker)?;
+    write_replacing(scratch, marker, b"")
+}
+
+/// Whether `name` in `<data>/plugins` is a working copy: `builtin-<key>`, or the legacy
+/// `builtin`. External plugins are `<name>@<rev>`, so they never match.
+fn is_working_copy(name: &str) -> bool {
+    name == LEGACY_COPY
+        || name.strip_prefix(COPY_PREFIX).is_some_and(|key| {
+            key.len() == KEY_LEN && key.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+}
+
+/// When a working copy was last used: its `.last-used` marker's modification time, or the
+/// directory's own for a copy without one, such as the legacy `builtin`.
+fn last_used(copy: &Path) -> Option<SystemTime> {
+    fs::symlink_metadata(copy.join(LAST_USED))
+        .or_else(|_| fs::symlink_metadata(copy))
+        .and_then(|meta| meta.modified())
+        .ok()
+}
+
+/// Removes every working copy in `plugins` other than `current` that was last used more than
+/// [`STALE_AFTER`] before `now`. Only real directories named like a copy are candidates, so a
+/// link is left alone; a copy whose age cannot be read, or that was used in the future, is
+/// kept.
+///
+/// The caller holds the working copy lock, which every process takes before it marks or
+/// repairs its own copy, so a copy cannot come back into use while it is removed. If its
+/// binary runs again later, its next sync simply unpacks it afresh. Each copy is first renamed
+/// to a temporary name, so a removal cut short leaves nothing that looks like a copy, and the
+/// next sync sweeps what is left. Failures are ignored; the next sync tries again.
+fn remove_stale_copies(plugins: &Path, current: &Path, now: SystemTime) {
+    let Ok(entries) = fs::read_dir(plugins) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path == current
+            || !is_working_copy(&name)
+            || !entry.file_type().is_ok_and(|t| t.is_dir())
+        {
+            continue;
+        }
+        let stale = last_used(&path)
+            .and_then(|used| now.duration_since(used).ok())
+            .is_some_and(|age| age > STALE_AFTER);
+        if !stale {
+            continue;
+        }
+        let trash = plugins.join(format!("{TEMP_PREFIX}stale-{name}"));
+        let removed = fs::rename(&path, &trash)
+            .map_err(|e| JtmError::io(&path, e))
+            .and_then(|()| remove_entry(&trash));
+        match removed {
+            Ok(()) => {
+                tracing::debug!(copy = %path.display(), "removed a stale builtin plugin working copy")
+            }
+            Err(err) => tracing::debug!(%err, "cannot remove a stale builtin plugin working copy"),
+        }
+    }
 }
 
 /// Writes `bytes` to a new file in `scratch`, on the same file system, and renames it over
@@ -173,17 +304,17 @@ fn lock_working_copy(dirs: &Dirs) -> Result<Option<fs::File>> {
     }
 }
 
-/// Removes the repair's temporary files in `scratch`. Only a repair holding the working copy
-/// lock writes them, so with the lock held every one is from a process killed mid-repair.
-/// Failures are ignored; the next sync tries again.
+/// Removes the repair's temporary files in `scratch`, and stale copies whose removal was cut
+/// short. Only a sync holding the working copy lock makes them, so with the lock held every
+/// one is from a process killed mid-sync. Links are removed, never followed. Failures are
+/// ignored; the next sync tries again.
 fn sweep_temp_files(scratch: &Path) {
     let Ok(entries) = fs::read_dir(scratch) else {
         return;
     };
     for entry in entries.flatten() {
-        let ours = entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX);
-        if ours && entry.file_type().is_ok_and(|t| t.is_file()) {
-            let _ = fs::remove_file(entry.path());
+        if entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
+            let _ = remove_entry(&entry.path());
         }
     }
 }

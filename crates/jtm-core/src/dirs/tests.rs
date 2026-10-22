@@ -178,7 +178,10 @@ fn data_layout_matches_section_14() {
     );
     assert_eq!(dirs.tools_tmp(), data.join("tools").join(".tmp"));
     assert_eq!(dirs.tools_trash(), data.join("tools").join(".trash"));
-    assert_eq!(dirs.builtin_plugins(), data.join("plugins").join("builtin"));
+    assert_eq!(
+        dirs.builtin_plugins("0123456789abcdef"),
+        data.join("plugins").join("builtin-0123456789abcdef")
+    );
     assert_eq!(dirs.locks(), data.join("locks"));
     assert_eq!(dirs.downloads(), cache.join("downloads"));
 }
