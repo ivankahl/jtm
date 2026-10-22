@@ -14,6 +14,10 @@ use jtm_plugin::Manifest;
 use jtm_security::{KeysFile, PublicKey, Timestamp, TrustAnchors};
 use serde::Serialize;
 
+/// The reserved scope of the marketplace index (SPEC.md section 16). It follows the first-party
+/// chain: the same root keys sign this `keys.json`, whose `marketplace` scope delegates to the
+/// index key that signs `marketplace.json`.
+pub(crate) const MARKETPLACE: &str = "marketplace";
 /// Index keys are meant to be short-lived (SPEC.md section 9: 90 days).
 pub(crate) const MAX_KEY_DAYS: i64 = 90;
 const DAY: i64 = 86_400;
@@ -46,10 +50,20 @@ impl Failure {
         }
     }
 
-    pub(crate) fn code(&self) -> Option<&'static str> {
+    /// The stable `E_` code of the failure (SPEC.md section 12).
+    pub(crate) fn code(&self) -> &'static str {
         match self {
-            Failure::Verify { code, .. } => Some(code),
-            _ => None,
+            Failure::Usage(_) => "E_USAGE",
+            Failure::Io(_) => "E_IO",
+            Failure::Verify { code, .. } => code,
+        }
+    }
+
+    /// The message without the code, for `--json`, where the code has its own field.
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Failure::Verify { message, .. } => message.clone(),
+            other => other.to_string(),
         }
     }
 
@@ -73,6 +87,9 @@ impl Failure {
             },
             Error::Invalid { .. } => Failure::verify("E_INDEX_INVALID", message),
             Error::SigningKeys { .. } => Failure::verify("E_PLUGIN_INVALID", message),
+            Error::IndexBinding { .. } => Failure::verify("E_INDEX_BINDING", message),
+            Error::IndexRollback { .. } => Failure::verify("E_INDEX_ROLLBACK", message),
+            Error::IndexExpired { .. } => Failure::verify("E_INDEX_EXPIRED", message),
             _ => Failure::Verify {
                 code: "E_INTERNAL",
                 exit: 1,
@@ -181,7 +198,8 @@ pub(crate) fn build(
         )));
     }
 
-    let plugins: BTreeSet<&str> = first_party.iter().map(|f| f.plugin.as_str()).collect();
+    let mut plugins: BTreeSet<&str> = first_party.iter().map(|f| f.plugin.as_str()).collect();
+    plugins.insert(MARKETPLACE);
     let scope: Vec<String> = match &spec.scope {
         None => plugins.iter().map(|p| (*p).to_owned()).collect(),
         Some(names) => {
@@ -191,7 +209,8 @@ pub(crate) fn build(
             }
             if let Some(unknown) = names.iter().find(|n| !plugins.contains(n.as_str())) {
                 return Err(usage(format!(
-                    "scope `{unknown}` is not a first-party plugin; this keys file is only for {}",
+                    "scope `{unknown}` is not a first-party plugin or the marketplace; this keys \
+                     file is only for {}",
                     plugins.iter().copied().collect::<Vec<_>>().join(", ")
                 )));
             }
@@ -266,13 +285,28 @@ impl VerifySpec {
     }
 }
 
+/// Every file the keys file is verified for: the first-party plugins, and the marketplace, which
+/// has no manifest and shares the first plugin's root keys.
+fn targets(first_party: &[FirstParty]) -> Vec<FirstParty> {
+    let mut all = first_party.to_vec();
+    if let Some(first) = first_party.first()
+        && !all.iter().any(|f| f.plugin == MARKETPLACE)
+    {
+        all.push(FirstParty {
+            plugin: MARKETPLACE.to_owned(),
+            ..first.clone()
+        });
+    }
+    all
+}
+
 /// What a passing `keys.json` contains.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Report {
     pub(crate) sequence: u64,
     pub(crate) threshold: u32,
     pub(crate) sha256: String,
-    /// The first-party plugins the file was verified for.
+    /// The first-party plugins and the marketplace the file was verified for.
     pub(crate) plugins: Vec<String>,
     /// Ids of the root keys whose signatures counted.
     pub(crate) signers: Vec<String>,
@@ -299,7 +333,9 @@ pub(crate) fn verify(
 ) -> Result<Report, Failure> {
     let mut loaded: Option<KeysFile> = None;
     let mut roots: BTreeSet<String> = BTreeSet::new();
-    for fp in &spec.first_party {
+    let mut signers: BTreeSet<String> = BTreeSet::new();
+    let targets = targets(&spec.first_party);
+    for fp in &targets {
         let (keys, threshold) = match &spec.roots {
             Some((keys, threshold)) => (keys.as_slice(), *threshold),
             None => (fp.keys.as_slice(), fp.threshold),
@@ -309,6 +345,7 @@ pub(crate) fn verify(
         let file = KeysFile::load(data, signatures, &anchors, now)
             .map_err(|e| Failure::from_security(&fp.plugin, &e))?;
         roots.extend(anchors.keys.iter().map(|k| k.as_str().to_owned()));
+        signers.extend(file.verified.signers.iter().map(ToString::to_string));
         loaded.get_or_insert(file);
     }
     let file = loaded.ok_or_else(|| usage("no first-party plugins to verify against"))?;
@@ -340,7 +377,7 @@ pub(crate) fn verify(
         ));
     }
 
-    let plugins: BTreeSet<&str> = spec.first_party.iter().map(|f| f.plugin.as_str()).collect();
+    let plugins: BTreeSet<&str> = targets.iter().map(|f| f.plugin.as_str()).collect();
     let mut warnings = Vec::new();
     let mut covered: BTreeSet<&str> = BTreeSet::new();
     let mut keys = Vec::with_capacity(file.keys.len());
@@ -352,7 +389,7 @@ pub(crate) fn verify(
                 k.key.id(),
                 k.expires
             ));
-        } else if days_left > MAX_KEY_DAYS {
+        } else if k.expires.unix() - now.unix() > MAX_KEY_DAYS * DAY {
             warnings.push(format!(
                 "key {} expires in {days_left} days; index keys are meant to expire within \
                  {MAX_KEY_DAYS} days",
@@ -389,12 +426,7 @@ pub(crate) fn verify(
         threshold: file.threshold,
         sha256: file.sha256.clone(),
         plugins: plugins.iter().map(|p| (*p).to_owned()).collect(),
-        signers: file
-            .verified
-            .signers
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
+        signers: signers.into_iter().collect(),
         keys,
         warnings,
     })

@@ -89,7 +89,10 @@ fn build_sign_and_verify_round_trip() {
     let report: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(report["ok"], true);
     assert_eq!(report["sequence"], 4);
-    assert_eq!(report["plugins"], serde_json::json!(["alpha", "beta"]));
+    assert_eq!(
+        report["plugins"],
+        serde_json::json!(["alpha", "beta", "marketplace"])
+    );
     assert_eq!(report["signers"].as_array().unwrap().len(), 2);
 }
 

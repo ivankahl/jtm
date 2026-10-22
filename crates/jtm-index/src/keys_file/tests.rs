@@ -95,7 +95,7 @@ fn build_lists_the_index_key_for_every_first_party_plugin() {
     assert_eq!(value["keys"][0]["key"], index.public_str());
     assert_eq!(
         value["keys"][0]["scope"],
-        serde_json::json!(["alpha", "beta"])
+        serde_json::json!(["alpha", "beta", "marketplace"])
     );
     assert_eq!(value["keys"][0]["expires"], IN_30_DAYS);
     assert!(bytes.ends_with(b"}\n"), "ends with a single newline");
@@ -107,7 +107,7 @@ fn built_file_signed_by_two_roots_passes_the_client_loader() {
     let (bytes, sigs) = signed(&roots);
     let report = verify(&bytes, &sigs, &VerifySpec::new(roots.first_party()), NOW).unwrap();
     assert_eq!(report.sequence, 8);
-    assert_eq!(report.plugins, vec!["alpha", "beta"]);
+    assert_eq!(report.plugins, vec!["alpha", "beta", "marketplace"]);
     assert_eq!(report.signers.len(), 2);
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     assert_eq!(report.sha256, jtm_security::sha256_hex(&bytes));
@@ -121,6 +121,74 @@ fn build_scope_can_name_a_subset_of_the_first_party_plugins() {
     let bytes = build(&s, &roots.first_party(), NOW).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(value["keys"][0]["scope"], serde_json::json!(["beta"]));
+}
+
+#[test]
+fn build_scope_can_name_the_marketplace() {
+    let roots = Roots::new();
+    let mut s = spec(&TestKey::generate(), IN_30_DAYS);
+    s.scope = Some(vec!["marketplace".to_owned(), "alpha".to_owned()]);
+    let bytes = build(&s, &roots.first_party(), NOW).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        value["keys"][0]["scope"],
+        serde_json::json!(["alpha", "marketplace"])
+    );
+}
+
+#[test]
+fn verify_warns_when_no_key_is_scoped_to_the_marketplace() {
+    let roots = Roots::new();
+    let raw = raw_keys_file(serde_json::json!([
+        { "key": TestKey::generate().public_str(), "scope": ["alpha", "beta"], "expires": IN_30_DAYS }
+    ]));
+    let report = verify(
+        &raw,
+        &roots.sign(&raw, &[0, 1]),
+        &VerifySpec::new(roots.first_party()),
+        NOW,
+    )
+    .unwrap();
+    let all = report.warnings.join("\n");
+    assert!(all.contains("marketplace"), "{all}");
+}
+
+#[test]
+fn signers_are_reported_across_every_plugin() {
+    let roots = Roots::new();
+    let (bytes, _) = signed(&roots);
+    let sigs = roots.sign(&bytes, &[0, 1, 2]);
+    let report = verify(&bytes, &sigs, &VerifySpec::new(roots.first_party()), NOW).unwrap();
+    assert_eq!(report.signers.len(), 3);
+}
+
+#[test]
+fn failures_have_error_codes_and_messages_without_them() {
+    let roots = Roots::new();
+    let err = build(
+        &BuildSpec {
+            sequence: 0,
+            ..spec(&TestKey::generate(), IN_30_DAYS)
+        },
+        &roots.first_party(),
+        NOW,
+    )
+    .unwrap_err();
+    assert_eq!(err.code(), "E_USAGE");
+    let (bytes, _) = signed(&roots);
+    let err = verify(
+        &bytes,
+        &roots.sign(&bytes, &[1]),
+        &VerifySpec::new(roots.first_party()),
+        NOW,
+    )
+    .unwrap_err();
+    assert!(err.to_string().starts_with("E_SIGNATURE_INVALID: "));
+    assert!(
+        !err.message().contains("E_SIGNATURE_INVALID"),
+        "{}",
+        err.message()
+    );
 }
 
 #[test]
@@ -199,7 +267,7 @@ fn verify_refuses_one_root_signature_when_two_are_needed() {
     let (bytes, _) = signed(&roots);
     let one = roots.sign(&bytes, &[1]);
     let err = verify(&bytes, &one, &VerifySpec::new(roots.first_party()), NOW).unwrap_err();
-    assert_eq!(err.code(), Some("E_SIGNATURE_INVALID"));
+    assert_eq!(err.code(), "E_SIGNATURE_INVALID");
     assert_eq!(err.exit_code(), 5);
 }
 
@@ -213,7 +281,7 @@ fn verify_refuses_a_signature_by_keys_that_are_not_roots() {
     ]
     .concat();
     let err = verify(&bytes, &sigs, &VerifySpec::new(roots.first_party()), NOW).unwrap_err();
-    assert_eq!(err.code(), Some("E_KEY_UNTRUSTED"));
+    assert_eq!(err.code(), "E_KEY_UNTRUSTED");
     assert_eq!(err.exit_code(), 7);
 }
 
@@ -231,7 +299,7 @@ fn verify_refuses_a_file_edited_after_signing() {
         NOW,
     )
     .unwrap_err();
-    assert_eq!(err.code(), Some("E_SIGNATURE_INVALID"));
+    assert_eq!(err.code(), "E_SIGNATURE_INVALID");
 }
 
 #[test]
@@ -256,7 +324,7 @@ fn verify_requires_a_sequence_above_the_published_one() {
     verify(&bytes, &sigs, &v, NOW).unwrap();
     v.previous_sequence = Some(8);
     let err = verify(&bytes, &sigs, &v, NOW).unwrap_err();
-    assert_eq!(err.code(), Some("E_INDEX_ROLLBACK"));
+    assert_eq!(err.code(), "E_INDEX_ROLLBACK");
 }
 
 #[test]
@@ -265,7 +333,7 @@ fn verify_refuses_a_file_whose_keys_have_all_expired() {
     let (bytes, sigs) = signed(&roots);
     let later = ts("2027-02-01T00:00:00Z");
     let err = verify(&bytes, &sigs, &VerifySpec::new(roots.first_party()), later).unwrap_err();
-    assert_eq!(err.code(), Some("E_INDEX_EXPIRED"));
+    assert_eq!(err.code(), "E_INDEX_EXPIRED");
 }
 
 #[test]

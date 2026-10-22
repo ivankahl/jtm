@@ -41,7 +41,7 @@ refused, so check them before anyone signs.
   "keys": [
     {
       "key": "RWSfUlI4MQ21U9gfXW+2zUHwj3kEMRZ4h297CLBAWuF2fG7l22vZY+y+",
-      "scope": ["gradle", "java", "kotlin", "maven", "spring-boot-cli"],
+      "scope": ["gradle", "java", "kotlin", "maven", "marketplace", "spring-boot-cli"],
       "expires": "2027-01-10T06:35:45Z"
     }
   ]
@@ -58,7 +58,9 @@ refused, so check them before anyone signs.
   overlap and a threshold of 2, every index would need both signatures.
 - `key` is the second line of the minisign `.pub` file (`RW...`). A key listed twice is refused.
 - `scope` names the plugins a key may sign for, at least one, with no wildcard. A key is only used
-  for a plugin its scope names. The first-party file lists all five first-party plugins.
+  for a plugin its scope names. The first-party file lists all five first-party plugins and
+  `marketplace`, the reserved scope of the signed marketplace index (SPEC.md section 16), which
+  has the same root keys and the same `keys.json`.
 - `expires` is `YYYY-MM-DDTHH:MM:SSZ` in UTC, and nothing else (no offsets, no fractions). After
   it, signatures by the key are refused. The check runs when the client verifies, not when the
   index was signed. The file itself has no expiry; freshness comes from the per-key dates.
@@ -73,8 +75,9 @@ The signature file, `keys.json.minisig`:
 - Only pre-hashed signatures (`ED`) are accepted. `minisign -S` makes those. Never pass `-l`,
   which makes a legacy signature that jtm refuses.
 - At least `threshold` (2) signatures from distinct root keys listed in the manifest must verify.
-- It is checked once for each first-party plugin, against that plugin's manifest. All five
-  manifests carry the same three keys, so one signature file serves all of them.
+- It is checked once for each first-party plugin, against that plugin's manifest, and once for
+  the marketplace. All five manifests carry the same three keys, so one signature file serves all
+  of them.
 
 Where clients look: the manifests set
 `keys_url = "https://github.com/jtm-dev/index/releases/latest/download/keys.json"`. The signature
@@ -97,7 +100,7 @@ first-party index verifies; a bad `keys.json` stops first-party installs.
 
   `build` writes the unsigned `keys.json` and refuses what the client or the key policy would
   refuse: a sequence that is not higher than `--previous-sequence`, a threshold out of range, a
-  scope that is not a first-party plugin, an expiry in the past or more than 90 days away, a
+  scope that is neither a first-party plugin nor `marketplace`, an expiry in the past or more than 90 days away, a
   duplicate key, and a root key listed as an index key.
 
   `verify` runs the client's own loader for every first-party manifest, then checks that the
@@ -218,10 +221,11 @@ cargo run -q -p jtm-index -- keys build \
   one and the incoming one during an overlap (see [Rotating index keys](#rotating-index-keys)).
   Keep `--threshold` at its default of 1.
 - `--scope java,maven` narrows every listed key to those plugins. The default is all first-party
-  plugins, taken from the manifests.
+  plugins, taken from the manifests, plus `marketplace`.
 - For the first file leave `--previous-sequence` out and use `--sequence 1`.
 
-It prints the file's SHA-256. Send the file and that hash to the signers, and send the hash over a
+It prints the file's SHA-256. It overwrites `--out`; if a `.minisig` is left beside it from an
+earlier file, it says so, and that file must be deleted before signing. Send the file and that hash to the signers, and send the hash over a
 second channel.
 
 ### 2. Sign (offline, two of the three holders)

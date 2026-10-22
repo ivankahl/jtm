@@ -123,7 +123,7 @@ fn main() -> ExitCode {
             if json {
                 let error = serde_json::json!({
                     "ok": false,
-                    "error": { "code": failure.code(), "message": failure.to_string() },
+                    "error": { "code": failure.code(), "message": failure.message() },
                 });
                 println!("{error}");
             }
@@ -153,6 +153,14 @@ fn build(args: &BuildArgs) -> Result<String, Failure> {
     let bytes = keys_file::build(&spec, &first_party, now(&args.common))?;
     std::fs::write(&args.out, &bytes)
         .map_err(|e| Failure::Io(format!("cannot write {}: {e}", args.out.display())))?;
+    let mut stale = args.out.clone().into_os_string();
+    stale.push(".minisig");
+    if Path::new(&stale).exists() {
+        eprintln!(
+            "note: {} exists and belongs to an earlier file; delete it before signing",
+            Path::new(&stale).display()
+        );
+    }
     let sha256 = jtm_security::sha256_hex(&bytes);
     if args.common.json {
         return Ok(serde_json::json!({
@@ -197,7 +205,7 @@ fn verify(args: &VerifyArgs) -> Result<String, Failure> {
         return Ok(value.to_string());
     }
     let mut out = format!(
-        "{} verifies for {} first-party plugins ({}), signed by root key(s) {}\n\
+        "{} verifies for {} plugins ({}), signed by root key(s) {}\n\
          sequence {}, threshold {}, sha256 {}",
         args.file.display(),
         report.plugins.len(),
