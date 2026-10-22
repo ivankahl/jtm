@@ -316,23 +316,37 @@ fn hosts(inputs: &Inputs<'_>) -> Vec<String> {
             continue;
         };
         let index = &plugin.manifest.index;
-        // As `Session` loads indices: the index comes from `index_url` or else the mirrored
-        // canonical URL, and the keys file is always fetched from its own, unmirrored URL.
-        let index_url = match settings
+        // As `Session` loads indices: an `index_url` override is used as written; otherwise
+        // `[mirrors]` rewrite the canonical index URL, and the keys file and each signature
+        // are rewritten as URLs of their own. A rewrite to a local directory is not a host.
+        let override_url = settings
             .plugins
             .get(&name)
-            .and_then(|p| p.index_url.as_deref())
-        {
-            Some(url) => url.to_owned(),
-            None => mirrors::rewrite(&index.url, &settings.mirrors),
-        };
-        found.extend(
-            std::iter::once(index_url.as_str())
-                .chain(index.keys_url.as_deref())
-                .filter_map(origin),
-        );
+            .and_then(|p| p.index_url.as_deref());
+        let mut urls: Vec<String> = Vec::new();
+        match override_url {
+            Some(url) => urls.push(url.to_owned()),
+            None => urls.extend(mirrored(&index.url, &settings.mirrors)),
+        }
+        if let Some(keys_url) = index.keys_url.as_deref() {
+            urls.extend(mirrored(keys_url, &settings.mirrors));
+        }
+        found.extend(urls.iter().filter_map(|url| origin(url)));
     }
     found.into_iter().take(MAX_HOSTS).collect()
+}
+
+/// The network URLs `url` and its signature are fetched from once `[mirrors]` has been
+/// applied. A local target is left out, and so is a rewrite `Session` would refuse, which it
+/// reports when it loads the index.
+fn mirrored(url: &str, mirrors: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    [url.to_owned(), format!("{url}.minisig")]
+        .iter()
+        .filter_map(|url| match mirrors::resolve(url, mirrors) {
+            Ok(mirrors::Location::Url(target)) => Some(target),
+            Ok(mirrors::Location::File { .. }) | Err(_) => None,
+        })
+        .collect()
 }
 
 /// `scheme://host[:port]/` of a network URL, without any credentials; `None` for a local path.

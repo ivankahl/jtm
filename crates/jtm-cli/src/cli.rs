@@ -193,6 +193,33 @@ pub(crate) enum Command {
     /// Diagnose PATH, current links, the shell hook, proxy, TLS, the trust store and yanked
     /// plugins. Only reads; exits with the code of the first check that fails.
     Doctor,
+    /// Copy signed indices and artifacts for a corporate or air-gapped mirror.
+    #[command(subcommand)]
+    Mirror(MirrorCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum MirrorCommand {
+    /// Copy verified indices, their signatures and, with --artifacts, every archive they list
+    /// into a directory that `[mirrors]` or `plugins.<name>.index_url` can point at. Files are
+    /// laid out as `<dir>/<host>/<path of the URL>`.
+    Export {
+        /// The directory to export into; created when missing.
+        dir: PathBuf,
+        /// Export only this plugin. Repeatable; the default is every plugin.
+        #[arg(long, value_name = "NAME")]
+        plugin: Vec<String>,
+        /// Export only this platform, such as `linux-x64`. Repeatable; the default is every
+        /// platform a plugin publishes an index for.
+        #[arg(long, value_name = "PLATFORM")]
+        platform: Vec<String>,
+        /// Also copy every archive the indices list. Verified against the signed index.
+        #[arg(long)]
+        artifacts: bool,
+        /// Show what would be exported without writing or downloading anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

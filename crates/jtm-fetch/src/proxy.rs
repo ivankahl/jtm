@@ -70,7 +70,7 @@ struct Route {
 impl fmt::Debug for Route {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Route")
-            .field("url", &redact_proxy_url(&self.url))
+            .field("url", &redact_url(&self.url))
             .field("source", &self.source)
             .finish()
     }
@@ -142,7 +142,13 @@ impl ProxyConfig {
 
         let http = env_route(env, &["HTTP_PROXY", "http_proxy"])?;
         let https = env_route(env, &["HTTPS_PROXY", "https_proxy"])?;
-        let all = env_route(env, &["ALL_PROXY", "all_proxy"])?;
+        // `ALL_PROXY` only fills gaps, so a stale or unusable value is not an error while both
+        // specific variables are set and it would never be consulted.
+        let all = if http.is_some() && https.is_some() {
+            None
+        } else {
+            env_route(env, &["ALL_PROXY", "all_proxy"])?
+        };
         if http.is_some() || https.is_some() || all.is_some() {
             return Ok(ProxyConfig {
                 http: http.or_else(|| all.clone()),
@@ -178,7 +184,7 @@ impl ProxyConfig {
     pub fn report(&self) -> ProxyReport {
         let show = |route: &Option<Route>| {
             route.as_ref().map(|route| ProxyRoute {
-                url: redact_proxy_url(&route.url),
+                url: redact_url(&route.url),
                 source: route.source.clone(),
             })
         };
@@ -270,21 +276,11 @@ fn env_route(env: &dyn Fn(&str) -> Option<String>, names: &[&str]) -> Result<Opt
 
 /// Hides the credentials in a URL, as in `http://user:pass@proxy:8080`, so that errors, logs
 /// and `jtm doctor` never show them.
+///
+/// Everything before the last `@` counts as credentials, even when an unescaped password holds
+/// `/`, `?` or `#`: ending the authority at the first of those would echo the rest of the
+/// password. A path that holds an `@` loses its host as well, which errs on the side of hiding.
 pub fn redact_url(url: &str) -> String {
-    let (scheme, rest) = match url.find("://") {
-        Some(at) => url.split_at(at + 3),
-        None => ("", url),
-    };
-    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
-    match authority.rfind('@') {
-        Some(at) => format!("{scheme}***@{}", &rest[at + 1..]),
-        None => url.to_owned(),
-    }
-}
-
-/// Like [`redact_url`], for a proxy URL, which has no path: everything before the last `@` is
-/// credentials, even when an unescaped password holds `/`, `?` or `#`.
-pub fn redact_proxy_url(url: &str) -> String {
     let (scheme, rest) = match url.find("://") {
         Some(at) => url.split_at(at + 3),
         None => ("", url),

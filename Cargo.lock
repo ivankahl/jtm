@@ -1215,6 +1215,16 @@ dependencies = [
 [[package]]
 name = "jtm-index"
 version = "0.1.0"
+dependencies = [
+ "assert_cmd",
+ "clap",
+ "jtm-plugin",
+ "jtm-security",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "jtm-plugin"

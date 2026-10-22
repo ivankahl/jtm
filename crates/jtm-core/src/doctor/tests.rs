@@ -1186,17 +1186,29 @@ fn a_marketplace_that_fails_skips_the_check_with_the_reason() {
 }
 
 #[test]
-fn a_keys_file_is_probed_at_its_own_unmirrored_host() {
+fn a_keys_file_is_probed_where_the_mirrors_send_it() {
+    // A mirror for the keys file alone moves it, and its signature, but not the index.
     let recorder = Recorder::default();
-    let home = Home::with_index(KEYS_URL)
-        .online()
-        .config("[mirrors]\n\"https://index.example.test/\" = \"https://mirror.corp.test/jtm/\"\n");
+    let home = Home::with_index(KEYS_URL).online().config(
+        "[mirrors]\n\"https://index.example.test/keys.json\" = \"https://keys.corp.test/keys.json\"\n",
+    );
     check_with(&home, "tls", Some(&recorder), None);
     assert_eq!(
         recorder.urls(),
-        ["https://index.example.test/", "https://mirror.corp.test/"],
-        "the loader fetches the keys file from keys_url as written"
+        ["https://index.example.test/", "https://keys.corp.test/"],
+        "the loader rewrites keys_url through [mirrors] like an index URL"
     );
+
+    // A keys file mirrored to a local directory is read from disk, not probed.
+    let recorder = Recorder::default();
+    let home = Home::with_index(KEYS_URL).online();
+    let local = home.dirs.data.join("mirror");
+    let home = home.config(&format!(
+        "[mirrors]\n\"https://index.example.test/keys.json\" = '{}'\n",
+        local.join("keys.json").display()
+    ));
+    check_with(&home, "tls", Some(&recorder), None);
+    assert_eq!(recorder.urls(), ["https://index.example.test/"]);
 
     let recorder = Recorder::default();
     let home = Home::with_index(KEYS_URL)
