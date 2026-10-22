@@ -12,6 +12,7 @@ pub mod adapters;
 pub mod candidate;
 pub mod cli;
 pub mod confirm;
+pub mod confirmed_file;
 pub mod context;
 pub mod digest;
 pub mod error;

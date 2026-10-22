@@ -416,7 +416,10 @@ fn urls_expand_os_and_arch() {
     // The rolling release: a template that still names `{index_version}` (a third-party
     // plugin written to the older SPEC) is read from the stable `latest` location.
     assert_eq!(
-        expand("https://x/download/{index_version}/j-{os}.json", "linux-x64"),
+        expand(
+            "https://x/download/{index_version}/j-{os}.json",
+            "linux-x64"
+        ),
         "https://x/download/latest/j-linux.json"
     );
     assert_eq!(local_path("https://x"), None);

@@ -638,3 +638,112 @@ fn human_errors_name_the_code_on_stderr() {
     assert!(outcome.stdout.is_empty());
     assert!(outcome.stderr.contains("E_USAGE"), "{}", outcome.stderr);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Confirmed files
+// ---------------------------------------------------------------------------------------------
+
+/// Runs with an acquirer that fails the test if the sources are asked for anything.
+fn run_offline(args: Vec<String>, env: &[(&str, &str)]) -> Outcome {
+    let env: HashMap<String, String> = env
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+    let cli = Cli::try_parse_from(args).unwrap();
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let code = execute(
+        &cli,
+        &|name| env.get(name).cloned(),
+        &|_plugin| panic!("the sources must not be asked when a confirmed file is given"),
+        &mut stdout,
+        &mut stderr,
+    );
+    Outcome {
+        code,
+        stdout: String::from_utf8(stdout).unwrap(),
+        stderr: String::from_utf8(stderr).unwrap(),
+    }
+}
+
+#[test]
+fn write_confirmed_saves_the_confirmed_entries_even_in_a_dry_run() {
+    let setup = Setup::new();
+    let file = setup.scratch.path().join("deep/confirmed/demo.json");
+    let path = file.display().to_string();
+    let outcome = run(
+        setup.args(&["--json", "--dry-run", "--write-confirmed", &path]),
+        &[],
+    );
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert!(names(setup.out.path()).is_empty());
+    let text = fs::read_to_string(&file).unwrap();
+    assert_eq!(
+        text,
+        crate::confirmed_file::render("demo", &confirmed()).unwrap()
+    );
+}
+
+#[test]
+fn use_confirmed_signs_exactly_what_was_saved_without_asking_the_sources() {
+    let setup = Setup::new();
+    let secret = setup.secret_file(&minisign_key().secret_file);
+    let file = setup.scratch.path().join("demo.json");
+    let path = file.display().to_string();
+    let first = run(
+        setup.args(&["--json", "--dry-run", "--write-confirmed", &path]),
+        &[],
+    );
+    assert_eq!(first.code, 0, "{}", first.stderr);
+
+    let outcome = run_offline(
+        setup.args(&["--json", "--secret-key", &secret, "--use-confirmed", &path]),
+        &[],
+    );
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert_eq!(outcome.json()["data"]["files"].as_array().unwrap().len(), 2);
+    // The run that read the file produced the same indices as one that went to the sources.
+    let direct = Setup::new();
+    let direct_secret = direct.secret_file(&minisign_key().secret_file);
+    run(
+        direct.args(&["--json", "--secret-key", &direct_secret]),
+        &[],
+    );
+    assert_eq!(
+        fs::read(setup.out.path().join("demo-linux-x64.json")).unwrap(),
+        fs::read(direct.out.path().join("demo-linux-x64.json")).unwrap()
+    );
+}
+
+#[test]
+fn a_confirmed_file_cannot_be_both_read_and_written() {
+    let setup = Setup::new();
+    let args = setup.args(&["--use-confirmed", "a.json", "--write-confirmed", "b.json"]);
+    assert!(Cli::try_parse_from(args).is_err());
+}
+
+#[test]
+fn a_confirmed_file_for_another_plugin_or_a_missing_one_is_refused() {
+    let setup = Setup::new();
+    let file = setup.scratch.path().join("demo.json");
+    let path = file.display().to_string();
+    run(
+        setup.args(&["--json", "--dry-run", "--write-confirmed", &path]),
+        &[],
+    );
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(&file, text.replace("\"demo\"", "\"other\"")).unwrap();
+    let other = run_offline(
+        setup.args(&["--json", "--dry-run", "--use-confirmed", &path]),
+        &[],
+    );
+    assert_eq!(other.code, 5);
+    assert_eq!(other.json()["error"]["code"], "E_INDEX_INVALID");
+
+    let missing = setup.scratch.path().join("none.json").display().to_string();
+    let outcome = run_offline(
+        setup.args(&["--json", "--dry-run", "--use-confirmed", &missing]),
+        &[],
+    );
+    assert_eq!(outcome.code, 2);
+    assert_eq!(outcome.json()["error"]["code"], "E_USAGE");
+}

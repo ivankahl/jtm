@@ -21,6 +21,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::confirm::{Confirmed, DEFAULT_MAX_ARTIFACT_BYTES, Options};
+use crate::confirmed_file;
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::plugin::Plugin;
@@ -106,6 +107,16 @@ pub struct GenerateArgs {
     /// Do everything except write files. No key is needed, but with one it is checked.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Save the confirmed entries to this file (also in a dry run): normalised JSON that a
+    /// person can review and `--use-confirmed` can sign later.
+    #[arg(long, value_name = "FILE", conflicts_with = "use_confirmed")]
+    pub write_confirmed: Option<PathBuf>,
+
+    /// Take the entries from a file written by `--write-confirmed` instead of asking the
+    /// sources, so what was reviewed is exactly what is signed. Nothing is downloaded.
+    #[arg(long, value_name = "FILE")]
+    pub use_confirmed: Option<PathBuf>,
 
     /// The most bytes of one artifact downloaded to compute its hash.
     #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_MAX_ARTIFACT_BYTES)]
@@ -195,7 +206,13 @@ fn generate(
     }
     let plugin = Plugin::load(&args.plugin_dir)?;
 
-    let confirmed = acquire(&plugin)?;
+    let confirmed = match &args.use_confirmed {
+        Some(path) => confirmed_file::parse(&plugin.binding.plugin, &read_confirmed(path)?)?,
+        None => acquire(&plugin)?,
+    };
+    if let Some(path) = &args.write_confirmed {
+        write_confirmed(path, &plugin.binding.plugin, &confirmed)?;
+    }
     publish(&Request {
         binding: &plugin.binding,
         confirmed: &confirmed,
@@ -205,6 +222,41 @@ fn generate(
         signer: signer.as_ref(),
         settings: Settings { now, validity },
         dry_run: args.dry_run,
+    })
+}
+
+/// Reads a confirmed file, refusing anything larger than the limit before reading it.
+fn read_confirmed(path: &Path) -> Result<Vec<u8>> {
+    let usage = |why: String| Error::Usage {
+        message: format!("cannot read {}: {why}", path.display()),
+    };
+    let size = std::fs::metadata(path)
+        .map_err(|e| usage(e.to_string()))?
+        .len();
+    if size > confirmed_file::MAX_CONFIRMED_FILE as u64 {
+        return Err(usage(format!(
+            "larger than {} bytes",
+            confirmed_file::MAX_CONFIRMED_FILE
+        )));
+    }
+    std::fs::read(path).map_err(|e| usage(e.to_string()))
+}
+
+/// Saves `confirmed` as a confirmed file, replacing the file atomically.
+fn write_confirmed(path: &Path, plugin: &str, confirmed: &Confirmed) -> Result<()> {
+    let text = confirmed_file::render(plugin, confirmed)?;
+    let io = |source| Error::Output {
+        path: path.to_path_buf(),
+        source,
+    };
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(io)?;
+    }
+    jtm_security::trust::write_atomically(path, text.as_bytes()).map_err(|error| match error {
+        jtm_security::Error::Io { path, source } => Error::Output { path, source },
+        other => Error::Invalid {
+            message: other.to_string(),
+        },
     })
 }
 

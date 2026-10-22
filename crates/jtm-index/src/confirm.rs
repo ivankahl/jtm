@@ -139,14 +139,48 @@ impl Provenance {
             .iter()
             .any(|s| matches!(s.status, SignatureStatus::Verified { .. }))
         {
-            labels.push("signature:pgp".to_owned());
+            labels.push(SIGNATURE_LABEL.to_owned());
         }
         if self.confirmation == Confirmation::SourceAndComputed {
-            labels.push("computed:sha256".to_owned());
+            labels.push(COMPUTED_LABEL.to_owned());
         }
         labels
     }
+
+    /// A provenance that has only the labels of an earlier run, as read back from a confirmed
+    /// file: [`Provenance::labels`] gives them again, and nothing else is known. The `Err` is
+    /// the first label with a `:` that this generator does not produce, since source ids
+    /// cannot contain one.
+    pub fn from_labels(labels: &[String]) -> std::result::Result<Provenance, String> {
+        let mut provenance = Provenance {
+            confirmation: Confirmation::Independent,
+            sources: Vec::new(),
+            claims: Vec::new(),
+            signatures: Vec::new(),
+            fetched_at: String::new(),
+        };
+        for label in labels {
+            match label.as_str() {
+                SIGNATURE_LABEL => provenance.signatures.push(SignatureRecord {
+                    source: String::new(),
+                    url: String::new(),
+                    status: SignatureStatus::Verified {
+                        fingerprint: String::new(),
+                    },
+                }),
+                COMPUTED_LABEL => provenance.confirmation = Confirmation::SourceAndComputed,
+                other if other.contains(':') => return Err(other.to_owned()),
+                other => provenance.sources.push(other.to_owned()),
+            }
+        }
+        Ok(provenance)
+    }
 }
+
+/// The label for a verified vendor signature.
+const SIGNATURE_LABEL: &str = "signature:pgp";
+/// The label for a hash confirmed by the generator's own download.
+const COMPUTED_LABEL: &str = "computed:sha256";
 
 /// An artifact whose hash is confirmed, ready for the index writer.
 #[derive(Debug, Clone, PartialEq, Eq)]
