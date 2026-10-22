@@ -176,7 +176,7 @@ pub struct Planned {
 }
 
 /// The HTTP client options `settings` ask for.
-fn client_options(settings: &Settings) -> ClientOptions {
+pub(crate) fn client_options(settings: &Settings) -> ClientOptions {
     ClientOptions {
         allow_http: settings.security.allow_http_mirrors,
         proxy: settings.network.proxy.clone(),
