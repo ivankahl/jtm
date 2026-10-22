@@ -76,8 +76,8 @@ pub enum Error {
         error: jtm_security::Error,
     },
 
-    /// An output file could not be written. Maps to `E_IO`.
-    #[error("cannot write {}: {source}", path.display())]
+    /// A file of the publish could not be read or written. Maps to `E_IO`.
+    #[error("cannot access {}: {source}", path.display())]
     Output {
         path: PathBuf,
         #[source]

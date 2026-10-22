@@ -451,8 +451,56 @@ fn a_previous_file_signed_by_another_key_is_refused_unless_that_key_is_given() {
     run.previous_keys = vec![PublicKey::parse(&_old.public).unwrap()];
     run.now = at(1);
     let report = run.go().unwrap();
-    // The content is the same, so the old files are carried over, signature and all.
+    // The content is the same, but the signature is not the new key's, so it is made again.
+    assert!(report.changed);
+    assert!(report.files.iter().all(|f| f.action == Action::Resigned));
+}
+
+#[test]
+fn after_a_key_rotation_unchanged_files_are_signed_again_with_the_new_key() {
+    // A client that trusts only the new key would refuse the old signature until the file
+    // came up for renewal, which can be two weeks away.
+    let (dir, old) = published();
+    let new_key = minisign_key();
+    let out = tempfile::tempdir().unwrap();
+    let signer = signer(&new_key);
+    let mut run = Run::new(two_platforms(), out.path(), &signer);
+    run.previous = Some(dir.path());
+    run.previous_keys = vec![PublicKey::parse(&old.public).unwrap()];
+    run.now = at(1);
+    let report = run.go().unwrap();
+
+    assert!(report.changed);
+    assert!(report.files.iter().all(|f| f.action == Action::Resigned));
+    assert!(report.files.iter().all(|f| f.sequence == 1));
+    for file in ["demo-linux-x64.json", "demo-windows-x64.json"] {
+        // The content, and with it the hash a client records, is exactly what it was.
+        let data = fs::read(out.path().join(file)).unwrap();
+        assert_eq!(data, fs::read(dir.path().join(file)).unwrap());
+        let signature = fs::read(out.path().join(format!("{file}.minisig"))).unwrap();
+        verify::load_previous(
+            &[PublicKey::parse(&new_key.public).unwrap()],
+            "demo",
+            file,
+            &data,
+            &signature,
+            at(1),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn unchanged_files_signed_by_the_current_key_are_left_alone() {
+    let (dir, key) = published();
+    let out = tempfile::tempdir().unwrap();
+    let signer = signer(&key);
+    let mut run = Run::new(two_platforms(), out.path(), &signer);
+    run.previous = Some(dir.path());
+    run.now = at(1);
+    let report = run.go().unwrap();
     assert!(!report.changed);
+    assert!(report.files.iter().all(|f| f.action == Action::Unchanged));
 }
 
 #[test]

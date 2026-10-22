@@ -130,6 +130,10 @@ pub enum Action {
     Renewed,
     /// Nothing to publish: the previous file stays as it is.
     Unchanged,
+    /// The previous file stays as it is, but its signature is not the signing key's (the key
+    /// was rotated), so it is signed again. The bytes, and so the hash a client records for
+    /// them, do not change.
+    Resigned,
 }
 
 impl Action {
@@ -140,6 +144,7 @@ impl Action {
             Action::Updated => "updated",
             Action::Renewed => "renewed",
             Action::Unchanged => "unchanged",
+            Action::Resigned => "resigned",
         }
     }
 }

@@ -14,7 +14,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
-use jtm_core::ExitCode;
+use jtm_core::{ErrorCode, ExitCode};
 use jtm_fetch::{Client, ClientOptions};
 use jtm_security::{PublicKey, Timestamp};
 use serde::Serialize;
@@ -177,6 +177,22 @@ fn generate(
         .iter()
         .map(|value| public_key(value))
         .collect::<Result<Vec<_>>>()?;
+    // The previous publish is read only after the sources have been queried, so what can be
+    // known about it now is checked now rather than after a long run of downloads.
+    if let Some(dir) = &args.previous {
+        if !dir.is_dir() {
+            return Err(Error::Usage {
+                message: format!("the previous publish {} is not a directory", dir.display()),
+            });
+        }
+        if signer.is_none() && previous_keys.is_empty() {
+            return Err(Error::Usage {
+                message: "the previous publish can only be checked with a key: give the signing \
+                          key or --previous-key"
+                    .to_owned(),
+            });
+        }
+    }
     let plugin = Plugin::load(&args.plugin_dir)?;
 
     let confirmed = acquire(&plugin)?;
@@ -197,15 +213,13 @@ fn load_signer(
     args: &GenerateArgs,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Option<Signer>> {
+    // A password has no line ending of its own; a file or a secret set with `echo` adds one.
     let password = match (&args.password_file, &args.password_env) {
-        (Some(path), _) => Some(
-            read_secret_file(path)?
-                .trim_end_matches(['\n', '\r'])
-                .to_owned(),
-        ),
+        (Some(path), _) => Some(read_secret_file(path)?),
         (None, Some(name)) => Some(read_env(env, name)?),
         (None, None) => None,
-    };
+    }
+    .map(|password| password.trim_end_matches(['\n', '\r']).to_owned());
     let text = match (&args.secret_key, &args.secret_key_env) {
         (Some(path), _) => read_secret_file(path)?,
         (None, Some(name)) => read_env(env, name)?,
@@ -310,6 +324,34 @@ fn warnings_out(warnings: &[Warning]) -> Vec<WarningOut<'_>> {
         .collect()
 }
 
+/// The envelope of a failure (SPEC.md section 12).
+fn error_envelope(
+    command: &str,
+    code: ErrorCode,
+    message: &str,
+    details: Map<String, Value>,
+) -> Value {
+    json!({
+        "ok": false,
+        "command": command,
+        "error": {
+            "code": code.as_str(),
+            "message": message,
+            "retryable": code.retryable(),
+            "details": details,
+        },
+        "jtm_version": VERSION,
+    })
+}
+
+/// The envelope for a command line that does not parse, and the exit status that goes with it.
+pub fn usage_failure(message: &str) -> (Value, u8) {
+    (
+        error_envelope("jtm-index", ErrorCode::Usage, message, Map::new()),
+        ExitCode::Usage.as_u8(),
+    )
+}
+
 /// Writes the result and returns the exit status.
 fn render(
     json: bool,
@@ -324,7 +366,8 @@ fn render(
                 let envelope = json!({
                     "ok": true,
                     "command": command,
-                    "changed": report.changed,
+                    // Whether the run changed anything on disk; a dry run never does.
+                    "changed": report.changed && !report.dry_run,
                     "data": report,
                     "warnings": warnings_out(&report.warnings),
                     "jtm_version": VERSION,
@@ -347,17 +390,7 @@ fn render(
                         rejections.iter().map(ToString::to_string).collect(),
                     );
                 }
-                let envelope = json!({
-                    "ok": false,
-                    "command": command,
-                    "error": {
-                        "code": code.as_str(),
-                        "message": error.to_string(),
-                        "retryable": code.retryable(),
-                        "details": details,
-                    },
-                    "jtm_version": VERSION,
-                });
+                let envelope = error_envelope(command, code, &error.to_string(), details);
                 let _ = writeln!(stdout, "{envelope}");
             } else {
                 let _ = writeln!(stderr, "error[{}]: {error}", code.as_str());

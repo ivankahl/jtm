@@ -290,6 +290,26 @@ fn a_password_from_the_environment_opens_an_encrypted_key() {
 }
 
 #[test]
+fn a_password_from_the_environment_loses_its_trailing_newline_too() {
+    // A CI secret set with `echo` carries one.
+    let setup = Setup::new();
+    let pair =
+        minisign::KeyPair::generate_encrypted_keypair(Some("correct horse".to_owned())).unwrap();
+    let secret = setup.secret_file(&pair.sk.to_box(None).unwrap().into_string());
+    let outcome = run(
+        setup.args(&[
+            "--json",
+            "--secret-key",
+            &secret,
+            "--password-env",
+            "KEY_PASSWORD",
+        ]),
+        &[("KEY_PASSWORD", "correct horse\r\n")],
+    );
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+}
+
+#[test]
 fn a_password_from_a_file_loses_its_trailing_newline() {
     let setup = Setup::new();
     let pair =
@@ -389,7 +409,10 @@ fn a_dry_run_needs_no_key_and_writes_nothing() {
     assert_eq!(outcome.code, 0, "{}", outcome.stderr);
     let json = outcome.json();
     assert_eq!(json["data"]["dry_run"], true);
-    assert_eq!(json["changed"], true);
+    // The envelope's `changed` says whether the run changed anything, which a dry run never
+    // does; `data.changed` says what a real run would publish.
+    assert_eq!(json["changed"], false);
+    assert_eq!(json["data"]["changed"], true);
     assert_eq!(json["data"]["files"].as_array().unwrap().len(), 2);
     assert!(names(setup.out.path()).is_empty());
 }

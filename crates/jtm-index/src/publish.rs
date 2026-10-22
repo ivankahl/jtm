@@ -5,7 +5,9 @@
 //! verified, the new ones are rendered, signed and loaded with the client's loader, and only
 //! then does anything touch the output directory. A failed run therefore leaves no partial
 //! release behind, bar an operating system error halfway through the copy. Each file is
-//! replaced atomically, so a reader never sees half of one.
+//! replaced atomically, so a reader never sees half of one. A file and its signature are two
+//! files, though, so `--out` is a staging directory to upload a release from, not a
+//! directory clients read while the run is in progress.
 
 use std::fs::{self, File};
 use std::io::Read as _;
@@ -53,7 +55,9 @@ pub struct Request<'a> {
 pub struct Report {
     pub plugin: String,
     pub dry_run: bool,
-    /// Whether any file is new, which is whether there is anything to release.
+    /// Whether any file differs from the previous publish (in a dry run, whether it would),
+    /// which is whether there is anything to release. Not the envelope's `changed`, which is
+    /// whether the run changed anything on disk.
     pub changed: bool,
     /// The public key the files verify with, when a key signed them.
     pub public_key: Option<String>,
@@ -96,28 +100,31 @@ pub fn publish(req: &Request<'_>) -> Result<Report> {
         None => Default::default(),
     };
     let written = writer::write(req.binding, req.confirmed, &previous, &req.settings)?;
+    let warnings_from_writer = written.warnings;
+    let mut files = written.files;
 
     // Sign every file that needs it, loading the result as a client would. A signer is
     // present in a real run, so only a dry run without a key skips this.
-    let mut signatures: Vec<Vec<u8>> = Vec::with_capacity(written.files.len());
-    for output in &written.files {
-        let signature = match (&output.signature, req.signer) {
-            (Some(carried), _) => carried.clone(),
-            (None, Some(signer)) => {
-                let signed =
-                    verify::sign_and_load(signer, plugin, &output.file, &output.bytes, now)?;
-                if signed.index.sequence != output.sequence
-                    || signed.index.platform != output.platform
-                {
-                    return Err(Error::Invalid {
-                        message: format!(
-                            "{} did not come back from the loader as written",
-                            output.file
-                        ),
-                    });
+    let mut signatures: Vec<Vec<u8>> = Vec::with_capacity(files.len());
+    for output in &mut files {
+        let signature = match (output.signature.take(), req.signer) {
+            (Some(carried), Some(signer)) => {
+                // A file left as it is must still verify with the key that publishes it. After
+                // a key rotation the old signature does not, and a client that trusts only the
+                // new key would refuse the file until it came up for renewal.
+                let keys = std::slice::from_ref(signer.public_key());
+                let current =
+                    verify::load_previous(keys, plugin, &output.file, &output.bytes, &carried, now)
+                        .is_ok();
+                if current {
+                    carried
+                } else {
+                    output.action = Action::Resigned;
+                    sign(signer, plugin, output, now)?
                 }
-                signed.signature
             }
+            (Some(carried), None) => carried,
+            (None, Some(signer)) => sign(signer, plugin, output, now)?,
             (None, None) => Vec::new(),
         };
         signatures.push(signature);
@@ -128,7 +135,7 @@ pub fn publish(req: &Request<'_>) -> Result<Report> {
             path: req.out_dir.to_path_buf(),
             source,
         })?;
-        for (output, signature) in written.files.iter().zip(&signatures) {
+        for (output, signature) in files.iter().zip(&signatures) {
             put(&req.out_dir.join(&output.file), &output.bytes)?;
             put(
                 &req.out_dir.join(format!("{}.minisig", output.file)),
@@ -146,15 +153,29 @@ pub fn publish(req: &Request<'_>) -> Result<Report> {
             message: message.clone(),
         })
         .collect();
-    warnings.extend(written.warnings.iter().cloned());
+    warnings.extend(warnings_from_writer);
     Ok(Report {
         plugin: plugin.to_owned(),
         dry_run: req.dry_run,
-        changed: written.changed(),
+        changed: files.iter().any(|f| f.action != Action::Unchanged),
         public_key: req.signer.map(|s| s.public_key().to_string()),
-        files: written.files.iter().map(file_report).collect(),
+        files: files.iter().map(file_report).collect(),
         warnings,
     })
+}
+
+/// Signs a file and checks that the client's loader reads it back as written.
+fn sign(signer: &Signer, plugin: &str, output: &Output, now: Timestamp) -> Result<Vec<u8>> {
+    let signed = verify::sign_and_load(signer, plugin, &output.file, &output.bytes, now)?;
+    if signed.index.sequence != output.sequence || signed.index.platform != output.platform {
+        return Err(Error::Invalid {
+            message: format!(
+                "{} did not come back from the loader as written",
+                output.file
+            ),
+        });
+    }
+    Ok(signed.signature)
 }
 
 fn file_report(output: &Output) -> FileReport {

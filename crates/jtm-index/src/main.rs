@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use clap::error::ErrorKind;
-use jtm_index::cli::{Cli, run};
+use jtm_index::cli::{Cli, run, usage_failure};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
@@ -14,19 +14,9 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         // Usage errors honour `--json` even though parsing failed.
         Err(err) if wants_json(&args) && !is_informational(err.kind()) => {
-            let envelope = serde_json::json!({
-                "ok": false,
-                "command": "jtm-index",
-                "error": {
-                    "code": "E_USAGE",
-                    "message": err.render().to_string().trim().to_owned(),
-                    "retryable": false,
-                    "details": {},
-                },
-                "jtm_version": env!("CARGO_PKG_VERSION"),
-            });
+            let (envelope, status) = usage_failure(err.render().to_string().trim());
             println!("{envelope}");
-            return ExitCode::from(2);
+            return ExitCode::from(status);
         }
         Err(err) => {
             let _ = err.print();
