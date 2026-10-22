@@ -340,7 +340,9 @@ impl GithubConfig {
                 let text =
                     ctx.get_text(origin.id, &sidecar.browser_download_url, CHECKSUM_LIMIT)?;
                 Ok(text
-                    .and_then(|t| parse_checksum_file(&t, HashAlgorithm::Sha256))
+                    .and_then(|t| {
+                        parse_checksum_file(&t, HashAlgorithm::Sha256, Some(asset.name.as_str()))
+                    })
                     .and_then(|hex| {
                         ClaimedHash::new(HashAlgorithm::Sha256, &hex, &sidecar.browser_download_url)
                     }))

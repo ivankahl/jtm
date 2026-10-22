@@ -5,6 +5,11 @@
 //! [`Discovery`](crate::Discovery). Adapters never download artifacts and never decide what is
 //! trusted; they report what the upstream says, with every field checked on the way out.
 //!
+//! A request that fails after the client's retries fails the whole run rather than skipping the
+//! item: a listing that silently lacks versions would be published, with a higher sequence
+//! number, as the new index. A file the upstream does not have (HTTP 404) is the one thing
+//! that is skipped, with a warning.
+//!
 //! The endpoints are settings with defaults, not constants in the code, because vendors move
 //! them (SPEC.md section 15). All of them must be `https`: the client refuses anything else.
 

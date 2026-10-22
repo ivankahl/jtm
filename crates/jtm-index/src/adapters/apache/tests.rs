@@ -177,6 +177,34 @@ fn a_version_listed_twice_is_read_once() {
 }
 
 #[test]
+fn a_version_in_two_listings_comes_from_the_first() {
+    let mock = mock();
+    mock.serve(
+        "/downloads.apache.org/maven/maven-3/",
+        r#"<a href="3.9.9/">3.9.9/</a>"#,
+    );
+    mock.serve(
+        "/downloads.apache.org/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz.sha512",
+        fixture("apache/apache-maven-3.9.9-bin.tar.gz.sha512"),
+    );
+    let both = ApacheConfig {
+        listings: vec![
+            "https://downloads.apache.org/maven/maven-3/".to_owned(),
+            LISTING.to_owned(),
+        ],
+        version_pattern: Some(r"^3\.9\.9$".to_owned()),
+        ..config()
+    };
+    let discovery = both.discover(&ORIGIN, &mock.context()).unwrap();
+    assert_eq!(discovery.candidates.len(), 1);
+    assert!(
+        discovery.candidates[0]
+            .url
+            .starts_with("https://downloads.apache.org/")
+    );
+}
+
+#[test]
 fn a_missing_listing_fails_the_run() {
     let mock = Mock::start();
     let err = config().discover(&ORIGIN, &mock.context()).unwrap_err();

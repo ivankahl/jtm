@@ -148,6 +148,38 @@ fn an_entry_with_a_foreign_download_url_is_dropped() {
 }
 
 #[test]
+fn old_entries_without_flags_are_classified_by_their_version() {
+    // The live listing has `1.0-milestone-9` and the like with every flag empty.
+    let entry = |version: &str| {
+        format!(
+            r#"{{"version":"{version}","rcFor":"","milestoneFor":"","broken":false,
+            "downloadUrl":"https://services.gradle.org/distributions/gradle-{version}-bin.zip",
+            "checksum":"3333333333333333333333333333333333333333333333333333333333333333"}}"#
+        )
+    };
+    let listing = format!(
+        "[{}]",
+        [
+            "1.0-milestone-9",
+            "1.0-rc-3",
+            "1.0",
+            "0.9-preview-1",
+            "1.0-milestone-8a"
+        ]
+        .map(entry)
+        .join(",")
+    );
+    let mock = Mock::start();
+    mock.serve(LISTING, listing);
+    let discovery = config(GradleHash::VersionsApi, true)
+        .discover(&ORIGIN, &mock.context())
+        .unwrap();
+    assert_eq!(versions(&discovery), ["1.0-rc-3", "1.0"]);
+    assert_eq!(discovery.candidates[0].tags, ["rc"]);
+    assert!(discovery.candidates[1].tags.is_empty());
+}
+
+#[test]
 fn a_listing_of_the_wrong_shape_fails_the_run() {
     let mock = Mock::start();
     mock.serve(LISTING, r#"{"versions": []}"#);

@@ -33,7 +33,8 @@ const DEFAULT_VERSION_PATTERN: &str = r"^[0-9][0-9A-Za-z._+-]*$";
 #[serde(deny_unknown_fields)]
 pub struct ApacheConfig {
     /// Directories whose subdirectories are versions, such as
-    /// `https://archive.apache.org/dist/maven/maven-3/`.
+    /// `https://archive.apache.org/dist/maven/maven-3/`. When a version is in more than one,
+    /// the first directory listed wins.
     pub listings: Vec<String>,
     /// The artifact's path below a version's directory, with `{version}`.
     pub artifact: String,
@@ -102,11 +103,12 @@ impl ApacheConfig {
         let algorithm = HashAlgorithm::parse(&self.hash)
             .ok_or_else(|| Error::response(origin.id, "sources.toml", "unknown hash"))?;
         let mut discovery = Discovery::default();
+        // A version in several listings is taken from the first one that has it.
+        let mut seen = BTreeSet::new();
         for listing in &self.listings {
             let listing = with_trailing_slash(listing);
             let page = ctx.get(origin.id, &listing, DOCUMENT_LIMIT)?;
             let page = String::from_utf8_lossy(&page);
-            let mut seen = BTreeSet::new();
             for version in directory_names(&page) {
                 if pattern.is_match(&version) && seen.insert(version.clone()) {
                     self.discover_version(
@@ -143,10 +145,11 @@ impl ApacheConfig {
             discovery.warn(format!("{} {version}: skipped, {reason}", origin.id));
             return Ok(());
         }
+        let file_name = url.rsplit('/').next().unwrap_or_default();
         let sidecar = format!("{url}.{}", algorithm.as_str());
         let text = ctx.get_text(origin.id, &sidecar, CHECKSUM_LIMIT)?;
         let claim = text
-            .and_then(|t| parse_checksum_file(&t, algorithm))
+            .and_then(|t| parse_checksum_file(&t, algorithm, Some(file_name)))
             .and_then(|hex| ClaimedHash::new(algorithm, &hex, &sidecar));
         let Some(claim) = claim else {
             discovery.warn(format!(

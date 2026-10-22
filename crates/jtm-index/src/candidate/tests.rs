@@ -74,6 +74,15 @@ fn versions_names_and_sizes_are_checked() {
 }
 
 #[test]
+fn the_distribution_version_is_held_to_the_version_rules() {
+    let mut c = candidate();
+    c.distribution_version = Some("21.38.21".to_owned());
+    assert_eq!(c.check(), Ok(()));
+    c.distribution_version = Some("21.38 \"quoted\"".to_owned());
+    assert!(c.check().is_err());
+}
+
+#[test]
 fn discovery_drops_bad_candidates_with_a_warning() {
     let mut discovery = Discovery::default();
     discovery.push(candidate());
@@ -132,23 +141,27 @@ fn archives_are_recognised_by_extension() {
 fn checksum_files_in_every_published_form() {
     let sha256 = HashAlgorithm::Sha256;
     // A bare digest, as Gradle and Maven Central publish it, with and without a newline.
-    assert_eq!(parse_checksum_file(SHA256, sha256).as_deref(), Some(SHA256));
     assert_eq!(
-        parse_checksum_file(&format!("{SHA256}\n"), sha256).as_deref(),
+        parse_checksum_file(SHA256, sha256, None).as_deref(),
+        Some(SHA256)
+    );
+    assert_eq!(
+        parse_checksum_file(&format!("{SHA256}\n"), sha256, None).as_deref(),
         Some(SHA256)
     );
     // `sha256sum` output, text and binary mode.
     assert_eq!(
-        parse_checksum_file(&format!("{SHA256}  OpenJDK.tar.gz\n"), sha256).as_deref(),
+        parse_checksum_file(&format!("{SHA256}  OpenJDK.tar.gz\n"), sha256, None).as_deref(),
         Some(SHA256)
     );
     assert_eq!(
-        parse_checksum_file(&format!("{SHA256} *OpenJDK.tar.gz"), sha256).as_deref(),
+        parse_checksum_file(&format!("{SHA256} *OpenJDK.tar.gz"), sha256, None).as_deref(),
         Some(SHA256)
     );
     // BSD style.
     assert_eq!(
-        parse_checksum_file(&format!("SHA256 (OpenJDK.tar.gz) = {SHA256}"), sha256).as_deref(),
+        parse_checksum_file(&format!("SHA256 (OpenJDK.tar.gz) = {SHA256}"), sha256, None)
+            .as_deref(),
         Some(SHA256)
     );
     // Upper case, split into groups of hex digits across spaces.
@@ -156,7 +169,8 @@ fn checksum_files_in_every_published_form() {
     assert_eq!(
         parse_checksum_file(
             &format!("{} {}", a.to_uppercase(), b.to_uppercase()),
-            HashAlgorithm::Sha1
+            HashAlgorithm::Sha1,
+            None
         )
         .as_deref(),
         Some(SHA1)
@@ -164,10 +178,58 @@ fn checksum_files_in_every_published_form() {
 }
 
 #[test]
+fn a_digest_listed_for_another_file_is_not_a_claim_for_this_one() {
+    let sha256 = HashAlgorithm::Sha256;
+    let other = "9".repeat(64);
+    let wanted = Some("tool-1.0.zip");
+    // The wrong file, in each spelling.
+    assert_eq!(
+        parse_checksum_file(&format!("{SHA256}  tool-2.0.zip"), sha256, wanted),
+        None
+    );
+    assert_eq!(
+        parse_checksum_file(&format!("{SHA256} *tool-2.0.zip"), sha256, wanted),
+        None
+    );
+    assert_eq!(
+        parse_checksum_file(&format!("SHA256 (tool-2.0.zip) = {SHA256}"), sha256, wanted),
+        None
+    );
+    // The right file, in each spelling, including a path in front of the name.
+    for line in [
+        format!("{SHA256}  tool-1.0.zip"),
+        format!("{SHA256} *tool-1.0.zip"),
+        format!("{SHA256}  ./dist/tool-1.0.zip"),
+        format!("SHA256 (tool-1.0.zip) = {SHA256}"),
+        SHA256.to_owned(),
+    ] {
+        assert_eq!(
+            parse_checksum_file(&line, sha256, wanted).as_deref(),
+            Some(SHA256),
+            "{line}"
+        );
+    }
+    // A file listing several artifacts yields the line for the one asked about.
+    let several = format!("{other}  tool-2.0.zip\n{SHA256}  tool-1.0.zip\n");
+    assert_eq!(
+        parse_checksum_file(&several, sha256, wanted).as_deref(),
+        Some(SHA256)
+    );
+    assert_eq!(
+        parse_checksum_file(&several, sha256, None).as_deref(),
+        Some(other.as_str())
+    );
+    assert_eq!(
+        parse_checksum_file(&several, sha256, Some("tool-3.0.zip")),
+        None
+    );
+}
+
+#[test]
 fn a_hex_looking_file_name_is_not_part_of_the_digest() {
     let text = format!("{SHA256}  deadbeef");
     assert_eq!(
-        parse_checksum_file(&text, HashAlgorithm::Sha256).as_deref(),
+        parse_checksum_file(&text, HashAlgorithm::Sha256, None).as_deref(),
         Some(SHA256)
     );
 }
@@ -175,19 +237,22 @@ fn a_hex_looking_file_name_is_not_part_of_the_digest() {
 #[test]
 fn anything_else_is_not_a_digest() {
     let sha256 = HashAlgorithm::Sha256;
-    assert_eq!(parse_checksum_file("", sha256), None);
-    assert_eq!(parse_checksum_file("\n\n", sha256), None);
+    assert_eq!(parse_checksum_file("", sha256, None), None);
+    assert_eq!(parse_checksum_file("\n\n", sha256, None), None);
     assert_eq!(
-        parse_checksum_file("<html>404 Not Found</html>", sha256),
+        parse_checksum_file("<html>404 Not Found</html>", sha256, None),
         None
     );
     // The wrong algorithm for the file.
-    assert_eq!(parse_checksum_file(SHA1, sha256), None);
-    assert_eq!(parse_checksum_file(SHA256, HashAlgorithm::Sha1), None);
+    assert_eq!(parse_checksum_file(SHA1, sha256, None), None);
+    assert_eq!(parse_checksum_file(SHA256, HashAlgorithm::Sha1, None), None);
     // Too long.
-    assert_eq!(parse_checksum_file(&format!("{SHA256}ab"), sha256), None);
     assert_eq!(
-        parse_checksum_file(&format!("SHA256 (f) = {SHA256}ab"), sha256),
+        parse_checksum_file(&format!("{SHA256}ab"), sha256, None),
+        None
+    );
+    assert_eq!(
+        parse_checksum_file(&format!("SHA256 (f) = {SHA256}ab"), sha256, None),
         None
     );
 }
@@ -195,6 +260,6 @@ fn anything_else_is_not_a_digest() {
 #[test]
 fn the_recorded_sha512_sidecar_parses() {
     let text = include_str!("../../tests/fixtures/apache/apache-maven-3.9.9-bin.tar.gz.sha512");
-    let digest = parse_checksum_file(text, HashAlgorithm::Sha512).unwrap();
+    let digest = parse_checksum_file(text, HashAlgorithm::Sha512, None).unwrap();
     assert!(digest.starts_with("a555254d6b53d267"), "{digest}");
 }

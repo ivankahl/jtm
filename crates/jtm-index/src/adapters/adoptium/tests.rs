@@ -131,6 +131,7 @@ fn versions_are_written_like_java_prints_them() {
         security,
         patch,
         build,
+        respin: 0,
     };
     assert_eq!(
         java_version(&data(21, 0, 5, 0, Some(11)), false),
@@ -147,13 +148,49 @@ fn versions_are_written_like_java_prints_them() {
     );
     assert_eq!(java_version(&data(26, 0, 0, 0, Some(5)), true), "26-ea+5");
     assert_eq!(java_version(&data(21, 0, 5, 0, None), false), "21.0.5");
+    // A re-spin of a build is a different archive and gets its own version.
+    let respun = VersionData {
+        respin: 1,
+        ..data(17, 0, 9, 0, Some(9))
+    };
+    assert_eq!(java_version(&respun, false), "17.0.9+9.1");
     // The result is a version the java scheme accepts.
-    for version in ["21.0.5+11", "8.0.432+6", "21+35", "17.0.13.1+2", "26-ea+5"] {
+    for version in [
+        "21.0.5+11",
+        "8.0.432+6",
+        "21+35",
+        "17.0.13.1+2",
+        "26-ea+5",
+        "17.0.9+9.1",
+    ] {
         assert!(
             jtm_plugin::VersionScheme::Java.parse(version).is_ok(),
             "{version}"
         );
     }
+}
+
+#[test]
+fn a_respin_is_a_separate_version_from_the_build_it_replaces() {
+    let mock = Mock::start();
+    mock.serve(INFO, fixture("adoptium/available_releases.json"));
+    let release = |respin: u32| {
+        format!(
+            r#"{{"release_type":"ga","version_data":{{"major":21,"minor":0,"security":9,"build":9,
+            "adopt_build_number":{respin}}},
+            "binaries":[{{"os":"linux","architecture":"x64","image_type":"jdk","jvm_impl":"hotspot",
+            "package":{{"name":"a.tar.gz","link":"https://github.com/a{respin}.tar.gz",
+            "checksum":"3333333333333333333333333333333333333333333333333333333333333333"}}}}]}}"#
+        )
+    };
+    mock.serve(RELEASES_21, format!("[{},{}]", release(1), release(0)));
+    let discovery = config().discover(&ORIGIN, &mock.context()).unwrap();
+    let versions: Vec<&str> = discovery
+        .candidates
+        .iter()
+        .map(|c| c.version.as_str())
+        .collect();
+    assert_eq!(versions, ["21.0.9+9.1", "21.0.9+9"]);
 }
 
 #[test]

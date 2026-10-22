@@ -9,7 +9,8 @@
 //!
 //! Versions are written from the API's `version_data` the way `java.lang.Runtime.Version`
 //! prints them: `21.0.5+11`, `8.0.432+6`, `21+35` (trailing zero components are dropped) and
-//! `26-ea+5` for early access builds.
+//! `26-ea+5` for early access builds. A re-spin, which Adoptium publishes under the same build
+//! number, gets `.N` after the build (`17.0.9+9.1`), as in its tag.
 
 use jtm_core::Platform;
 use serde::Deserialize;
@@ -100,6 +101,9 @@ struct VersionData {
     patch: u32,
     #[serde(default)]
     build: Option<u32>,
+    /// How often Adoptium rebuilt this build under the same tag; 0 for the first.
+    #[serde(default, rename = "adopt_build_number")]
+    respin: u32,
 }
 
 #[derive(Deserialize)]
@@ -310,6 +314,11 @@ fn java_version(data: &VersionData, early: bool) -> String {
     }
     if let Some(build) = data.build {
         version.push_str(&format!("+{build}"));
+        // A re-spin keeps the build number and adds one, as in the tag `jdk-17.0.9+9.1`;
+        // without it the two archives would share a version.
+        if data.respin > 0 {
+            version.push_str(&format!(".{}", data.respin));
+        }
     }
     version
 }

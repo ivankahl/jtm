@@ -166,6 +166,9 @@ impl Candidate {
         if let Some(url) = &self.signature_url {
             check_url(url).map_err(|m| format!("signature url: {m}"))?;
         }
+        if let Some(build) = &self.distribution_version {
+            check_version_or_alias(build).map_err(|(_, m)| format!("distribution version: {m}"))?;
+        }
         if self.size == Some(0) {
             return Err("size: must be greater than 0".to_owned());
         }
@@ -239,24 +242,69 @@ pub(crate) fn archive_from_name(name: &str) -> Option<ArchiveKind> {
 ///
 /// Accepts the forms vendors use: the bare digest, `<digest>  <file>` and `<digest> *<file>`
 /// from `sha256sum`, the BSD form `SHA512 (<file>) = <digest>`, and the digest split into
-/// groups of hex digits across spaces. Only the first line counts, and anything that is not
-/// exactly one digest of the right length gives `None`, so an HTML error page or a digest of
-/// another algorithm never passes for a claim.
-pub fn parse_checksum_file(text: &str, algorithm: HashAlgorithm) -> Option<String> {
-    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+/// groups of hex digits across spaces. Anything that is not exactly one digest of the right
+/// length on a line is skipped, so an HTML error page or a digest of another algorithm never
+/// passes for a claim.
+///
+/// With `file_name`, a line that names a file counts only when it names that one (compared by
+/// base name), so a checksum file that lists other artifacts, or belongs to another one,
+/// cannot supply a hash for this artifact. A line with no file name always counts. The first
+/// line that counts wins.
+pub fn parse_checksum_file(
+    text: &str,
+    algorithm: HashAlgorithm,
+    file_name: Option<&str>,
+) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| parse_checksum_line(line, algorithm))
+        .find(|(_, name)| match (name, file_name) {
+            (Some(name), Some(wanted)) => base_name(name) == base_name(wanted),
+            _ => true,
+        })
+        .map(|(digest, _)| digest)
+}
+
+/// The digest on one checksum line and the file name next to it, if any.
+fn parse_checksum_line(line: &str, algorithm: HashAlgorithm) -> Option<(String, Option<String>)> {
     let want = algorithm.hex_len();
-    if let Some((_, after)) = line.split_once(" = ") {
-        let digest = after.trim();
-        return is_digest(digest, want).then(|| digest.to_ascii_lowercase());
+    if let Some((left, right)) = line.split_once(" = ") {
+        let digest = right.trim();
+        if !is_digest(digest, want) {
+            return None;
+        }
+        let name = left
+            .split_once('(')
+            .and_then(|(_, rest)| rest.rsplit_once(')'))
+            .map(|(name, _)| name.to_owned());
+        return Some((digest.to_ascii_lowercase(), name));
     }
     let mut digest = String::new();
-    for token in line.split_whitespace() {
+    let mut tokens = line.split_whitespace();
+    let mut rest = Vec::new();
+    for token in tokens.by_ref() {
         if digest.len() >= want || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            rest.push(token);
             break;
         }
         digest.push_str(token);
     }
-    is_digest(&digest, want).then(|| digest.to_ascii_lowercase())
+    if !is_digest(&digest, want) {
+        return None;
+    }
+    rest.extend(tokens);
+    let name = rest.join(" ");
+    let name = name.trim_start_matches('*');
+    Some((
+        digest.to_ascii_lowercase(),
+        (!name.is_empty()).then(|| name.to_owned()),
+    ))
+}
+
+/// The last path segment of `name`, whichever separator it uses.
+fn base_name(name: &str) -> &str {
+    name.rsplit(['/', '\\']).next().unwrap_or(name)
 }
 
 fn is_digest(text: &str, len: usize) -> bool {

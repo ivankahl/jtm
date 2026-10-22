@@ -141,6 +141,23 @@ fn a_sidecar_file_supplies_the_digest_and_a_signature_asset_the_signature() {
 }
 
 #[test]
+fn a_checksum_file_for_another_asset_is_not_a_claim() {
+    let mock = Mock::start();
+    mock.serve(TEMURIN_21, fixture("github/temurin21-releases.json"));
+    mock.serve(
+        "/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/\
+         OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz.sha256.txt",
+        format!(
+            "{}  OpenJDK21U-jdk_x64_linux_hotspot_21.0.4_7.tar.gz\n",
+            "b".repeat(64)
+        ),
+    );
+    let discovery = temurin().discover(&ORIGIN, &mock.context()).unwrap();
+    assert!(discovery.candidates.is_empty());
+    assert!(discovery.warnings.iter().any(|w| w.contains("linux-x64")));
+}
+
+#[test]
 fn each_feature_release_is_its_own_repository() {
     let mock = Mock::start();
     mock.serve(TEMURIN_21, "[]");

@@ -61,13 +61,32 @@ fn mirrors_change_where_bytes_come_from() {
 }
 
 #[test]
-fn the_github_token_goes_to_api_requests_only() {
+fn the_github_token_goes_to_the_github_api_only() {
     let mock = Mock::start();
-    mock.serve("/api", "{}");
-    mock.serve("/download", "bytes");
-    let ctx = Context::new(client()).with_github_token(Some("tok".to_owned()));
-    ctx.get_github_api("s", &mock.url("/api"), 1024).unwrap();
-    ctx.get("s", &mock.url("/download"), 1024).unwrap();
+    mock.serve("/api.github.com/repos/o/r/releases", "[]");
+    mock.serve("/github.com/o/r/download", "bytes");
+    mock.serve("/api.attacker.example/repos/o/r/releases", "[]");
+    let mirrors = BTreeMap::from([
+        (
+            "https://api.github.com/".to_owned(),
+            mock.url("/api.github.com/"),
+        ),
+        ("https://github.com/".to_owned(), mock.url("/github.com/")),
+        (
+            "https://api.attacker.example/".to_owned(),
+            mock.url("/api.attacker.example/"),
+        ),
+    ]);
+    let ctx = Context::new(client())
+        .with_mirrors(mirrors)
+        .with_github_token(Some("tok".to_owned()));
+    ctx.get_github_api("s", "https://api.github.com/repos/o/r/releases", 1024)
+        .unwrap();
+    ctx.get("s", "https://github.com/o/r/download", 1024)
+        .unwrap();
+    // A sources.toml can name any api_url; the token must not follow it.
+    ctx.get_github_api("s", "https://api.attacker.example/repos/o/r/releases", 1024)
+        .unwrap();
     let requests = mock.requests();
     let bearer = |i: usize| {
         requests[i]
@@ -77,6 +96,7 @@ fn the_github_token_goes_to_api_requests_only() {
     };
     assert_eq!(bearer(0).as_deref(), Some("Bearer tok"));
     assert_eq!(bearer(1), None);
+    assert_eq!(bearer(2), None);
 }
 
 #[test]

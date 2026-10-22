@@ -169,6 +169,8 @@ impl MavenCentralConfig {
             discovery.warn(format!("{} {version}: skipped, {reason}", origin.id));
             return Ok(());
         }
+        let file_name = self.file_name(version);
+        let file_name = file_name.as_str();
         let mut claim = None;
         for name in &self.hashes {
             let Some(algorithm) = HashAlgorithm::parse(name) else {
@@ -178,7 +180,7 @@ impl MavenCentralConfig {
             let Some(text) = ctx.get_text(origin.id, &sidecar, CHECKSUM_LIMIT)? else {
                 continue;
             };
-            claim = parse_checksum_file(&text, algorithm)
+            claim = parse_checksum_file(&text, algorithm, Some(file_name))
                 .and_then(|hex| ClaimedHash::new(algorithm, &hex, &sidecar));
             if claim.is_some() {
                 break;

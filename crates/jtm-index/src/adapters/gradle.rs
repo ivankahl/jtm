@@ -3,7 +3,8 @@
 //! One request lists every distribution Gradle has published, with the download URL, the
 //! `.sha256` URL and, for most, the digest itself. Snapshots, nightlies, broken builds and
 //! milestones are skipped; release candidates become `rc`-tagged candidates unless
-//! `include_rc = false`.
+//! `include_rc = false`. Old entries carry none of the flags, so the version string decides as
+//! well: only plain numbers are releases and `-rc-` marks a candidate.
 //!
 //! The digest can come from two places, and a plugin lists the adapter twice to use both:
 //!
@@ -100,7 +101,12 @@ impl GradleConfig {
             {
                 continue;
             }
-            let is_rc = !dist.rc_for.is_empty();
+            // Old entries carry none of the flags, so the version itself decides too: only a
+            // plain number is a release, and `-rc-` marks a release candidate.
+            let is_rc = !dist.rc_for.is_empty() || dist.version.contains("-rc-");
+            if !is_rc && !is_release_number(&dist.version) {
+                continue;
+            }
             if is_rc && !self.include_rc {
                 continue;
             }
@@ -149,9 +155,18 @@ impl GradleConfig {
         if check_url(&dist.checksum_url).is_err() {
             return Ok(None);
         }
+        let file_name = dist.download_url.rsplit('/').next().unwrap_or_default();
         let text = ctx.get_text(origin.id, &dist.checksum_url, CHECKSUM_LIMIT)?;
-        Ok(text.and_then(|t| parse_checksum_file(&t, HashAlgorithm::Sha256)))
+        Ok(text.and_then(|t| parse_checksum_file(&t, HashAlgorithm::Sha256, Some(file_name))))
     }
+}
+
+/// Whether `version` is only numbers and dots, like `8.10.2` or `7.0`.
+fn is_release_number(version: &str) -> bool {
+    !version.is_empty()
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(test)]

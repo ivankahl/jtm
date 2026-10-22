@@ -9,8 +9,11 @@ use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
 
-/// The largest JSON or XML document an adapter reads. Version lists are a few hundred KiB.
-pub(crate) const DOCUMENT_LIMIT: u64 = 64 * 1024 * 1024;
+/// The largest JSON, XML or HTML document an adapter reads. Version lists are a few hundred
+/// KiB, and a page of 100 GitHub releases with their assets a few MiB.
+pub(crate) const DOCUMENT_LIMIT: u64 = 16 * 1024 * 1024;
+/// The only host that receives the GitHub token.
+const GITHUB_API: &str = "https://api.github.com/";
 /// The largest checksum file an adapter reads.
 pub(crate) const CHECKSUM_LIMIT: u64 = 64 * 1024;
 
@@ -48,8 +51,9 @@ impl Context {
         self
     }
 
-    /// The token sent to the GitHub API, which allows far more requests to authenticated
-    /// callers. It is sent to API requests only, never to a download URL.
+    /// The token sent to `https://api.github.com`, which allows far more requests to
+    /// authenticated callers. It is sent to nothing else: not to download URLs, and not to
+    /// another `api_url` a `sources.toml` names.
     #[must_use]
     pub fn with_github_token(mut self, token: Option<String>) -> Context {
         self.github_token = token.filter(|t| !t.is_empty());
@@ -85,7 +89,13 @@ impl Context {
         url: &str,
         limit: u64,
     ) -> Result<Option<Vec<u8>>> {
-        let Some(token) = &self.github_token else {
+        // `sources.toml` can name any `api_url`, so the token is only ever offered to the
+        // GitHub API itself. (SPEC-QUESTION: GitHub Enterprise hosts are not supported.)
+        let token = self
+            .github_token
+            .as_ref()
+            .filter(|_| url.starts_with(GITHUB_API));
+        let Some(token) = token else {
             return self.get_optional(source, url, limit);
         };
         let target = mirrors::rewrite(url, &self.mirrors);
