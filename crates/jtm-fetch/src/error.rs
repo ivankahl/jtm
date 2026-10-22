@@ -29,6 +29,11 @@ pub enum Error {
     #[error("{url} returned HTTP {status}")]
     Status { url: String, status: u16 },
 
+    /// A proxy setting that cannot be used. `origin` names the setting, never its value, which
+    /// may hold credentials. Maps to `E_USAGE`.
+    #[error("invalid proxy in {origin}: {message}")]
+    Proxy { origin: String, message: String },
+
     /// The body is larger than allowed. Maps to `E_SIZE_EXCEEDED`.
     #[error("{url} is larger than the limit of {limit} bytes")]
     TooLarge { url: String, limit: u64 },

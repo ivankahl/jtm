@@ -6,9 +6,13 @@
 //! most [`MAX_REDIRECTS`] redirects are followed. Transport security is defence in depth only;
 //! everything fetched is verified by signature or hash afterwards.
 //!
-//! Proxies come from `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` (and their lowercase forms)
-//! unless [`ClientOptions::proxy`] names one (SPEC.md section 13).
+//! Proxies come from [`ClientOptions::proxy`] (`network.proxy`), else from `HTTPS_PROXY`,
+//! `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY` (and their lowercase forms), else from the Windows
+//! system proxy; see [`crate::proxy`] (SPEC.md section 13). Behind a proxy `https` URLs are
+//! tunnelled with `CONNECT`, so the TLS session still ends at the server and the redirect rules
+//! above hold unchanged.
 
+use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Once;
@@ -17,12 +21,18 @@ use std::time::Duration;
 use reqwest::StatusCode;
 use reqwest::blocking::Response as HttpResponse;
 use reqwest::header::{CONTENT_RANGE, RANGE};
-use reqwest::{Certificate, NoProxy, Proxy, redirect};
+use reqwest::{Certificate, redirect};
 
 use crate::error::{Error, Result};
+use crate::proxy::{ProxyConfig, ProxyReport, redact_url};
 
 /// The most redirects followed for one request.
 pub const MAX_REDIRECTS: usize = 10;
+
+/// What to tell someone whose proxy wants credentials jtm did not send.
+const PROXY_AUTH_HINT: &str = "The proxy requires authentication; put Basic credentials in \
+    `network.proxy` as http://user:password@host:port. NTLM and Kerberos are not supported: \
+    point `network.proxy` at a local authenticating proxy such as px or Cntlm";
 
 /// How failed requests are retried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +72,7 @@ impl RetryPolicy {
 }
 
 /// How to build a [`Client`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClientOptions {
     pub user_agent: String,
     /// Permit `http` URLs, as `security.allow_http_mirrors` does. A redirect from `https` to
@@ -74,7 +84,8 @@ pub struct ClientOptions {
     /// transfer, since archives can be hundreds of megabytes.
     pub read_timeout: Duration,
     /// An explicit proxy for every request, as `network.proxy` sets it. It replaces the proxy
-    /// variables; `NO_PROXY` still applies. `None` uses the environment.
+    /// variables; `NO_PROXY` still applies. `None` uses the environment, then the Windows
+    /// system proxy. The URL may hold credentials, which `Debug` redacts.
     pub proxy: Option<String>,
     /// A PEM bundle trusted in addition to the OS store, as `network.extra_ca_file` sets it.
     pub extra_ca_file: Option<PathBuf>,
@@ -95,6 +106,20 @@ impl ClientOptions {
     }
 }
 
+impl fmt::Debug for ClientOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientOptions")
+            .field("user_agent", &self.user_agent)
+            .field("allow_http", &self.allow_http)
+            .field("retry", &self.retry)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("read_timeout", &self.read_timeout)
+            .field("proxy", &self.proxy.as_deref().map(redact_url))
+            .field("extra_ca_file", &self.extra_ca_file)
+            .finish()
+    }
+}
+
 /// The `User-Agent` header: `jtm/<version> (<os>-<arch>)`.
 pub fn user_agent(version: &str) -> String {
     format!(
@@ -109,6 +134,7 @@ pub fn user_agent(version: &str) -> String {
 pub struct Client {
     http: reqwest::blocking::Client,
     options: ClientOptions,
+    proxies: ProxyConfig,
 }
 
 /// An open response body.
@@ -130,7 +156,16 @@ impl Read for Response {
 }
 
 impl Client {
+    /// Builds a client that finds its proxy as [`ProxyConfig::detect`] does, from
+    /// [`ClientOptions::proxy`], the environment and the Windows settings. An unusable proxy
+    /// setting is an error, never a direct connection.
     pub fn new(options: ClientOptions) -> Result<Client> {
+        let proxies = ProxyConfig::detect(options.proxy.as_deref())?;
+        Client::with_proxies(options, proxies)
+    }
+
+    /// Builds a client with exactly these proxies; [`ClientOptions::proxy`] is not consulted.
+    pub fn with_proxies(options: ClientOptions, proxies: ProxyConfig) -> Result<Client> {
         install_crypto_provider();
         let allow_http = options.allow_http;
         let policy = redirect::Policy::custom(move |attempt| {
@@ -143,13 +178,14 @@ impl Client {
                 Err(reason) => attempt.error(reason),
             }
         });
-        let mut builder = reqwest::blocking::Client::builder();
-        if let Some(proxy) = &options.proxy {
-            // The URL may hold credentials, so it stays out of the message.
-            let proxy = Proxy::all(proxy.as_str())
-                .map_err(|e| start_error("`network.proxy` is not a valid proxy URL", e))?;
-            builder = builder.proxy(proxy.no_proxy(NoProxy::from_env()));
-        }
+        let report = proxies.report();
+        tracing::debug!(
+            http = report.http.as_ref().map(|r| r.url.as_str()),
+            https = report.https.as_ref().map(|r| r.url.as_str()),
+            no_proxy = report.no_proxy.as_deref(),
+            "proxy configuration"
+        );
+        let mut builder = proxies.apply(reqwest::blocking::Client::builder())?;
         if let Some(path) = &options.extra_ca_file {
             let pem = std::fs::read(path).map_err(|e| Error::io(path, e))?;
             let certs = Certificate::from_pem_bundle(&pem)
@@ -176,11 +212,21 @@ impl Client {
             .timeout(options.read_timeout)
             .build()
             .map_err(|e| start_error("cannot start the HTTP client", e))?;
-        Ok(Client { http, options })
+        Ok(Client {
+            http,
+            options,
+            proxies,
+        })
     }
 
     pub fn options(&self) -> &ClientOptions {
         &self.options
+    }
+
+    /// The proxy each kind of URL uses and where that setting came from, with credentials
+    /// redacted, for `jtm doctor`.
+    pub fn proxy_report(&self) -> ProxyReport {
+        self.proxies.report()
     }
 
     /// Fetches `url` in full, refusing a body larger than `limit` bytes. `Ok(None)` means the
@@ -226,6 +272,14 @@ impl Client {
         }
         let response = request.send().map_err(|e| request_error(url, e))?;
         let status = response.status();
+        if status == StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+            return Err(Error::Network {
+                url: url.to_owned(),
+                message: format!("the proxy answered HTTP 407. {PROXY_AUTH_HINT}"),
+                transient: false,
+                source: None,
+            });
+        }
         if !status.is_success() {
             return Err(Error::Status {
                 url: url.to_owned(),
@@ -310,12 +364,17 @@ fn content_range_starts_at(value: &str, offset: u64) -> bool {
 fn request_error(url: &str, err: reqwest::Error) -> Error {
     // A refused redirect or a failed TLS handshake is a decision, not a hiccup; everything
     // else in transport may pass.
-    let transient = !err.is_redirect() && !err.is_builder() && !is_tls_failure(&err);
+    let mut transient = !err.is_redirect() && !err.is_builder() && !is_tls_failure(&err);
     let mut message = err.to_string();
     let mut source = std::error::Error::source(&err);
     while let Some(cause) = source {
         message = format!("{message}: {cause}");
         source = cause.source();
+    }
+    // What a proxy refusing a `CONNECT` for want of credentials looks like to the caller.
+    if message.contains("proxy authorization required") {
+        transient = false;
+        message = format!("{message}. {PROXY_AUTH_HINT}");
     }
     Error::Network {
         url: url.to_owned(),

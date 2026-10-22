@@ -9,6 +9,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use jtm_fetch::proxy::redact_url as redact;
 use jtm_plugin::names::{check_name_segment, check_plugin_name};
 
 use crate::error::{JtmError, Result};
@@ -679,20 +680,6 @@ fn read_section(
         entries.push(file_entry(origin, prefix, Key::Scalar(def), value)?);
     }
     Ok(())
-}
-
-/// Hides credentials in a URL, such as `user:pass@` in `http://user:pass@proxy:8080`, so error
-/// messages on stderr and in the JSON envelope never contain them.
-fn redact(url: &str) -> String {
-    let (scheme, rest) = match url.find("://") {
-        Some(at) => url.split_at(at + 3),
-        None => ("", url),
-    };
-    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
-    match authority.rfind('@') {
-        Some(at) => format!("{scheme}***@{}", &rest[at + 1..]),
-        None => url.to_owned(),
-    }
 }
 
 /// Refuses a key that a project file must not set, before anything else about it is checked.
