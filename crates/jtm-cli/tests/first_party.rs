@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use jtm_archive::testing::{E, dir, exe, file, tar_gz, zip};
+use jtm_archive::testing::{E, dir, exe, file, symlink, tar_gz, zip};
 use jtm_security::testing::TestKey;
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
@@ -271,11 +271,70 @@ fn tool_archive(name: &str, os: &str, top: &str, home_prefix: &str, extra: Vec<E
     }
 }
 
-/// A JDK archive as a vendor ships it for `os`: an app bundle on macOS.
-fn jdk(os: &str, version: &str) -> Archive {
-    let top = format!("jdk-{version}");
-    if os == "macos" {
-        tool_archive(
+/// The Zulu version whose fixture has the shape some Zulu releases have on macOS: a
+/// `zulu-<n>.jdk` bundle beside links to its home. Current Zulu releases are app bundles.
+const LINKED_ZULU: &str = "17.0.0+35";
+
+/// How a vendor packages a JDK for macOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacShape {
+    /// An app bundle, `Contents/Home` holding the JDK: Temurin, Corretto and current Zulu.
+    Bundle,
+    /// A `zulu-<n>.jdk` bundle beside links to its home.
+    LinkedBundle,
+    /// No bundle, and every entry starts with `./`, as in Liberica's archives.
+    Flat,
+}
+
+fn mac_shape(variant: &str, version: &str) -> MacShape {
+    match (variant, version) {
+        ("zulu", LINKED_ZULU) => MacShape::LinkedBundle,
+        ("liberica", _) => MacShape::Flat,
+        _ => MacShape::Bundle,
+    }
+}
+
+/// The major version of a `zulu-<n>.jdk` bundle.
+fn major(version: &str) -> &str {
+    version.split(['.', '+', '-']).next().unwrap()
+}
+
+/// The tool home of a `variant` JDK inside its install dir on `os`.
+fn expected_home(os: &str, variant: &str, version: &str) -> String {
+    if os != "macos" {
+        return String::new();
+    }
+    match mac_shape(variant, version) {
+        MacShape::Bundle => "Contents/Home".to_owned(),
+        MacShape::LinkedBundle => format!("zulu-{}.jdk/Contents/Home", major(version)),
+        MacShape::Flat => String::new(),
+    }
+}
+
+/// The top directory of a `variant` JDK archive.
+fn jdk_top(os: &str, variant: &str, version: &str) -> String {
+    match (os, variant) {
+        ("macos", "zulu") => format!("zulu{version}-ca-jdk-macosx_aarch64"),
+        ("macos", "liberica") => format!("jdk-{version}.jdk"),
+        _ => format!("jdk-{version}"),
+    }
+}
+
+/// A `variant` JDK archive as its vendor ships it for `os`, in the shapes of SPEC.md
+/// section 15's java notes.
+fn jdk(os: &str, variant: &str, version: &str) -> Archive {
+    let top = jdk_top(os, variant, version);
+    if os != "macos" {
+        return tool_archive(
+            "java",
+            os,
+            &top,
+            "",
+            vec![file(&format!("{top}/release"), version.as_bytes())],
+        );
+    }
+    match mac_shape(variant, version) {
+        MacShape::Bundle => tool_archive(
             "java",
             os,
             &top,
@@ -283,26 +342,45 @@ fn jdk(os: &str, version: &str) -> Archive {
             vec![
                 file(&format!("{top}/Contents/Info.plist"), b"<plist/>"),
                 file(&format!("{top}/Contents/Home/release"), version.as_bytes()),
+                dir(&format!("{top}/Contents/MacOS/")),
             ],
-        )
-    } else {
-        tool_archive(
-            "java",
-            os,
-            &top,
-            "",
-            vec![file(&format!("{top}/release"), version.as_bytes())],
-        )
+        ),
+        MacShape::LinkedBundle => {
+            let bundle = format!("zulu-{}.jdk", major(version));
+            let home = format!("{bundle}/Contents/Home");
+            tool_archive(
+                "java",
+                os,
+                &top,
+                &format!("{home}/"),
+                vec![
+                    file(&format!("{top}/{bundle}/Contents/Info.plist"), b"<plist/>"),
+                    file(&format!("{top}/{home}/release"), version.as_bytes()),
+                    symlink(&format!("{top}/bin"), &format!("{home}/bin")),
+                    symlink(&format!("{top}/release"), &format!("{home}/release")),
+                ],
+            )
+        }
+        MacShape::Flat => {
+            let dotted = format!("./{top}");
+            tool_archive(
+                "java",
+                os,
+                &dotted,
+                "",
+                // Liberica's archives also hold the `./` directory itself.
+                vec![
+                    dir("./"),
+                    file(&format!("{dotted}/release"), version.as_bytes()),
+                ],
+            )
+        }
     }
 }
 
 fn java_home(os: &str, h: &Home, variant: &str, version: &str) -> PathBuf {
-    let dir = h.install_dir("java", variant, version);
-    if os == "macos" {
-        dir.join("Contents").join("Home")
-    } else {
-        dir
-    }
+    h.install_dir("java", variant, version)
+        .join(expected_home(os, variant, version))
 }
 
 fn with_java(h: &mut Home) {
@@ -315,31 +393,43 @@ fn with_java(h: &mut Home) {
                 variant: "temurin",
                 version: "21.0.5+11",
                 tags: &["lts", "ga"],
-                archive: jdk(os, "21.0.5+11"),
+                archive: jdk(os, "temurin", "21.0.5+11"),
             },
             Version {
                 variant: "temurin",
                 version: "23.0.1+11",
                 tags: &["ga"],
-                archive: jdk(os, "23.0.1+11"),
+                archive: jdk(os, "temurin", "23.0.1+11"),
             },
             Version {
                 variant: "temurin",
                 version: "24-ea+3",
                 tags: &["ea"],
-                archive: jdk(os, "24-ea+3"),
+                archive: jdk(os, "temurin", "24-ea+3"),
             },
             Version {
                 variant: "corretto",
                 version: "21.0.5.11.1",
                 tags: &["lts", "ga"],
-                archive: jdk(os, "21.0.5.11.1"),
+                archive: jdk(os, "corretto", "21.0.5.11.1"),
             },
             Version {
                 variant: "zulu",
                 version: "11.0.25+9",
                 tags: &["lts", "ga"],
-                archive: jdk(os, "11.0.25+9"),
+                archive: jdk(os, "zulu", "11.0.25+9"),
+            },
+            Version {
+                variant: "zulu",
+                version: LINKED_ZULU,
+                tags: &["ga"],
+                archive: jdk(os, "zulu", LINKED_ZULU),
+            },
+            Version {
+                variant: "liberica",
+                version: "17.0.13+12",
+                tags: &["lts", "ga"],
+                archive: jdk(os, "liberica", "17.0.13+12"),
             },
         ],
     );
@@ -381,9 +471,13 @@ fn the_java_manifest_declares_variants_aliases_layout_and_interop() {
         ]
     );
     assert!(m.aliases.contains_key("lts") && m.aliases.contains_key("latest"));
-    assert_eq!(m.layout.home_subdir_for("macos"), Some("Contents/Home"));
-    assert_eq!(m.layout.home_subdir_for("linux"), None);
-    assert_eq!(m.layout.home_subdir_for("windows"), None);
+    // One candidate list covers every vendor's macOS shape.
+    assert_eq!(
+        m.layout.home_subdir_for("macos"),
+        ["Contents/Home", "*/Contents/Home", ""]
+    );
+    assert!(m.layout.home_subdir_for("linux").is_empty());
+    assert!(m.layout.home_subdir_for("windows").is_empty());
     assert_eq!(m.env["JAVA_HOME"], "{home}");
     let files: Vec<&str> = m.interop.iter().map(|i| i.file.as_str()).collect();
     assert_eq!(files, [".sdkmanrc", ".tool-versions", ".java-version"]);
@@ -405,21 +499,35 @@ fn java_installs_the_lts_alias_and_each_variant() {
     let value = h.ok(&["install", "fp-java"]);
     assert_eq!(value["data"]["installed"][0]["version"], "23.0.1+11");
 
-    let value = h.ok(&["install", "fp-java@corretto:21", "fp-java@zulu:lts"]);
+    let value = h.ok(&[
+        "install",
+        "fp-java@corretto:21",
+        "fp-java@zulu:lts",
+        "fp-java@zulu:17",
+        "fp-java@liberica:17",
+    ]);
     assert_eq!(value["data"]["installed"][0]["version"], "21.0.5.11.1");
     assert_eq!(value["data"]["installed"][1]["version"], "11.0.25+9");
+    assert_eq!(value["data"]["installed"][2]["version"], LINKED_ZULU);
+    assert_eq!(value["data"]["installed"][3]["version"], "17.0.13+12");
 
     for (variant, version) in [
         ("temurin", "21.0.5+11"),
         ("temurin", "23.0.1+11"),
         ("corretto", "21.0.5.11.1"),
         ("zulu", "11.0.25+9"),
+        ("zulu", LINKED_ZULU),
+        ("liberica", "17.0.13+12"),
     ] {
         let home = java_home(h.os, &h, variant, version);
         assert_eq!(fs::read(home.join("release")).unwrap(), version.as_bytes());
+        assert!(home.join("bin").is_dir(), "{variant}");
         let receipt = h.receipt("java", variant, version);
-        let expected_home = if h.os == "macos" { "Contents/Home" } else { "" };
-        assert_eq!(receipt["home"], expected_home, "{receipt}");
+        assert_eq!(
+            receipt["home"],
+            expected_home(h.os, variant, version),
+            "{receipt}"
+        );
     }
 }
 
@@ -537,28 +645,44 @@ fn the_java_layout_finds_each_os_home_on_any_host() {
 
     let manifest = jtm_plugin::Manifest::parse(&shipped("java")).unwrap();
     for os in [Os::Macos, Os::Linux, Os::Windows] {
-        let archive = jdk(os.as_str(), "21.0.5+11");
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("jdk");
-        fs::write(&path, &archive.bytes).unwrap();
-        let out = tmp.path().join("out");
-        fs::create_dir(&out).unwrap();
-        let format = if archive.kind == "zip" {
-            jtm_archive::Format::Zip
-        } else {
-            jtm_archive::Format::TarGz
-        };
-        let options = jtm_archive::Options {
-            strip_components: layout::extract_strip(&manifest.layout),
-            ..jtm_archive::Options::default()
-        };
-        jtm_archive::extract(&path, format, &out, &options).unwrap();
-        let placed = layout::apply("java", &out, &manifest.layout, os).unwrap();
-        assert_eq!(placed.root, out.join("jdk-21.0.5+11"));
-        let home = if os == Os::Macos { "Contents/Home" } else { "" };
-        assert_eq!(placed.home, Path::new(home), "{os}");
-        layout::check_bin_dirs("java", &placed, &manifest.layout)
-            .unwrap_or_else(|e| panic!("{os}: {e}"));
+        let cases = manifest
+            .versions
+            .variants
+            .iter()
+            .map(|variant| (variant.as_str(), "21.0.5+11"))
+            .chain([("zulu", LINKED_ZULU)]);
+        for (variant, version) in cases {
+            let layout = &manifest.layout;
+            let archive = jdk(os.as_str(), variant, version);
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("jdk");
+            fs::write(&path, &archive.bytes).unwrap();
+            let out = tmp.path().join("out");
+            fs::create_dir(&out).unwrap();
+            let format = if archive.kind == "zip" {
+                jtm_archive::Format::Zip
+            } else {
+                jtm_archive::Format::TarGz
+            };
+            let options = jtm_archive::Options {
+                strip_components: layout::extract_strip(layout),
+                ..jtm_archive::Options::default()
+            };
+            jtm_archive::extract(&path, format, &out, &options).unwrap();
+            let placed = layout::apply("java", &out, layout, os)
+                .unwrap_or_else(|e| panic!("{os} {variant}: {e}"));
+            assert_eq!(
+                placed.root,
+                out.join(jdk_top(os.as_str(), variant, version))
+            );
+            assert_eq!(
+                placed.home,
+                Path::new(&expected_home(os.as_str(), variant, version)),
+                "{os} {variant} {version}"
+            );
+            layout::check_bin_dirs("java", &placed, layout)
+                .unwrap_or_else(|e| panic!("{os} {variant}: {e}"));
+        }
     }
 }
 

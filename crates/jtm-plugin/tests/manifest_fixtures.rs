@@ -70,8 +70,11 @@ fn java_style_manifest_uses_variants_and_per_os_layout() {
     assert!(!m.has_variant("default"));
     assert_eq!(m.aliases["lts"], Alias::IndexTag { tag: "lts".into() });
     assert_eq!(m.layout.strip_components, StripComponents::Auto);
-    assert_eq!(m.layout.home_subdir_for("macos"), Some("Contents/Home"));
-    assert_eq!(m.layout.home_subdir_for("linux"), None);
+    assert_eq!(
+        m.layout.home_subdir_for("macos"),
+        ["Contents/Home", "*/Contents/Home", ""]
+    );
+    assert!(m.layout.home_subdir_for("linux").is_empty());
     assert_eq!(m.interop[0].mapping["tem"], "temurin");
     assert_eq!(m.interop[2].parser, InteropParser::SingleLine);
     assert_eq!(m.hooks.post_extract.as_deref(), Some("fix_permissions"));

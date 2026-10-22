@@ -36,8 +36,11 @@ format = 1
 [layout]
 strip_components = "auto"
 bin_dirs = ["bin"]
-# A macOS JDK is an app bundle; its home is inside it.
-home_subdir = { macos = "Contents/Home" }
+# A macOS JDK is usually an app bundle with its home inside it, as Temurin's and current Zulu
+# archives are. Some Zulu releases hold a `zulu-<n>.jdk` bundle beside links to its home, and
+# Liberica's and the oldest Zulu archives hold no bundle at all, so the home is the first of
+# these that exists (`*` never matches the links).
+home_subdir = { macos = ["Contents/Home", "*/Contents/Home", ""] }
 
 [env]
 JAVA_HOME = "{home}"

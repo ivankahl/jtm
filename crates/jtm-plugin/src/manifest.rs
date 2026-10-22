@@ -156,16 +156,54 @@ pub struct Layout {
     #[serde(default)]
     pub strip_components: StripComponents,
     /// The tool home inside the archive per OS, keyed by the names in [`OS_NAMES`], such as
-    /// `macos = "Contents/Home"`.
+    /// `macos = "Contents/Home"`, or a list of candidates tried in order.
     #[serde(default)]
-    pub home_subdir: BTreeMap<String, String>,
+    pub home_subdir: BTreeMap<String, HomeCandidates>,
     pub bin_dirs: Vec<String>,
 }
 
 impl Layout {
-    /// The `home_subdir` that applies on `os`, if any.
-    pub fn home_subdir_for(&self, os: &str) -> Option<&str> {
-        self.home_subdir.get(os).map(String::as_str)
+    /// The candidate tool homes on `os`, in the order they are tried; empty when the home is
+    /// the archive root.
+    pub fn home_subdir_for(&self, os: &str) -> &[String] {
+        self.home_subdir.get(os).map_or(&[], |c| c.0.as_slice())
+    }
+}
+
+/// The tool home candidates for one OS, written as one path or a list of paths and tried in
+/// order: the first that is a directory inside the archive wins, and the bin dirs are checked
+/// after `post_extract`. `""` is the archive root, and a `*` segment matches any one directory
+/// (never a link). A `*` candidate that two or more directories fit, or that matches a name
+/// outside ASCII letters, digits, `.`, `_`, `+` and `-`, fails the install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeCandidates(pub Vec<String>);
+
+impl<'de> Deserialize<'de> for HomeCandidates {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = HomeCandidates;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a path or a list of paths")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(HomeCandidates(vec![v.to_owned()]))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut paths = Vec::new();
+                while let Some(path) = seq.next_element::<String>()? {
+                    paths.push(path);
+                }
+                Ok(HomeCandidates(paths))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
     }
 }
 
@@ -504,14 +542,7 @@ impl Manifest {
 
     fn validate_layout(&self, p: &mut Problems) {
         let layout = &self.layout;
-        for (os, dir) in &layout.home_subdir {
-            let path = format!("layout.home_subdir.{}", quote_key(os));
-            if OS_NAMES.contains(&os.as_str()) {
-                check_relative_path(p, &path, dir, false);
-            } else {
-                p.push(path, unknown_os(os));
-            }
-        }
+        check_home_subdir(p, "layout.home_subdir", &layout.home_subdir);
         if layout.bin_dirs.is_empty() {
             p.push("layout.bin_dirs", "at least one bin directory is required");
         }
@@ -824,6 +855,59 @@ fn toml_error(text: &str, error: &toml::de::Error, path: &str) -> ManifestError 
         message
     };
     single(&path, message, line)
+}
+
+/// Checks a per-OS `home_subdir` table at `path`.
+fn check_home_subdir(p: &mut Problems, path: &str, home: &BTreeMap<String, HomeCandidates>) {
+    for (os, candidates) in home {
+        let path = format!("{path}.{}", quote_key(os));
+        if !OS_NAMES.contains(&os.as_str()) {
+            p.push(path, unknown_os(os));
+            continue;
+        }
+        match candidates.0.as_slice() {
+            [] => p.push(path, "list at least one candidate home"),
+            // The archive root is the default; `""` only makes sense as a last resort.
+            [only] if only.is_empty() => p.push(
+                path,
+                "cannot be empty; leave the OS out to use the archive root",
+            ),
+            [only] => check_home_candidate(p, &path, only),
+            all => {
+                for (i, candidate) in all.iter().enumerate() {
+                    let path = format!("{path}[{i}]");
+                    check_home_candidate(p, &path, candidate);
+                    // The archive root always exists, so nothing after it is ever tried.
+                    if candidate.is_empty() && i + 1 < all.len() {
+                        p.push(
+                            path,
+                            "`\"\"` (the archive root) always matches, so it must come last",
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Checks one candidate tool home: `""` for the archive root, or a relative path whose only
+/// pattern is a `*` standing for a whole segment.
+fn check_home_candidate(p: &mut Problems, path: &str, candidate: &str) {
+    if candidate.is_empty() {
+        return;
+    }
+    let before = p.0.len();
+    check_relative_path(p, path, candidate, false);
+    if p.0.len() == before
+        && candidate
+            .split('/')
+            .any(|part| part.contains('*') && part != "*")
+    {
+        p.push(
+            path,
+            format!("`{candidate}`: `*` must be a whole path segment, such as `*/Contents/Home`"),
+        );
+    }
 }
 
 /// Quotes a table key for a field path when it is not a bare TOML key.
