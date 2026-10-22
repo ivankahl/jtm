@@ -473,6 +473,6 @@ fn shipped_manifests_agree_on_one_root_set() {
         assert_eq!(fp.keys, found[0].keys, "{} differs", fp.plugin);
         assert_eq!(fp.threshold, found[0].threshold, "{} differs", fp.plugin);
     }
-    assert_eq!(found[0].keys.len(), 3);
-    assert_eq!(found[0].threshold, 2);
+    assert_eq!(found[0].keys.len(), 1);
+    assert_eq!(found[0].threshold, 1);
 }

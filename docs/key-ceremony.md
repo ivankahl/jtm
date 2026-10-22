@@ -1,9 +1,10 @@
 # Root key ceremony and `keys.json` publishing
 
 This is the runbook for the keys that every first-party jtm plugin trusts. It covers creating the
-root keys, signing the first-party `keys.json` on an offline machine, publishing it, and rotating
+root key, signing the first-party `keys.json` on an offline machine, publishing it, and rotating
 or revoking keys. The design is in [SPEC.md](../SPEC.md) sections 7 to 9; this document says how
-to carry it out and matches what `jtm-security` accepts today.
+to carry it out and matches what `jtm-security` accepts today. The decision to run v1 with one
+root key is recorded in [ADR-0001](adr/0001-signing-and-trust-model.md).
 
 Every command below was run against the real implementation with throwaway keys (see
 [Rehearsal](#rehearsal-with-throwaway-keys)), using `minisign` 0.11.
@@ -12,15 +13,15 @@ Every command below was run against the real implementation with throwaway keys 
 
 | Key | Held by | Where it lives | Signs | Lifetime |
 | --- | --- | --- | --- | --- |
-| Root (3 keys, threshold 2) | Three maintainers, one key each | Offline, never on a networked machine | `keys.json` only | Until a planned root rotation |
+| Root (1 key, threshold 1) | The maintainer | Offline, never on a networked machine; two encrypted backups | `keys.json` only | Until a planned root rotation |
 | Index (1 or 2 at a time) | CI | Secret of a protected GitHub environment in `jtm-dev/index` | The first-party index files | At most 90 days, enforced by `keys.json` |
 
-- The root public keys are the `signing_keys` of every first-party manifest in
-  `crates/jtm-cli/plugins/*/plugin.toml`, with `threshold = 2`. They are trusted because the
+- The root public key is the `signing_keys` entry of every first-party manifest in
+  `crates/jtm-cli/plugins/*/plugin.toml`, with `threshold = 1`. It is trusted because the
   manifests are compiled into the binary; installing jtm is that decision (SPEC.md section 7).
-  The values committed today are placeholders whose private keys were never kept. The first
-  ceremony replaces them.
-- The root keys sign `keys.json` and nothing else. They never sign an index file, so a root key
+  The value committed today is a placeholder whose private key was never kept. The first
+  ceremony replaces it.
+- The root key signs `keys.json` and nothing else. It never signs an index file, so the root key
   never needs to be near CI.
 - `keys.json` delegates to the index keys. A delegated key can never sign a keys file.
 - The release key (jtm binaries and `SHA256SUMS`) is a separate role with its own ceremony. Do not
@@ -60,7 +61,7 @@ refused, so check them before anyone signs.
 - `scope` names the plugins a key may sign for, at least one, with no wildcard. A key is only used
   for a plugin its scope names. The first-party file lists all five first-party plugins and
   `marketplace`, the reserved scope of the signed marketplace index (SPEC.md section 16), which
-  has the same root keys and the same `keys.json`.
+  has the same root key and the same `keys.json`.
 - `expires` is `YYYY-MM-DDTHH:MM:SSZ` in UTC, and nothing else (no offsets, no fractions). After
   it, signatures by the key are refused. The check runs when the client verifies, not when the
   index was signed. The file itself has no expiry; freshness comes from the per-key dates.
@@ -68,15 +69,16 @@ refused, so check them before anyone signs.
 
 The signature file, `keys.json.minisig`:
 
-- It holds one minisign signature per root signer, one after another. Concatenating the files that
-  `minisign` writes is the whole job. At most 16 signatures and 64 KiB.
+- It holds one minisign signature per root signer, one after another. With one root key that is
+  the single file `minisign` writes; when the threshold is raised later, concatenating the files
+  is the whole job. At most 16 signatures and 64 KiB.
 - The signatures must be made over the exact bytes of `keys.json`. Any change after signing, even
   a line ending, makes every signature fail.
 - Only pre-hashed signatures (`ED`) are accepted. `minisign -S` makes those. Never pass `-l`,
   which makes a legacy signature that jtm refuses.
-- At least `threshold` (2) signatures from distinct root keys listed in the manifest must verify.
+- At least `threshold` (1) signature from a root key listed in the manifest must verify.
 - It is checked once for each first-party plugin, against that plugin's manifest, and once for
-  the marketplace. All five manifests carry the same three keys, so one signature file serves all
+  the marketplace. All five manifests carry the same root key, so one signature file serves all
   of them.
 
 Where clients look: the manifests set
@@ -112,8 +114,9 @@ first-party index verifies; a bad `keys.json` stops first-party installs.
 
 ## Preparing the offline machine
 
-Each root key holder signs on their own machine. Threshold signing does not need the holders in
-one room.
+The root key holder signs on the offline machine. With one signature there is no quorum and no
+need for a shared ceremony; the controls that matter are the offline machine, the passphrase and
+the backups.
 
 1. Use a machine that has never held the key and will not be networked while it does: a spare
    laptop, or a live USB system (Debian live, Tails) booted with Wi-Fi and Bluetooth switched
@@ -125,21 +128,21 @@ one room.
    location) and a **transfer** stick (carries `keys.json` in and signatures out). Never plug the
    vault into a networked machine.
 
-SPEC.md says the root keys are held on a hardware token. `minisign` keeps secret keys in a file
-and has no token support, so the practical reading is a hardware-encrypted removable drive (or an
-encrypted volume on one) per holder, with the key file password-protected as well.
+SPEC.md says the root key is held on a hardware token. `minisign` keeps secret keys in a file and
+has no token support, so the practical reading is a hardware-encrypted removable drive (or an
+encrypted volume on one), with the key file password-protected as well.
 <!-- SPEC-QUESTION: hardware token versus a password-protected key file; see the PR. -->
 
-## First ceremony: create the root keys
+## First ceremony: create the root key
 
-Each of the three holders does this alone on their offline machine. `N` is the holder's number.
+The maintainer does this alone on the offline machine.
 
 1. Generate the key pair. `minisign` asks for a password twice; use a long passphrase that is not
    used anywhere else.
 
    ```sh
    mkdir -p /vault && cd /vault
-   minisign -G -p root-N.pub -s root-N.key
+   minisign -G -p root.pub -s root.key
    ```
 
    It prints the public key and its key id, such as `95BDD02E28302337`. Always pass `-p` and `-s`
@@ -148,45 +151,43 @@ Each of the three holders does this alone on their offline machine. `N` is the h
 
    ```sh
    echo test > t.txt
-   minisign -S -s root-N.key -m t.txt
-   minisign -V -p root-N.pub -m t.txt
-   minisign -R -s root-N.key -p check.pub && diff root-N.pub check.pub
+   minisign -S -s root.key -m t.txt
+   minisign -V -p root.pub -m t.txt
+   minisign -R -s root.key -p check.pub && diff root.pub check.pub
    rm -f t.txt t.txt.minisig check.pub
    ```
-3. Back it up. `root-N.key` is still encrypted, so copying it is safe. Keep two copies on separate
+3. Back it up. `root.key` is still encrypted, so copying it is safe. Keep two copies on separate
    media in separate physical places (for example a safe and a bank box), and the passphrase in
-   a third place, written down or in the holder's password manager. A backup that was never
-   restored is not a backup: open one copy on the offline machine with the `minisign -R` check
-   above.
-4. Hand over only the public key. Send the second line of `root-N.pub` and the key id to the
-   other holders over a channel the others can authenticate. Then compare them out loud on a call
-   or in person. This is the step that stops a swapped key.
+   a third place, written down or in your password manager. A backup that was never restored is
+   not a backup: open one copy on the offline machine with the `minisign -R` check above.
+4. Carry out only the public key. Copy the second line of `root.pub` and the key id on the
+   transfer stick, and check them character by character when you put them into the manifests.
+   With one key there is no second holder to compare with, so the review of the pull request and
+   that check are the controls that stop a swapped key.
 
-One holder lost or compromised is survivable, since two signatures still meet the threshold, but
-replace the key at once ([Root rotation](#root-rotation-planned)). Two lost means no `keys.json`
-can be signed: a jtm release with new roots is the only way back.
+Losing or leaking the root key cannot be repaired from the network: no `keys.json` signed by a
+successor is trusted by an installed release until that release is replaced. The backups are the
+control, and the only way back is a new jtm release ([Root compromise or loss](#root-compromise-or-loss)).
 
-### Put the roots into jtm
+### Put the root into jtm
 
-In one pull request, replace the placeholder `signing_keys` in all five manifests with the three
-agreed keys, in the same order, keeping `threshold = 2`:
+In one pull request, replace the placeholder `signing_keys` in all five manifests with the new
+key, keeping `threshold = 1`:
 
 ```toml
 signing_keys = [
-  "RW...holder 1...",
-  "RW...holder 2...",
-  "RW...holder 3...",
+  "RW...the root key...",
 ]
-threshold = 2
+threshold = 1
 ```
 
 Files: `crates/jtm-cli/plugins/{gradle,java,kotlin,maven,spring-boot-cli}/plugin.toml`. Delete the
-placeholder note at the top of each. The pull request must be reviewed against the key ids the
-holders read out. The `shipped_manifests_agree_on_one_root_set` test fails if the five lists
-differ. Record the ceremony ([Ceremony record](#ceremony-record)).
+placeholder note at the top of each. The pull request must be reviewed against the key id copied
+from the offline machine. The `every_first_party_plugin_shares_the_root_key_and_keys_file` test
+fails if the five lists differ. Record the ceremony ([Ceremony record](#ceremony-record)).
 
-The marketplace index (SPEC.md section 16) is signed by the same root keys. When that code lands,
-its embedded copy of the root keys changes in the same pull request.
+The marketplace index (SPEC.md section 16) is signed by the same root key. When that code lands,
+its embedded copy of the root key changes in the same pull request.
 
 ## Create the first index key
 
@@ -228,13 +229,13 @@ It prints the file's SHA-256. It overwrites `--out`; if a `.minisig` is left bes
 earlier file, it says so, and that file must be deleted before signing. Send the file and that hash to the signers, and send the hash over a
 second channel.
 
-### 2. Sign (offline, two of the three holders)
+### 2. Sign (offline, the root key holder)
 
-Each signing holder, on their offline machine:
+The root key holder, on the offline machine:
 
 1. Copy `keys.json` from the transfer stick and check it. Compare the hash, and read the file: the
-   sequence, the key, the scope and the expiry are what the holder is putting a signature on.
-   If any of it is not what was agreed, stop.
+   sequence, the key, the scope and the expiry are what the signature covers. If any of it is not
+   what was agreed, stop.
 
    ```sh
    sha256sum keys.json
@@ -243,26 +244,26 @@ Each signing holder, on their offline machine:
 2. Sign it with the root key. `minisign` asks for the passphrase.
 
    ```sh
-   minisign -S -s /vault/root-N.key -m keys.json -x keys.json.root-N.minisig \
-     -c "jtm root signature" -t "jtm keys.json sequence 8 signed by root N"
+   minisign -S -s /vault/root.key -m keys.json -x keys.json.root.minisig \
+     -c "jtm root signature" -t "jtm keys.json sequence 8"
    ```
 
    The trusted comment is for humans; clients ignore it.
-3. Check your own signature, then copy `keys.json.root-N.minisig` to the transfer stick:
+3. Check the signature, then copy `keys.json.root.minisig` to the transfer stick:
 
    ```sh
-   minisign -V -p /vault/root-N.pub -m keys.json -x keys.json.root-N.minisig
+   minisign -V -p /vault/root.pub -m keys.json -x keys.json.root.minisig
    ```
 
-Any two holders will do, in any order. Never sign a file that was edited, even to fix a typo; ask
-for a new build instead.
+Never sign a file that was edited, even to fix a typo; ask for a new build instead. If the
+threshold has been raised, repeat this step with the other holders and concatenate the files.
 
 ### 3. Combine and verify (online)
 
-Join the signature files into the one file clients read. The order does not matter:
+Rename the signature file to the name clients read:
 
 ```sh
-cat keys.json.root-1.minisig keys.json.root-3.minisig > keys.json.minisig
+cp keys.json.root.minisig keys.json.minisig
 ```
 
 Verify with the client's loader, against the manifests in your checkout:
@@ -278,7 +279,7 @@ Typical failures:
 
 | Output | Meaning |
 | --- | --- |
-| `E_SIGNATURE_INVALID ... needs 2 signatures from distinct keys, found 1` | Only one root signed, or both signatures are from the same key |
+| `E_SIGNATURE_INVALID ... needs 1 signatures from distinct keys, found 0` | `keys.json.minisig` is missing or empty, or every signature failed |
 | `E_SIGNATURE_INVALID ... does not match the file` | The file changed after signing |
 | `E_SIGNATURE_INVALID ... legacy minisign format` | Signed with `-l`; sign again without it |
 | `E_KEY_UNTRUSTED` (exit 7) | Signed by keys that are not the manifest's roots |
@@ -312,7 +313,7 @@ a client has seen it, its sequence is spent.
 
 ## Rotating index keys
 
-Routine rotation needs two root signatures and no jtm release. Clients accept the new key without
+Routine rotation needs one root signature and no jtm release. Clients accept the new key without
 a prompt (SPEC.md section 9).
 
 Recommended cadence: keys live for 90 days, and a new one is introduced every 45, so two are
@@ -352,7 +353,7 @@ expires, so do not wait for the date.
    cargo run -q -p jtm-index -- keys build --sequence 9 --previous-sequence 8 \
      --index-key RW...new...@2027-02-20T00:00:00Z --out keys.json
    ```
-3. Collect two root signatures, combine, verify and publish, as above. Treat it as urgent.
+3. Collect the root signature, verify and publish, as above. Treat it as urgent.
 4. Re-publish every index signed by the new key. Each must carry a `sequence` above anything the
    attacker could have published; if the attacker's copies used a very large sequence, clients
    that took one keep refusing your genuine ones as rollbacks until their state is repaired.
@@ -365,38 +366,66 @@ the lifetime is short.
 ## Root rotation (planned)
 
 Roots rotate through a jtm release, because no runtime file may change which roots are trusted
-(SPEC.md section 9). Reasons: replacing a holder, a lost key, or a refresh.
+(SPEC.md section 9). Reasons: replacing the key, a suspected leak, or raising the threshold.
 
-1. Run the key creation steps for each new root key, and compare the public keys out loud.
-2. In one pull request, replace `signing_keys` in all five manifests with the new set (and keep
-   `threshold = 2`). Do not merge or release it yet.
+1. Create the new root key (or keys) with the steps above, on the offline machine, and record
+   the public key ids.
+2. In one pull request, replace `signing_keys` in all five manifests with the new set and set
+   `threshold` to the new value. Do not merge or release it yet.
 3. Build `keys.json` with a new sequence as usual.
-4. Cross-sign it: two of the old holders and two of the new holders each sign, and all four
-   signature files are concatenated into one `keys.json.minisig`. Releases that embed the old
-   roots see two valid old signatures; releases that embed the new roots see two valid new ones.
-   (The loader counts only listed keys, so the other half is ignored.)
-5. Verify against both sets. The first run uses the manifests of the old checkout, the second the
-   new roots, from any checkout:
+4. Cross-sign it: the file carries one signature from the old root and one from each new root.
+   Releases that embed the old key (threshold 1) see the old signature; releases that embed the
+   new set see enough new signatures to meet its threshold. The loader counts only the keys its
+   manifest lists, so the other signatures are ignored.
+5. Verify against both sets: first with the manifests of the old checkout, then with the new
+   roots passed explicitly.
 
    ```sh
    cargo run -q -p jtm-index -- keys verify --file keys.json --sig keys.json.minisig
    cargo run -q -p jtm-index -- keys verify --file keys.json --sig keys.json.minisig \
-     --root-key RW...new1... --root-key RW...new2... --root-key RW...new3... --root-threshold 2
+     --root-key RW...new... --root-threshold 1
    ```
 6. Publish `keys.json`, then merge and release jtm with the new roots.
-7. Keep publishing cross-signed files until every release that embeds the old roots is out of
+7. Keep publishing cross-signed files until every release that embeds the old root is out of
    support. Only then sign with the new roots alone.
-8. Securely destroy the retired keys' media and note the date in the ceremony record.
+8. Securely destroy the retired key's media and note the date in the ceremony record.
+
+### Raising the threshold to 2 of 3
+
+The format and the verifier need no change; only the manifests and the signature file do.
+
+1. Create the three new keys with three independent holders.
+2. The release after the change embeds the old key together with two of the new ones:
+   `signing_keys = ["RW...old...", "RW...new1...", "RW...new2..."]`, `threshold = 2`. Do not go
+   straight to the three new keys: installed releases still trust only the old key.
+3. Sign `keys.json` with the old root and with both new roots. Installed releases see the old
+   signature and accept it at threshold 1; releases with the new set see two of the three listed
+   keys and accept it at threshold 2. Check both views:
+
+   ```sh
+   cargo run -q -p jtm-index -- keys verify --file keys.json --sig keys.json.minisig
+   cargo run -q -p jtm-index -- keys verify --file keys.json --sig keys.json.minisig \
+     --root-key RW...old... --root-key RW...new1... --root-key RW...new2... \
+     --root-threshold 2
+   ```
+4. After every release that knows only the old key is out of support, ship a second release with
+   `["RW...new1...", "RW...new2...", "RW...new3..."]` at threshold 2, and sign `keys.json` with
+   any two new roots.
+5. Move the old key's media to the retired set; keep it only as long as step 3 needs it.
 
 ### Root compromise or loss
 
-- **One root compromised or lost:** two signatures are still enough and the attacker needs a
-  second key. Rotate now, as above, but cross-sign only with holders you trust.
-- **Two or more compromised:** the attacker can sign a `keys.json` for the old roots, so do not
-  cross-sign with them at all. Ship a release with new roots (signed by the release key) and tell
-  users to update. Older releases cannot be fixed from the network by design.
-- **Two or more lost:** no new `keys.json` can be signed. The index keys run out within 90 days.
-  The same release is the only way out.
+With one key there is no second signature to fall back on.
+
+- **Compromised:** the attacker can sign a `keys.json` that every installed release accepts. Do
+  not cross-sign with the compromised key. Ship a release that embeds a new root and publish a
+  `keys.json` signed only by the new root; tell users to upgrade. Installed releases remain
+  exposed to the attacker until they do, because no runtime file may change the trusted roots.
+- **Lost:** no new `keys.json` can be signed by the trusted root, and the index keys run out
+  within 90 days. Restore from an offline backup if it verifies; otherwise the same release is
+  the only way out, and every user must upgrade.
+- **Why the backups are mandatory:** in both cases the network cannot fix an installed client.
+  Two encrypted copies in separate places are the only recovery that does not require a release.
 
 ## Ceremony record
 
@@ -407,7 +436,8 @@ request description:
 | --- | --- |
 | Date, place, participants | |
 | Machine and `minisign -v` | |
-| Root key ids and public keys (1, 2, 3) | |
+| Root key id and public key | |
+| Backup locations and the restore check | |
 | SHA-256 of the signed `keys.json` | |
 | Sequence, index key ids and expiry | |
 | Anything that went wrong | |
@@ -424,12 +454,12 @@ request description:
 ## Rehearsal with throwaway keys
 
 Run this before the real ceremony, and whenever the tooling changes. It uses unencrypted keys
-(`-W`) so it needs no passphrase, and verifies against throwaway roots with `--root-key`, since the
+(`-W`) so it needs no passphrase, and verifies against a throwaway root with `--root-key`, since the
 manifests still carry the placeholders. The commands are the real ones.
 
 ```sh
 mkdir -p /tmp/rehearsal/offline /tmp/rehearsal/online && cd /tmp/rehearsal/offline
-for i in 1 2 3; do minisign -G -W -p root-$i.pub -s root-$i.key; done
+minisign -G -W -p root.pub -s root.key
 cd ../online && minisign -G -W -p index.pub -s index.key
 
 REPO=/path/to/jtm
@@ -439,17 +469,16 @@ EXPIRES=$(date -u -d "+80 days" +%Y-%m-%dT%H:%M:%SZ)      # macOS: date -u -v+80
     --index-key "$IDX@$EXPIRES" --out /tmp/rehearsal/online/keys.json )
 
 cd ../offline && cp ../online/keys.json .
-minisign -S -s root-1.key -m keys.json -x keys.json.root-1.minisig
-minisign -S -s root-3.key -m keys.json -x keys.json.root-3.minisig
-cat keys.json.root-1.minisig keys.json.root-3.minisig > ../online/keys.json.minisig
+minisign -S -s root.key -m keys.json -x keys.json.minisig
+cp keys.json.minisig ../online/keys.json.minisig
 
 cd ../online
-R1=$(sed -n 2p ../offline/root-1.pub); R2=$(sed -n 2p ../offline/root-2.pub); R3=$(sed -n 2p ../offline/root-3.pub)
+R=$(sed -n 2p ../offline/root.pub)
 ( cd "$REPO" && cargo run -q -p jtm-index -- keys verify \
     --file /tmp/rehearsal/online/keys.json --sig /tmp/rehearsal/online/keys.json.minisig \
-    --root-key "$R1" --root-key "$R2" --root-key "$R3" --root-threshold 2 )
+    --root-key "$R" --root-threshold 1 )
 ```
 
-Expect exit 0. Then check the failures: verify with only `keys.json.root-1.minisig` (exit 5,
-`found 1`), without the `--root-key` flags (exit 7, the placeholders do not match), and a file
+Expect exit 0. Then check the failures: verify with an empty `keys.json.minisig` (exit 5,
+`found 0`), without the `--root-key` flags (exit 7, the placeholders do not match), and a file
 signed with `minisign -S -l` (exit 5, legacy). Delete `/tmp/rehearsal` afterwards.

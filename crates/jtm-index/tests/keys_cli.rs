@@ -1,5 +1,6 @@
-//! The ceremony commands end to end: build an unsigned `keys.json`, co-sign it with two of
-//! three throwaway root keys the way the offline machine does, then verify it.
+//! The ceremony commands end to end: build an unsigned `keys.json`, sign it with throwaway root
+//! keys the way the offline machine does, then verify it. The shipped 1-of-1 configuration runs
+//! next to the multi-key cases the format still supports.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -12,7 +13,7 @@ use jtm_security::testing::TestKey;
 const EXPIRES: &str = "2027-01-17T08:00:00Z";
 const NOW: &str = "2026-12-18T08:00:00Z";
 
-fn manifest(name: &str, roots: &[TestKey]) -> String {
+fn manifest_with(name: &str, roots: &[TestKey], threshold: u32) -> String {
     let keys = roots
         .iter()
         .map(|k| format!("\"{}\"", k.public_str()))
@@ -23,20 +24,24 @@ fn manifest(name: &str, roots: &[TestKey]) -> String {
          homepage = \"https://example.org\"\nlicense = \"MIT\"\nmin_jtm = \"0.1.0\"\n\
          [versions]\nscheme = \"semver-loose\"\n\
          [index]\nurl = \"https://example.org/{{os}}-{{arch}}.json\"\n\
-         signing_keys = [{keys}]\nthreshold = 2\nformat = 1\n\
+         signing_keys = [{keys}]\nthreshold = {threshold}\nformat = 1\n\
          [layout]\nbin_dirs = [\"bin\"]\n"
     )
 }
 
-fn plugins(dir: &Path, roots: &[TestKey]) {
+fn plugins_with(dir: &Path, roots: &[TestKey], threshold: u32) {
     for name in ["alpha", "beta"] {
         fs::create_dir_all(dir.join("plugins").join(name)).unwrap();
         fs::write(
             dir.join("plugins").join(name).join("plugin.toml"),
-            manifest(name, roots),
+            manifest_with(name, roots, threshold),
         )
         .unwrap();
     }
+}
+
+fn plugins(dir: &Path, roots: &[TestKey]) {
+    plugins_with(dir, roots, 2);
 }
 
 fn tool(dir: &Path) -> Command {
@@ -94,6 +99,38 @@ fn build_sign_and_verify_round_trip() {
         serde_json::json!(["alpha", "beta", "marketplace"])
     );
     assert_eq!(report["signers"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn one_root_key_at_threshold_one_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = TestKey::generate();
+    plugins_with(dir.path(), std::slice::from_ref(&root), 1);
+    build(dir.path(), &TestKey::generate());
+
+    let data = fs::read(dir.path().join("keys.json")).unwrap();
+    fs::write(dir.path().join("keys.json.minisig"), root.sign(&data)).unwrap();
+
+    let out = tool(dir.path())
+        .args([
+            "keys",
+            "verify",
+            "--plugins",
+            "plugins",
+            "--now",
+            NOW,
+            "--json",
+        ])
+        .args(["--previous-sequence", "3"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["sequence"], 4);
+    assert_eq!(report["signers"].as_array().unwrap().len(), 1);
 }
 
 #[test]
