@@ -328,3 +328,41 @@ fn a_ca_bundle_is_checked_without_building_a_client() {
         "{err:?}"
     );
 }
+
+#[test]
+fn bearer_token_is_sent_when_asked_and_never_otherwise() {
+    let mock = Mock::start();
+    mock.mount(Route::given(method("GET")).respond_with(ResponseTemplate::new(200)));
+    let client = client();
+    client
+        .get_bytes_with_bearer(&mock.url("/api"), 1024, "s3cret")
+        .unwrap();
+    client.get_bytes(&mock.url("/plain"), 1024).unwrap();
+    let requests = mock.requests();
+    let auth = |i: usize| {
+        requests[i]
+            .headers
+            .get("authorization")
+            .map(|v| v.to_str().unwrap().to_owned())
+    };
+    assert_eq!(auth(0).as_deref(), Some("Bearer s3cret"));
+    assert_eq!(auth(1), None);
+}
+
+#[test]
+fn bearer_token_is_not_forwarded_to_another_origin_on_redirect() {
+    let target = Mock::start();
+    target.mount(Route::given(method("GET")).respond_with(ResponseTemplate::new(200)));
+    let origin = Mock::start();
+    // A different port is a different origin, so the token must not follow the redirect.
+    origin.mount(Route::given(method("GET")).respond_with(
+        ResponseTemplate::new(302).insert_header("location", target.url("/asset").as_str()),
+    ));
+    client()
+        .get_bytes_with_bearer(&origin.url("/api"), 1024, "s3cret")
+        .unwrap();
+    assert_eq!(origin.requests().len(), 1);
+    let forwarded = target.requests();
+    assert_eq!(forwarded.len(), 1);
+    assert!(forwarded[0].headers.get("authorization").is_none());
+}

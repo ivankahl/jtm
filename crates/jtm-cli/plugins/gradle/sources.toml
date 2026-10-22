@@ -1,0 +1,21 @@
+# How CI discovers Gradle versions and hashes (SPEC.md section 15). Only the index generator
+# reads this file; it is not embedded in the jtm binary.
+
+schema = 1
+
+# The `.sha256` file Gradle publishes beside each distribution.
+[[source]]
+id = "gradle-sha256"
+adapter = "gradle"
+role = "primary"
+hash_from = "checksum-url"
+include_rc = true
+
+# The same digest as listed by the versions API. Gradle serves both, so this guards against a
+# damaged file, not a compromised vendor.
+[[source]]
+id = "gradle-versions-api"
+adapter = "gradle"
+role = "confirm"
+hash_from = "versions-api"
+include_rc = true
