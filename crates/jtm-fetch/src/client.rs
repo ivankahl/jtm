@@ -187,20 +187,7 @@ impl Client {
         );
         let mut builder = proxies.apply(reqwest::blocking::Client::builder())?;
         if let Some(path) = &options.extra_ca_file {
-            let pem = std::fs::read(path).map_err(|e| Error::io(path, e))?;
-            let certs = Certificate::from_pem_bundle(&pem)
-                .ok()
-                .filter(|certs| !certs.is_empty())
-                .ok_or_else(|| {
-                    Error::io(
-                        path,
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "holds no PEM certificates",
-                        ),
-                    )
-                })?;
-            builder = builder.tls_certs_merge(certs);
+            builder = builder.tls_certs_merge(load_ca_bundle(path)?);
         }
         let http = builder
             .user_agent(options.user_agent.clone())
@@ -261,6 +248,17 @@ impl Client {
         })
     }
 
+    /// Checks that `url` can be reached and its certificate accepted, as `jtm doctor` does. Any
+    /// answer from the server counts, even an error status, since it proves the connection;
+    /// only a failure to connect, a TLS failure or a proxy that refuses the request is an
+    /// error. Not retried, and the body is never read.
+    pub fn probe(&self, url: &str) -> Result<()> {
+        match self.open(url, 0) {
+            Ok(_) | Err(Error::Status { .. }) => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Opens `url` for streaming, asking for the body from byte `offset` on. A server that
     /// ignores the range sends the whole body, which [`Response::resumed`] reports. Not
     /// retried; callers decide how to resume.
@@ -308,6 +306,27 @@ impl Client {
             inner: response,
         })
     }
+}
+
+/// The certificates in the PEM bundle at `path`. A bundle that cannot be read fails with the
+/// I/O error, and one with no certificate in it with an `InvalidData` I/O error.
+fn load_ca_bundle(path: &std::path::Path) -> Result<Vec<Certificate>> {
+    let pem = std::fs::read(path).map_err(|e| Error::io(path, e))?;
+    Certificate::from_pem_bundle(&pem)
+        .ok()
+        .filter(|certs| !certs.is_empty())
+        .ok_or_else(|| {
+            Error::io(
+                path,
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "holds no PEM certificates"),
+            )
+        })
+}
+
+/// Checks that the PEM bundle at `path`, as `network.extra_ca_file` names it, can be read and
+/// holds certificates, and returns how many. Fails as building a [`Client`] with it would.
+pub fn check_ca_bundle(path: &std::path::Path) -> Result<usize> {
+    load_ca_bundle(path).map(|certs| certs.len())
 }
 
 /// A failure to build the client, which retrying cannot fix.
@@ -385,7 +404,7 @@ fn request_error(url: &str, err: reqwest::Error) -> Error {
 }
 
 /// Whether a TLS error, such as an untrusted certificate, lies anywhere in `err`'s causes.
-fn is_tls_failure(err: &(dyn std::error::Error + 'static)) -> bool {
+pub(crate) fn is_tls_failure(err: &(dyn std::error::Error + 'static)) -> bool {
     let mut next = Some(err);
     while let Some(e) = next {
         if e.is::<rustls::Error>() {
