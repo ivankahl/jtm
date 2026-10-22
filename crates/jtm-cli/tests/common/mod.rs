@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, dead_code, unreachable_pub)]
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use assert_cmd::Command;
 use jtm_archive::testing::{exe, file, tar_gz};
@@ -20,7 +21,7 @@ pub struct Fixture {
     pub home: tempfile::TempDir,
     pub rt: Runtime,
     pub server: MockServer,
-    pub key: TestKey,
+    pub key: Arc<TestKey>,
     pub platform: String,
 }
 
@@ -39,10 +40,19 @@ impl Fixture {
     /// A home with the `demo` plugin installed and an index serving [`VERSIONS`]. With
     /// `tamper`, the server sends different bytes than the index promises for `1.0.0`.
     pub fn new(tamper: bool) -> Fixture {
+        Fixture::with_key(tamper, Arc::new(TestKey::generate()))
+    }
+
+    /// Another home that trusts the same publisher key: a second machine, such as the
+    /// air-gapped one an export is carried to.
+    pub fn sibling(&self) -> Fixture {
+        Fixture::with_key(false, Arc::clone(&self.key))
+    }
+
+    fn with_key(tamper: bool, key: Arc<TestKey>) -> Fixture {
         let home = tempfile::tempdir().unwrap();
         let rt = Runtime::new().unwrap();
         let server = rt.block_on(MockServer::start());
-        let key = TestKey::generate();
         let platform = jtm_core::Platform::detect().unwrap().as_str().to_owned();
         let f = Fixture {
             home,
@@ -120,6 +130,17 @@ impl Fixture {
         let config = format!(
             "[mirrors]\n\"https://index.example.test/\" = \"{target}index/\"\n\
              \"https://dl.example.test/\" = \"{target}dl/\"\n"
+        );
+        std::fs::write(self.home.path().join("config.toml"), config).unwrap();
+    }
+
+    /// Points `[mirrors]` at a directory `jtm mirror export` wrote, the way its output
+    /// suggests: one entry per host, aimed at that host's directory in the export.
+    pub fn use_export_mirror(&self, export: &Path) {
+        let root = export.display().to_string().replace('\\', "/");
+        let config = format!(
+            "[mirrors]\n\"https://index.example.test/\" = \"{root}/index.example.test/\"\n\
+             \"https://dl.example.test/\" = \"{root}/dl.example.test/\"\n"
         );
         std::fs::write(self.home.path().join("config.toml"), config).unwrap();
     }

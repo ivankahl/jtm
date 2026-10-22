@@ -21,7 +21,7 @@ use crate::dirs::{Dirs, dir_name};
 use crate::error::{JtmError, Result};
 use crate::indices::{
     EmbeddedIndex, EmbeddedKeysFile, Fetcher, IndexLoader, IndexSources, LoadOptions, PluginIndex,
-    PluginKeys, cache_path,
+    PluginKeys, SignedCopy, cache_path,
 };
 use crate::install::{self, Archives, InstallRequest, Progress, Receipt, Status, VersionId};
 use crate::links;
@@ -252,6 +252,17 @@ impl<'a> Session<'a> {
     /// Loads and verifies `plugin`'s index for `platform`. `refresh` fetches a new copy as
     /// `jtm update` does.
     pub fn index(&self, plugin: &Plugin, platform: Platform, refresh: bool) -> Result<PluginIndex> {
+        Ok(self.index_with_keys_file(plugin, platform, refresh)?.0)
+    }
+
+    /// [`Session::index`], and also the verified keys file the index was checked with, if the
+    /// plugin has one. `jtm mirror export` copies both.
+    pub(crate) fn index_with_keys_file(
+        &self,
+        plugin: &Plugin,
+        platform: Platform,
+        refresh: bool,
+    ) -> Result<(PluginIndex, Option<SignedCopy>)> {
         let manifest = &plugin.manifest;
         let name = manifest.name.as_str();
         let loader = IndexLoader {
@@ -274,7 +285,7 @@ impl<'a> Session<'a> {
             keys_url: manifest.index.keys_url.as_deref(),
             origin: plugin.origin,
         };
-        let (keyring, mut warnings) = loader.keyring(&keys, &options)?;
+        let (keyring, keys_file, mut warnings) = loader.keyring_with_keys_file(&keys, &options)?;
         let override_url = self
             .settings
             .plugins
@@ -294,7 +305,17 @@ impl<'a> Session<'a> {
         )?;
         warnings.append(&mut index.warnings);
         index.warnings = warnings;
-        Ok(index)
+        Ok((index, keys_file))
+    }
+
+    /// Where verified archives come from for this session: the download cache, the HTTP
+    /// client (none offline) and `[mirrors]`.
+    pub(crate) fn archives(&self) -> Result<Archives<'_>> {
+        Ok(Archives {
+            cache: &self.cache,
+            client: self.client()?,
+            mirrors: &self.settings.mirrors,
+        })
     }
 
     /// Whether a spec that local data cannot resolve may refresh the index (SPEC.md section
@@ -386,11 +407,7 @@ impl<'a> Session<'a> {
             size: entry.size,
             cached,
         };
-        let archives = Archives {
-            cache: &self.cache,
-            client: self.client()?,
-            mirrors: &self.settings.mirrors,
-        };
+        let archives = self.archives()?;
 
         let dest = id.install_dir(&self.dirs)?;
         if options.dry_run {

@@ -5,6 +5,7 @@ pub mod config;
 pub mod context;
 pub mod dirs;
 pub mod error;
+pub mod export;
 pub mod here;
 pub mod indices;
 pub mod install;
