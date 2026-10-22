@@ -307,6 +307,19 @@ fn fetch_errors_map_to_stable_codes() {
     });
     assert_eq!(proxy.code(), "E_USAGE");
     assert!(proxy.to_string().contains("HTTPS_PROXY"), "{proxy}");
+    let ca_file = JtmError::from(F::CaFile {
+        path: PathBuf::from("/etc/corp-ca.pem"),
+        reason: "holds no PEM certificates".into(),
+    });
+    assert_eq!(ca_file.code(), "E_USAGE");
+    assert!(
+        ca_file.to_string().contains("network.extra_ca_file"),
+        "{ca_file}"
+    );
+    assert!(
+        ca_file.to_string().contains("/etc/corp-ca.pem"),
+        "{ca_file}"
+    );
     assert_eq!(
         code(F::TooLarge {
             url: "https://a".into(),

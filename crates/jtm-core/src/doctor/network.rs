@@ -1,7 +1,6 @@
 //! The proxy and TLS checks (SPEC.md section 13).
 
 use std::collections::BTreeSet;
-use std::io;
 use std::path::Path;
 use std::time::Duration;
 
@@ -109,7 +108,7 @@ fn secrets(inputs: &Inputs<'_>) -> Vec<String> {
         .chain(variables)
         .flat_map(|url| {
             let rest = url.split_once("://").map_or(url.as_str(), |(_, rest)| rest);
-            // As in `redact_proxy_url`, everything before the last `@` is credentials.
+            // As in `redact_url`, everything before the last `@` is credentials.
             let Some((userinfo, _)) = rest.rsplit_once('@') else {
                 return Vec::new();
             };
@@ -156,12 +155,6 @@ fn bundle_finding(path: &Path, err: jtm_fetch::Error) -> Finding {
                 the certificates to trust";
     let setting = format!("network.extra_ca_file {}", path.display());
     let finding = match err {
-        jtm_fetch::Error::Io { path, source } if source.kind() == io::ErrorKind::InvalidData => {
-            Finding::error(
-                ErrorCode::Usage,
-                format!("{setting} holds no PEM certificates: {}", path.display()),
-            )
-        }
         jtm_fetch::Error::Io { path, source } => {
             let err = JtmError::io(&path, source);
             Finding::error(err.kind(), format!("{setting} cannot be read: {err}"))
