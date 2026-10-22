@@ -225,12 +225,7 @@ fn execute_verify(cli: &Cli, stdout: &mut dyn Write, stderr: &mut dyn Write) -> 
 }
 
 fn check_release(args: &VerifyArgs) -> Result<release::Report> {
-    let now = match &args.now {
-        Some(text) => Timestamp::parse(text).ok_or_else(|| Error::Usage {
-            message: format!("--now `{text}` is not a UTC time like 2026-10-19T03:00:00Z"),
-        })?,
-        None => Timestamp::now(),
-    };
+    let now = parse_now(args.now.as_deref())?;
     for key in &args.root_keys {
         PublicKey::parse(key).map_err(|_| Error::Usage {
             message: "--root-key must be a minisign public key (RW...)".to_owned(),
@@ -280,12 +275,7 @@ fn generate(
     // Everything that can be checked without the network is checked first, so a bad key or a
     // typo does not cost a long run of downloads.
     let validity = Validity::days(args.validity_days)?;
-    let now = match &args.now {
-        Some(text) => Timestamp::parse(text).ok_or_else(|| Error::Usage {
-            message: format!("--now `{text}` is not a UTC time like 2026-10-19T03:00:00Z"),
-        })?,
-        None => Timestamp::now(),
-    };
+    let now = parse_now(args.now.as_deref())?;
     let signer = load_signer(args, env)?;
     if signer.is_none() && !args.dry_run {
         return Err(Error::Usage {
@@ -334,6 +324,16 @@ fn generate(
         settings: Settings { now, validity },
         dry_run: args.dry_run,
     })
+}
+
+/// The `--now` time, or the current time when none was given.
+fn parse_now(now: Option<&str>) -> Result<Timestamp> {
+    match now {
+        Some(text) => Timestamp::parse(text).ok_or_else(|| Error::Usage {
+            message: format!("--now `{text}` is not a UTC time like 2026-10-19T03:00:00Z"),
+        }),
+        None => Ok(Timestamp::now()),
+    }
 }
 
 /// Reads a confirmed file, refusing anything larger than the limit before reading it.

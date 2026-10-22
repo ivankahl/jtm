@@ -198,8 +198,22 @@ fn text_that_is_not_json_is_refused_without_echoing_it() {
 
 #[test]
 fn a_file_with_no_entries_is_refused() {
-    let text = render("demo", &confirmed(Vec::new())).unwrap();
-    assert!(refused(&text).contains("no entries"));
+    let text = r#"{"format": 1, "plugin": "demo", "entries": []}"#;
+    assert!(refused(text).contains("no entries"));
+}
+
+#[test]
+fn nothing_is_written_for_no_entries() {
+    let err = render("demo", &confirmed(Vec::new())).unwrap_err();
+    assert!(err.to_string().contains("no confirmed entries"), "{err}");
+}
+
+#[test]
+fn an_entry_without_provenance_is_refused() {
+    let start = ONE.find(r#""provenance": ["#).unwrap();
+    let end = start + ONE[start..].find(']').unwrap() + 1;
+    let text = format!("{}\"provenance\": []{}", &ONE[..start], &ONE[end..]);
+    assert!(refused(&text).contains("provenance"));
 }
 
 #[test]

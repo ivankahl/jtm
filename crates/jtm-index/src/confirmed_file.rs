@@ -103,6 +103,12 @@ impl Entry {
                 "must be 64 lowercase hexadecimal characters".to_owned(),
             ));
         }
+        if self.provenance.is_empty() {
+            return Err(bad(
+                "provenance",
+                "an entry needs at least one label saying why its hash is believed".to_owned(),
+            ));
+        }
         let provenance = Provenance::from_labels(&self.provenance)
             .map_err(|label| bad("provenance", format!("`{label}` is not a known label")))?;
         Ok(ConfirmedEntry {
@@ -123,6 +129,13 @@ impl Entry {
 /// Renders `confirmed` as the text of a confirmed file for `plugin`: pretty JSON with two-space
 /// indentation and a final newline, entries ordered by variant, version and platform.
 pub fn render(plugin: &str, confirmed: &Confirmed) -> Result<String> {
+    if confirmed.entries.is_empty() {
+        // `parse` refuses a file without entries, so writing one would only move the failure
+        // to the publish run.
+        return Err(Error::Invalid {
+            message: "confirmed file: there are no confirmed entries to write".to_owned(),
+        });
+    }
     let mut entries: Vec<Entry> = confirmed.entries.iter().map(Entry::of).collect();
     entries.sort_by(|a, b| a.key().cmp(&b.key()));
     let file = File {

@@ -89,11 +89,7 @@ struct ReleaseDir<'a>(&'a Path);
 
 impl Fetcher for ReleaseDir<'_> {
     fn fetch(&self, url: &str) -> jtm_core::Result<Option<Vec<u8>>> {
-        let name = url
-            .split(['?', '#'])
-            .next()
-            .and_then(|path| path.rsplit('/').next())
-            .unwrap_or_default();
+        let name = file_name(url);
         if name.is_empty() || name == "." || name == ".." || name.contains('\\') {
             return Ok(None);
         }
@@ -108,6 +104,14 @@ impl Fetcher for ReleaseDir<'_> {
             .map_err(|source| JtmError::Io { path, source })?;
         Ok(Some(bytes))
     }
+}
+
+/// The last path segment of a URL, without query or fragment.
+fn file_name(url: &str) -> &str {
+    url.split(['?', '#'])
+        .next()
+        .and_then(|path| path.rsplit('/').next())
+        .unwrap_or_default()
 }
 
 /// Checks `req.published` for every plugin in `req.plugin_dirs`.
@@ -258,14 +262,16 @@ fn key_horizon(req: &Request<'_>, keys: &PluginKeys<'_>) -> Result<Option<(u64, 
             source,
         })
     };
+    // The loader fetches the file the manifest's `keys_url` names, so this reads the same one.
+    let name = file_name(keys.keys_url.unwrap_or_default());
     let file = KeysFile::load(
-        &read("keys.json")?,
-        &read("keys.json.minisig")?,
+        &read(name)?,
+        &read(&format!("{name}.minisig"))?,
         &anchors,
         req.now,
     )
     .map_err(|e| Error::KeysFile {
-        message: format!("keys.json of the release cannot be used: {e}"),
+        message: format!("{name} of the release cannot be used: {e}"),
     })?;
     let newest = file
         .keys
