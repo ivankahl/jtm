@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use jtm_fetch::proxy::{redact_proxy_url, redact_url as redact};
+use jtm_fetch::proxy::redact_url;
 use jtm_plugin::names::{check_name_segment, check_plugin_name};
 
 use crate::error::{JtmError, Result};
@@ -526,7 +526,7 @@ fn check_location(entry: &Entry, url: &str, allow_http: bool) -> Result<()> {
         || url.starts_with("file://")
         || (allow_http && url.starts_with("http://"))
         || (!url.contains("://") && Path::new(url).is_absolute());
-    let url = redact(url);
+    let url = redact_url(url);
     if ok {
         Ok(())
     } else if url.starts_with("http://") {
@@ -783,7 +783,7 @@ fn convert_text(kind: Kind, text: String) -> std::result::Result<Value, String> 
         {
             Err(format!(
                 "`{}` must be an http, https, socks5 or socks5h URL",
-                redact_proxy_url(&text)
+                redact_url(&text)
             ))
         }
         _ => Ok(Value::Text(text)),

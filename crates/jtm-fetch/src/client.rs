@@ -24,7 +24,7 @@ use reqwest::header::{CONTENT_RANGE, RANGE};
 use reqwest::{Certificate, redirect};
 
 use crate::error::{Error, Result};
-use crate::proxy::{ProxyConfig, ProxyReport, redact_proxy_url};
+use crate::proxy::{ProxyConfig, ProxyReport, redact_url};
 
 /// The most redirects followed for one request.
 pub const MAX_REDIRECTS: usize = 10;
@@ -114,7 +114,7 @@ impl fmt::Debug for ClientOptions {
             .field("retry", &self.retry)
             .field("connect_timeout", &self.connect_timeout)
             .field("read_timeout", &self.read_timeout)
-            .field("proxy", &self.proxy.as_deref().map(redact_proxy_url))
+            .field("proxy", &self.proxy.as_deref().map(redact_url))
             .field("extra_ca_file", &self.extra_ca_file)
             .finish()
     }
@@ -178,13 +178,16 @@ impl Client {
                 Err(reason) => attempt.error(reason),
             }
         });
-        let report = proxies.report();
-        tracing::debug!(
-            http = report.http.as_ref().map(|r| r.url.as_str()),
-            https = report.https.as_ref().map(|r| r.url.as_str()),
-            no_proxy = report.no_proxy.as_deref(),
-            "proxy configuration"
-        );
+        // The report copies and redacts every route, so build it only when it will be logged.
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let report = proxies.report();
+            tracing::debug!(
+                http = report.http.as_ref().map(|r| r.url.as_str()),
+                https = report.https.as_ref().map(|r| r.url.as_str()),
+                no_proxy = report.no_proxy.as_deref(),
+                "proxy configuration"
+            );
+        }
         let mut builder = proxies.apply(reqwest::blocking::Client::builder())?;
         if let Some(path) = &options.extra_ca_file {
             let pem = std::fs::read(path).map_err(|e| Error::io(path, e))?;

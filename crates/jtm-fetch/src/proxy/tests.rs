@@ -98,6 +98,28 @@ fn all_proxy_fills_in_for_a_scheme_without_its_own_variable() {
 }
 
 #[test]
+fn an_unusable_all_proxy_is_ignored_while_both_specific_variables_are_set() {
+    let report = resolve(
+        None,
+        &[
+            ("ALL_PROXY", "socks://stale.corp:1"),
+            ("HTTP_PROXY", "http://plain.corp:2"),
+            ("HTTPS_PROXY", "http://secure.corp:3"),
+        ],
+    )
+    .unwrap()
+    .report();
+    assert_eq!(
+        report.http,
+        route("http://plain.corp:2/", var("HTTP_PROXY"))
+    );
+    assert_eq!(
+        report.https,
+        route("http://secure.corp:3/", var("HTTPS_PROXY"))
+    );
+}
+
+#[test]
 fn empty_variables_count_as_unset() {
     let report = resolve(None, &[("HTTPS_PROXY", ""), ("https_proxy", "  ")])
         .unwrap()
@@ -189,8 +211,11 @@ fn credentials_are_redacted_in_the_report_and_the_debug_output() {
 fn redact_url_hides_the_userinfo_only() {
     assert_eq!(redact_url("http://u:p@h:1/x"), "http://***@h:1/x");
     assert_eq!(redact_url("u:p@h:1"), "***@h:1");
-    assert_eq!(redact_url("http://h:1/a@b"), "http://h:1/a@b");
     assert_eq!(redact_url("http://h:1"), "http://h:1");
+    assert_eq!(
+        redact_url("https://mirror.example/a/b"),
+        "https://mirror.example/a/b"
+    );
 }
 
 fn assert_rejected(explicit: Option<&str>, vars: &[(&str, &str)], origin: &str) {
@@ -202,18 +227,23 @@ fn assert_rejected(explicit: Option<&str>, vars: &[(&str, &str)], origin: &str) 
 }
 
 #[test]
-fn redact_proxy_url_hides_a_password_that_holds_url_delimiters() {
+fn redact_url_hides_a_password_that_holds_url_delimiters() {
     // A proxy URL has no path, so everything before the last `@` is credentials.
     assert_eq!(
-        redact_proxy_url("http://alice:p#ss@proxy:8080"),
+        redact_url("http://alice:p#ss@proxy:8080"),
         "http://***@proxy:8080"
     );
     assert_eq!(
-        redact_proxy_url("http://alice:p/s?s@proxy:8080/"),
+        redact_url("http://alice:p/s?s@proxy:8080/"),
         "http://***@proxy:8080/"
     );
-    assert_eq!(redact_proxy_url("alice:p@ss@proxy:1"), "***@proxy:1");
-    assert_eq!(redact_proxy_url("http://proxy:8080"), "http://proxy:8080");
+    assert_eq!(redact_url("alice:p@ss@proxy:1"), "***@proxy:1");
+    assert_eq!(redact_url("http://proxy:8080"), "http://proxy:8080");
+    // A URL with a path, such as a mirror or index, hides the same way.
+    assert_eq!(
+        redact_url("https://u:p/a?b#c@mirror.example/jtm/index.json"),
+        "https://***@mirror.example/jtm/index.json"
+    );
 }
 
 #[test]
