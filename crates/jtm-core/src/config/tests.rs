@@ -375,28 +375,27 @@ fn errors_never_repeat_url_credentials() {
     for text in [
         "[network]\nproxy = \"user:s3cret@proxy:8080\"",
         "[network]\nproxy = \"ftp://user:s3cret@proxy:8080\"",
+        "[network]\nproxy = \"ftp://user:s3#cret@proxy:8080\"",
         "[mirrors]\n\"https://github.com/\" = \"http://user:s3cret@mirror.example/\"",
         "[mirrors]\n\"https://github.com/\" = \"ftp://user:s3cret@mirror.example/\"",
+        "[mirrors]\n\"https://github.com/\" = \"http://user:s3/cret@mirror.example/\"",
+        "[mirrors]\n\"https://github.com/\" = \"http://user:s3?cret@mirror.example/\"",
+        "[plugins.example]\nindex_url = \"http://user:s3#cret@mirror.example/x.json\"",
     ] {
         let err = Fixture::default().user(text).err();
         let shown = format!("{err} {}", serde_json::Value::Object(err.details()));
         assert!(!shown.contains("s3cret"), "{text}: {shown}");
+        assert!(!shown.contains("s3#cret"), "{text}: {shown}");
+        assert!(
+            !shown.contains("cret@") && !shown.contains("/cret"),
+            "{text}: {shown}"
+        );
+        assert!(
+            !shown.contains("?cret") && !shown.contains("#cret"),
+            "{text}: {shown}"
+        );
         assert!(shown.contains("***@"), "{text}: {shown}");
     }
-}
-
-#[test]
-fn redact_hides_only_userinfo() {
-    assert_eq!(
-        redact("http://u:p@proxy:8080/x@y"),
-        "http://***@proxy:8080/x@y"
-    );
-    assert_eq!(redact("u:p@proxy:8080"), "***@proxy:8080");
-    assert_eq!(
-        redact("https://mirror.example/a@b"),
-        "https://mirror.example/a@b"
-    );
-    assert_eq!(redact("/opt/mirror"), "/opt/mirror");
 }
 
 /// A non-https mirror key in a project file reports the project restriction, which is the

@@ -805,6 +805,10 @@ impl From<jtm_fetch::Error> for JtmError {
             F::Scheme { url, reason } => {
                 JtmError::usage(format!("refusing to fetch {url}: {reason}"))
             }
+            // The message names the setting, never its value, which may hold credentials.
+            F::Proxy { origin, message } => {
+                JtmError::usage(format!("invalid proxy in {origin}: {message}"))
+            }
             F::Network {
                 url,
                 message,

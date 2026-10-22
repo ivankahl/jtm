@@ -301,6 +301,12 @@ fn fetch_errors_map_to_stable_codes() {
         }),
         "E_NETWORK"
     );
+    let proxy = JtmError::from(F::Proxy {
+        origin: "HTTPS_PROXY".into(),
+        message: "the scheme `ftp` is not supported".into(),
+    });
+    assert_eq!(proxy.code(), "E_USAGE");
+    assert!(proxy.to_string().contains("HTTPS_PROXY"), "{proxy}");
     assert_eq!(
         code(F::TooLarge {
             url: "https://a".into(),
