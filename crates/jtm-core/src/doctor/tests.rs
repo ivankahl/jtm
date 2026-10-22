@@ -518,8 +518,12 @@ fn a_proxy_setting_jtm_cannot_honour_is_a_warning() {
 struct Recorder(std::sync::Mutex<Vec<String>>);
 
 impl Recorder {
+    /// The probed URLs, sorted: the hosts are probed on their own threads, so the order the
+    /// probes arrive in is not the order of the hosts.
     fn urls(&self) -> Vec<String> {
-        self.0.lock().unwrap().clone()
+        let mut urls = self.0.lock().unwrap().clone();
+        urls.sort();
+        urls
     }
 }
 

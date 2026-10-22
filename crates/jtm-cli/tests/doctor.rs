@@ -76,7 +76,7 @@ fn a_third_party_plugin_with_untrusted_keys_fails_with_exit_7() {
 }
 
 #[test]
-fn a_healthy_home_exits_0_with_the_shell_hook_as_a_warning() {
+fn a_healthy_home_exits_0_and_reports_every_check() {
     let f = Fixture::new(false);
     f.trust();
     let (code, value) = doctor(&f, "/usr/bin");
@@ -111,6 +111,21 @@ fn a_healthy_home_exits_0_with_the_shell_hook_as_a_warning() {
             .contains("offline")
     );
     assert_eq!(check(&value, "yanked_plugins")["status"], "skipped");
+    // The hook is missing here, and missing or skipped is never a failure.
+    assert_ne!(check(&value, "shell_hook")["status"], "failed");
+}
+
+/// The hook is located through `HOME` on Unix. On Windows it lives in the PowerShell profile,
+/// which `doctor` asks a PowerShell for, so with the test `PATH` there is nothing to check and
+/// the hook check is skipped; `a_healthy_home_exits_0_and_reports_every_check` covers the
+/// report there.
+#[cfg(unix)]
+#[test]
+fn a_missing_shell_hook_is_a_warning_never_an_error() {
+    let f = Fixture::new(false);
+    f.trust();
+    let (code, value) = doctor(&f, "/usr/bin");
+    assert_eq!(code, 0, "{value}");
     // No rc file in the clean HOME loads the hook: a warning, never an error.
     let warnings = value["warnings"].as_array().unwrap();
     let hook = warnings
