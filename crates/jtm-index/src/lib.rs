@@ -15,6 +15,7 @@ pub mod confirm;
 pub mod context;
 pub mod digest;
 pub mod error;
+mod keys_file;
 pub mod plugin;
 pub mod publish;
 pub mod signature;

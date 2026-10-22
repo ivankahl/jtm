@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+pub(crate) mod proxy;
+
 use jtm_fetch::{Client, ClientOptions, RetryPolicy};
 use tokio::runtime::Runtime;
 use wiremock::MockServer;
@@ -105,6 +107,13 @@ pub(crate) fn unsized_server(body: Vec<u8>) -> String {
 /// The lowercase hex SHA-256 of `data`.
 pub(crate) fn sha256(data: &[u8]) -> String {
     jtm_fetch::download::hash_reader(data, u64::MAX).unwrap().0
+}
+
+/// A mirror directory holding `data` as `a.zip`.
+pub(crate) fn mirror_dir(data: &[u8]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.zip"), data).unwrap();
+    dir
 }
 
 /// A server whose first answer announces all of `body` but stops after `cut` bytes, and whose

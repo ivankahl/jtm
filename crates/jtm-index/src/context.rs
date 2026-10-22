@@ -73,7 +73,7 @@ impl Context {
         url: &str,
         limit: u64,
     ) -> Result<Option<Vec<u8>>> {
-        let target = mirrors::rewrite(url, &self.mirrors);
+        let target = self.target(source, url)?;
         self.client
             .get_bytes(&target, limit)
             .map_err(|error| fetch_error(source, error))
@@ -104,7 +104,7 @@ impl Context {
         let Some(token) = token else {
             return self.get_optional(source, url, limit);
         };
-        let target = mirrors::rewrite(url, &self.mirrors);
+        let target = self.target(source, url)?;
         self.client
             .get_bytes_with_bearer(&target, limit, token)
             .map_err(|error| fetch_error(source, error))
@@ -126,7 +126,7 @@ impl Context {
         limit: u64,
         keep: bool,
     ) -> Result<(Option<File>, Computed)> {
-        let target = mirrors::rewrite(url, &self.mirrors);
+        let target = self.target(source, url)?;
         let mut file = if keep {
             Some(tempfile::tempfile().map_err(Error::Io)?)
         } else {
@@ -147,6 +147,21 @@ impl Context {
             file.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
         }
         Ok((file, computed))
+    }
+
+    /// Where `url` is fetched from once `[mirrors]` has been applied. The generator reads
+    /// upstreams over the network only, so a mirror pointing at a local directory is refused.
+    fn target(&self, source: &str, url: &str) -> Result<String> {
+        match mirrors::resolve(url, &self.mirrors).map_err(|error| fetch_error(source, error))? {
+            mirrors::Location::Url(target) => Ok(target),
+            mirrors::Location::File { display, .. } => Err(fetch_error(
+                source,
+                jtm_fetch::Error::Scheme {
+                    url: display,
+                    reason: "jtm-index fetches upstreams over the network only".to_owned(),
+                },
+            )),
+        }
     }
 
     /// Fetches a checksum file as text. `Ok(None)` when it does not exist.

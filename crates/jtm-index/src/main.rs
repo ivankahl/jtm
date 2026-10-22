@@ -1,4 +1,8 @@
 //! Generates, signs and publishes jtm version indices. Runs in CI only.
+//!
+//! `keys build` and `keys verify` support the root key ceremony (`docs/key-ceremony.md`): they
+//! assemble the unsigned first-party `keys.json` and check the signed result with the same
+//! loader the client uses. They never sign and never see a secret key.
 
 use std::io;
 use std::process::ExitCode;

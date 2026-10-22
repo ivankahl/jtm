@@ -28,6 +28,10 @@ use crate::publish::{Report, Request, publish};
 use crate::signing::Signer;
 use crate::writer::{DEFAULT_VALIDITY_DAYS, Settings, Validity, Warning};
 
+mod keys;
+
+pub use keys::KeysCommand;
+
 /// The version reported in every envelope.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The largest key or password file read.
@@ -55,6 +59,9 @@ pub struct Cli {
 pub enum Command {
     /// Query the sources, confirm the hashes, then write and sign the index files of a plugin.
     Generate(Box<GenerateArgs>),
+    /// The first-party `keys.json` and the root key ceremony.
+    #[command(subcommand)]
+    Keys(KeysCommand),
 }
 
 #[derive(Debug, Args)]
@@ -121,19 +128,23 @@ pub struct GenerateArgs {
 /// process exit status.
 pub fn run(cli: &Cli, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     let env = |name: &str| std::env::var(name).ok();
-    let Command::Generate(args) = &cli.command;
-    let acquire = |plugin: &Plugin| -> Result<Confirmed> {
-        let ctx = context(args, &env)?;
-        let discovery = plugin.discover(&ctx)?;
-        plugin.confirm(
-            &ctx,
-            discovery,
-            Options {
-                max_artifact_bytes: args.max_artifact_bytes,
-            },
-        )
-    };
-    execute(cli, &env, &acquire, stdout, stderr)
+    match &cli.command {
+        Command::Generate(args) => {
+            let acquire = |plugin: &Plugin| -> Result<Confirmed> {
+                let ctx = context(args, &env)?;
+                let discovery = plugin.discover(&ctx)?;
+                plugin.confirm(
+                    &ctx,
+                    discovery,
+                    Options {
+                        max_artifact_bytes: args.max_artifact_bytes,
+                    },
+                )
+            };
+            execute(cli, &env, &acquire, stdout, stderr)
+        }
+        Command::Keys(command) => keys::run(command, cli.json, stdout, stderr),
+    }
 }
 
 /// Runs the command line with `env` for variables and `acquire` for turning a plugin into
@@ -145,9 +156,13 @@ pub fn execute(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> u8 {
-    let Command::Generate(args) = &cli.command;
-    let result = generate(args, env, acquire);
-    render(cli.json, "generate", &result, stdout, stderr)
+    match &cli.command {
+        Command::Generate(args) => {
+            let result = generate(args, env, acquire);
+            render(cli.json, "generate", &result, stdout, stderr)
+        }
+        Command::Keys(command) => keys::run(command, cli.json, stdout, stderr),
+    }
 }
 
 fn generate(
