@@ -78,3 +78,41 @@ fn human_failure_goes_to_stderr_with_its_code() {
     assert!(out.is_empty());
     assert_eq!(err, "error[E_USAGE]: bad flag\n");
 }
+
+fn diagnosis() -> Diagnosis<'static> {
+    Diagnosis {
+        code: "E_IO",
+        message: "the link is gone",
+        retryable: false,
+        details: Map::new(),
+    }
+}
+
+#[test]
+fn a_report_failure_in_json_carries_the_report_in_the_error_details() {
+    let (out, err) = render(Format::Json, |r| {
+        r.report_failure("doctor", &diagnosis(), &outcome().data)
+            .unwrap();
+    });
+    assert!(err.is_empty());
+    assert_eq!(out.lines().count(), 1);
+    let value: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["command"], "doctor");
+    assert_eq!(value["error"]["code"], "E_IO");
+    assert_eq!(value["error"]["message"], "the link is gone");
+    assert_eq!(
+        value["error"]["details"]["report"]["installed"][0],
+        "java@21"
+    );
+}
+
+#[test]
+fn a_human_report_failure_prints_the_report_then_the_error() {
+    let (out, err) = render(Format::Human, |r| {
+        r.report_failure("doctor", &diagnosis(), &outcome().data)
+            .unwrap();
+    });
+    assert_eq!(out, "installed java@21\n");
+    assert_eq!(err, "error[E_IO]: the link is gone\n");
+}

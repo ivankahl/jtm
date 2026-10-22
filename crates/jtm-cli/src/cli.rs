@@ -190,6 +190,9 @@ pub(crate) enum Command {
     /// Manage keys trusted to sign version indices.
     #[command(subcommand)]
     Trust(TrustCommand),
+    /// Diagnose PATH, current links, the shell hook, proxy, TLS, the trust store and yanked
+    /// plugins. Only reads; exits with the code of the first check that fails.
+    Doctor,
     /// Copy signed indices and artifacts for a corporate or air-gapped mirror.
     #[command(subcommand)]
     Mirror(MirrorCommand),

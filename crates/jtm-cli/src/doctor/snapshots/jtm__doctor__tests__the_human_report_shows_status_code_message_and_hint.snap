@@ -1,0 +1,12 @@
+---
+source: crates/jtm-cli/src/doctor/tests.rs
+expression: text
+---
+[warning] path: 1 current link bin directory is on PATH
+    warning[W_PATH_MISSING]: /x/bin is not on PATH
+      hint: run `jtm self setup`
+[FAILED] current_links: 
+    error[E_IO]: the link is gone
+      hint: run `jtm default`
+[skipped] tls: offline
+    note: the connection test was skipped

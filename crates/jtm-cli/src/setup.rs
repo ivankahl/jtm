@@ -31,7 +31,7 @@ pub(crate) mod windows;
 pub(crate) const W_SHELL_HOOK_SKIPPED: &str = "W_SHELL_HOOK_SKIPPED";
 
 pub(crate) const START: &str = "# >>> jtm >>>";
-const END: &str = "# <<< jtm <<<";
+pub(crate) const END: &str = "# <<< jtm <<<";
 
 /// What the user environment should hold: the current links' bin directories and the `[env]`
 /// variables pointing at the links.

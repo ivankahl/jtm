@@ -255,7 +255,7 @@ pub(crate) fn shell_init(shell: &str) -> Result<Outcome<ShellInitData>> {
 }
 
 /// The variable the hook keeps the last directory in, to notice directory changes.
-const HOOK_DIR_VAR: &str = "JTM_HOOK_DIR";
+pub(crate) const HOOK_DIR_VAR: &str = "JTM_HOOK_DIR";
 
 /// The shell hook's work on every prompt (SPEC.md section 5): apply the project pins of the
 /// working directory and undo those of the last one. On a directory change, a session version

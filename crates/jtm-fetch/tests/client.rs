@@ -261,6 +261,75 @@ fn an_extra_ca_file_is_loaded() {
 }
 
 #[test]
+fn a_probe_succeeds_on_any_answer_from_the_server() {
+    // A 404 or a 403 still proves the host is reachable and its certificate accepted.
+    let mock = Mock::start();
+    for (at, status) in [("/ok", 200), ("/gone", 404), ("/no", 403)] {
+        mock.mount(
+            Route::given(method("GET"))
+                .and(path(at))
+                .respond_with(ResponseTemplate::new(status)),
+        );
+    }
+    let client = client();
+    for at in ["/ok", "/gone", "/no"] {
+        client.probe(&mock.url(at)).unwrap();
+    }
+    assert_eq!(mock.requests().len(), 3, "one request each, no retries");
+}
+
+#[test]
+fn a_probe_tells_a_tls_failure_from_an_unreachable_host() {
+    let (url, _) = flaky_server(0, b"hello");
+    let err = client()
+        .probe(&url.replace("http://", "https://"))
+        .unwrap_err();
+    assert!(err.is_tls_failure(), "{err:?}");
+
+    // Nothing listens on a port that was just released.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let err = client()
+        .probe(&format!("http://127.0.0.1:{port}/"))
+        .unwrap_err();
+    assert!(matches!(err, Error::Network { .. }), "{err:?}");
+    assert!(!err.is_tls_failure(), "{err:?}");
+}
+
+#[test]
+fn a_probe_reports_a_proxy_that_wants_credentials() {
+    let mock = Mock::start();
+    mock.mount(Route::given(method("GET")).respond_with(ResponseTemplate::new(407)));
+    let err = client().probe(&mock.url("/")).unwrap_err();
+    assert!(err.to_string().contains("407"), "{err}");
+}
+
+#[test]
+fn a_ca_bundle_is_checked_without_building_a_client() {
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extra-ca.pem");
+    assert!(jtm_fetch::check_ca_bundle(&fixture).unwrap() >= 1);
+
+    let dir = tempfile::tempdir().unwrap();
+    let missing = jtm_fetch::check_ca_bundle(&dir.path().join("missing.pem")).unwrap_err();
+    assert!(
+        matches!(&missing, Error::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound),
+        "{missing:?}"
+    );
+
+    let garbage = dir.path().join("garbage.pem");
+    std::fs::write(&garbage, b"not a certificate").unwrap();
+    let err = jtm_fetch::check_ca_bundle(&garbage).unwrap_err();
+    assert!(
+        matches!(&err, Error::Io { source, .. } if source.kind() == std::io::ErrorKind::InvalidData),
+        "{err:?}"
+    );
+}
+
+#[test]
 fn bearer_token_is_sent_when_asked_and_never_otherwise() {
     let mock = Mock::start();
     mock.mount(Route::given(method("GET")).respond_with(ResponseTemplate::new(200)));

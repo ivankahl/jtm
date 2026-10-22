@@ -69,6 +69,16 @@ struct ErrorBody {
     details: Map<String, Value>,
 }
 
+/// A failure found by a command that reports on many things, such as `jtm doctor`, with the
+/// code and message of the finding that decides the exit code.
+#[derive(Debug)]
+pub(crate) struct Diagnosis<'a> {
+    pub(crate) code: &'static str,
+    pub(crate) message: &'a str,
+    pub(crate) retryable: bool,
+    pub(crate) details: Map<String, Value>,
+}
+
 /// Writes outcomes and failures to a pair of streams in the chosen format.
 pub(crate) struct Renderer<O, E> {
     format: Format,
@@ -153,6 +163,44 @@ impl<O: Write, E: Write> Renderer<O, E> {
                     writeln!(self.stderr, "  caused by: {cause}")?;
                     source = cause.source();
                 }
+                self.stderr.flush()
+            }
+        }
+    }
+
+    /// A failure that comes with a full report, as `jtm doctor` produces. In JSON mode the
+    /// report is in `error.details.report`; for a human it is written to stdout first, then the
+    /// error to stderr.
+    pub(crate) fn report_failure<T: Serialize + Human>(
+        &mut self,
+        command: &str,
+        failure: &Diagnosis<'_>,
+        report: &T,
+    ) -> io::Result<()> {
+        match self.format {
+            Format::Json => {
+                let mut details = failure.details.clone();
+                details.insert(
+                    "report".to_owned(),
+                    serde_json::to_value(report).unwrap_or_default(),
+                );
+                let envelope = ErrorEnvelope {
+                    ok: false,
+                    command,
+                    error: ErrorBody {
+                        code: failure.code,
+                        message: failure.message.to_owned(),
+                        retryable: failure.retryable,
+                        details,
+                    },
+                    jtm_version: JTM_VERSION,
+                };
+                self.write_json(&envelope)
+            }
+            Format::Human => {
+                report.render_human(&mut self.stdout)?;
+                self.stdout.flush()?;
+                writeln!(self.stderr, "error[{}]: {}", failure.code, failure.message)?;
                 self.stderr.flush()
             }
         }
