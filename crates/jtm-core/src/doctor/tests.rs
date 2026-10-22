@@ -607,9 +607,13 @@ fn mirrors_and_index_overrides_decide_which_hosts_are_probed() {
 #[test]
 fn local_index_sources_are_not_probed() {
     let recorder = Recorder::default();
-    let home = Home::new()
-        .online()
-        .config("[plugins.demo]\nindex_url = \"/srv/mirror/demo.json\"\n");
+    let home = Home::new().online();
+    // A path under the temp dir, as `/srv/...` is not absolute on Windows.
+    let local = home.dirs.data.join("mirror").join("demo.json");
+    let home = home.config(&format!(
+        "[plugins.demo]\nindex_url = '{}'\n",
+        local.display()
+    ));
     let tls = check_with(&home, "tls", Some(&recorder), None);
     assert_eq!(tls.status, Status::Ok, "{tls:?}");
     assert!(recorder.urls().is_empty());
@@ -650,13 +654,20 @@ fn a_probe_failure_never_shows_proxy_credentials() {
 
 /// A server that answers every connection with bytes that are not TLS.
 fn plain_server() -> u16 {
-    use std::io::Write;
+    use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten().take(2) {
             let mut stream = stream;
+            // Read the client hello first and drain until the client hangs up: closing a socket
+            // with unread data makes Windows reset the connection, which the client then reports
+            // as an aborted connection instead of the TLS failure under test.
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\n\r\nnot tls");
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            while matches!(stream.read(&mut buf), Ok(n) if n > 0) {}
         }
     });
     port
