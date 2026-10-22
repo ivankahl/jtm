@@ -5,6 +5,7 @@ pub mod download;
 pub mod error;
 pub mod mirrors;
 pub mod proxy;
+mod tls;
 
 pub use client::{Client, ClientOptions, MAX_REDIRECTS, Response, RetryPolicy};
 pub use download::{Artifact, DownloadCache, Downloaded, Origin};

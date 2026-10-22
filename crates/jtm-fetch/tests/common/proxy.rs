@@ -1,11 +1,10 @@
-//! In-process proxies and a TLS server for the proxy tests. Nothing here leaves the machine.
+//! In-process proxies for the proxy tests. Nothing here leaves the machine.
 
 #![allow(dead_code, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use jtm_fetch::proxy::ProxyConfig;
@@ -103,7 +102,7 @@ pub(crate) fn connect_proxy(
 }
 
 /// Reads a request head, up to and including the blank line.
-fn read_head(stream: &mut impl Read) -> String {
+pub(crate) fn read_head(stream: &mut impl Read) -> String {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).is_ok_and(|n| n == 1) {
@@ -155,101 +154,4 @@ pub(crate) fn socks5_proxy(backend: SocketAddr) -> (SocketAddr, Arc<Mutex<Vec<St
         }
     });
     (addr, seen)
-}
-
-/// An HTTPS server with a certificate for `localhost` from a throwaway CA.
-#[derive(Debug)]
-pub(crate) struct TlsServer {
-    pub(crate) addr: SocketAddr,
-    /// The CA certificate as a PEM file, for `extra_ca_file`.
-    pub(crate) ca_file: PathBuf,
-    _dir: tempfile::TempDir,
-}
-
-impl TlsServer {
-    /// `https://localhost:<port><path>`.
-    pub(crate) fn url(&self, path: &str) -> String {
-        format!("https://localhost:{}{path}", self.addr.port())
-    }
-}
-
-/// Starts a [`TlsServer`]. `/redirect-to-http` answers `302` to a plain-http URL; every other
-/// path answers `200` with the body `tls-ok`.
-pub(crate) fn tls_server() -> TlsServer {
-    use rcgen::{
-        BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
-        IsCa, Issuer, KeyPair, KeyUsagePurpose,
-    };
-    use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
-
-    // Short lifetimes keep to the limits that macOS and Windows put on certificates.
-    let now = time::OffsetDateTime::now_utc();
-    let (not_before, not_after) = (
-        now - time::Duration::days(1),
-        now + time::Duration::days(30),
-    );
-    let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    ca_params.not_before = not_before;
-    ca_params.not_after = not_after;
-    ca_params.distinguished_name = DistinguishedName::new();
-    ca_params
-        .distinguished_name
-        .push(DnType::CommonName, "jtm test CA");
-    let ca_key = KeyPair::generate().unwrap();
-    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
-    let issuer = Issuer::new(ca_params, ca_key);
-    let leaf_key = KeyPair::generate().unwrap();
-    let mut leaf_params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
-    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    leaf_params.not_before = not_before;
-    leaf_params.not_after = not_after;
-    let leaf = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
-
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = rustls::ServerConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![leaf.der().clone()],
-            PrivateKeyDer::from(PrivatePkcs8KeyDer::from(leaf_key.serialize_der())),
-        )
-        .unwrap();
-    let config = Arc::new(config);
-
-    let dir = tempfile::tempdir().unwrap();
-    let ca_file = dir.path().join("ca.pem");
-    std::fs::write(&ca_file, ca_cert.pem()).unwrap();
-
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut tcp) = stream else { return };
-            let config = Arc::clone(&config);
-            std::thread::spawn(move || {
-                let Ok(mut conn) = rustls::ServerConnection::new(config) else {
-                    return;
-                };
-                let mut tls = rustls::Stream::new(&mut conn, &mut tcp);
-                let head = read_head(&mut tls);
-                let response = if head.contains(" /redirect-to-http ") {
-                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/downgraded\r\n\
-                     Content-Length: 0\r\nConnection: close\r\n\r\n"
-                } else {
-                    "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\ntls-ok"
-                };
-                let _ = tls.write_all(response.as_bytes());
-                tls.conn.send_close_notify();
-                let _ = tls.flush();
-            });
-        }
-    });
-    TlsServer {
-        addr,
-        ca_file,
-        _dir: dir,
-    }
 }

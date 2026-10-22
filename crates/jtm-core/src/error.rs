@@ -809,6 +809,8 @@ impl From<jtm_fetch::Error> for JtmError {
             F::Proxy { origin, message } => {
                 JtmError::usage(format!("invalid proxy in {origin}: {message}"))
             }
+            // The fetch error already names the setting and the path.
+            err @ F::CaFile { .. } => JtmError::usage(err.to_string()),
             F::Network {
                 url,
                 message,

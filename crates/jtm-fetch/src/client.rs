@@ -21,10 +21,11 @@ use std::time::Duration;
 use reqwest::StatusCode;
 use reqwest::blocking::Response as HttpResponse;
 use reqwest::header::{CONTENT_RANGE, RANGE};
-use reqwest::{Certificate, redirect};
+use reqwest::redirect;
 
 use crate::error::{Error, Result};
 use crate::proxy::{ProxyConfig, ProxyReport, redact_proxy_url};
+use crate::tls::load_extra_ca_file;
 
 /// The most redirects followed for one request.
 pub const MAX_REDIRECTS: usize = 10;
@@ -87,7 +88,10 @@ pub struct ClientOptions {
     /// variables; `NO_PROXY` still applies. `None` uses the environment, then the Windows
     /// system proxy. The URL may hold credentials, which `Debug` redacts.
     pub proxy: Option<String>,
-    /// A PEM bundle trusted in addition to the OS store, as `network.extra_ca_file` sets it.
+    /// A PEM bundle trusted in addition to the OS store, as `network.extra_ca_file` sets it,
+    /// for networks whose proxy re-signs TLS. It adds to the platform verifier and never
+    /// replaces it. A file that is unreadable, empty or holds a malformed certificate stops the
+    /// client from starting, naming the path.
     pub extra_ca_file: Option<PathBuf>,
 }
 
@@ -187,20 +191,9 @@ impl Client {
         );
         let mut builder = proxies.apply(reqwest::blocking::Client::builder())?;
         if let Some(path) = &options.extra_ca_file {
-            let pem = std::fs::read(path).map_err(|e| Error::io(path, e))?;
-            let certs = Certificate::from_pem_bundle(&pem)
-                .ok()
-                .filter(|certs| !certs.is_empty())
-                .ok_or_else(|| {
-                    Error::io(
-                        path,
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "holds no PEM certificates",
-                        ),
-                    )
-                })?;
-            builder = builder.tls_certs_merge(certs);
+            // Merged, not substituted: the platform verifier keeps vouching for what the OS
+            // store trusts, and these certificates are trusted on top of it.
+            builder = builder.tls_certs_merge(load_extra_ca_file(path)?);
         }
         let http = builder
             .user_agent(options.user_agent.clone())

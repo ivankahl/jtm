@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 pub(crate) mod proxy;
+pub(crate) mod tls;
 
 use jtm_fetch::{Client, ClientOptions, RetryPolicy};
 use tokio::runtime::Runtime;

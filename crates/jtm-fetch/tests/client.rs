@@ -257,5 +257,5 @@ fn an_extra_ca_file_is_loaded() {
         ..options(false)
     })
     .unwrap_err();
-    assert!(matches!(err, Error::Io { .. }), "{err:?}");
+    assert!(matches!(err, Error::CaFile { .. }), "{err:?}");
 }
