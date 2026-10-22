@@ -279,8 +279,6 @@ impl<'a> Session<'a> {
             .plugins
             .get(name)
             .and_then(|p| p.index_url.as_deref());
-        // What fills `{index_version}` is decided with index publishing (T6.4); until then such
-        // a URL is usable only through `plugins.<name>.index_url` or an embedded or cached copy.
         let remote_url = jtm_fetch::mirrors::rewrite(&manifest.index.url, &self.settings.mirrors);
         let mut index = loader.load(
             &IndexSources {

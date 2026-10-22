@@ -23,7 +23,7 @@ latest = { kind = "highest" }
 lts = { kind = "index-tag", tag = "lts" }
 
 [index]
-url = "https://github.com/jtm-dev/index/releases/download/java-{index_version}/java-{os}-{arch}.json"
+url = "https://github.com/jtm-dev/index/releases/latest/download/java-{os}-{arch}.json"
 signing_keys = [
   "RWRysDZolh28UjrMjL/6mCMDPnqfDtDj5Al+TxN8z6RkXGawmRo1ob7K",
   "RWTzLKb42g206mejNh0fzVSVIUErPPx9vwRRSf+bTzSu3b21Ok57nca0",

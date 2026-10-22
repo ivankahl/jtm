@@ -235,7 +235,7 @@ jtm-plugin-maven/
 | top level | Yes | `schema` (manifest version, starts at 1), `name`, `display_name`, `description`, `homepage`, `license`, `min_jtm` |
 | `[versions]` | Yes | `scheme` (`java`, `maven`, `semver-loose`, or `script`), `default_variant`, `default_alias` (the alias a bare `<tool>` resolves to; without one, the highest version), `variants`, `include_prereleases` |
 | `[aliases]` | No | Named aliases and how each resolves: `highest`, `index-tag`, `fixed`, or `script` |
-| `[index]` | Yes | `url` template, `signing_keys` (Ed25519 public keys: the plugin's trust anchors), `threshold` (how many signing keys must sign; default 1), `keys_url` (optional `https` URL of a keys file signed by the signing keys), `format` |
+| `[index]` | Yes | `url` template (`{os}` and `{arch}` are filled from the platform; `{index_version}` is accepted but always stands for `latest`, section 8), `signing_keys` (Ed25519 public keys: the plugin's trust anchors), `threshold` (how many signing keys must sign; default 1), `keys_url` (optional `https` URL of a keys file signed by the signing keys), `format` |
 | `[layout]` | Yes | How to find the tool home inside the archive: `strip_components`, a number of leading directories to strip or `"auto"` (strip a single top-level directory, the default), per-OS `home_subdir` table keyed by `windows`, `macos` or `linux` (for example `home_subdir = { macos = "Contents/Home" }` for JDKs) whose value is a path or a list of candidate paths tried in order (the first that is a directory inside the archive wins; `""` is the archive root and can only come last in a list of two or more (leave the OS out for the root alone), and a `*` segment, allowed only as a whole segment, matches any one real directory, never a link; a `*` candidate that no directory fits is passed over, but one that two or more fit is an error, and a directory it matches must be named only with ASCII letters, digits, `.`, `_`, `+` and `-`, not starting with `.` or `-`), `bin_dirs` |
 | `[env]` | No | Variables to set when active, using `{home}` and `{bin}` placeholders, for example `JAVA_HOME = "{home}"` |
 | `[requires]` | No | Runtime dependencies, for example Maven requires `java >= 8`; used for `W_REQUIRES_UNMET` warnings by `current`, `exec`, `env`, `use` and the shell hook, never auto-installs; an unmet requirement only ever warns, but a tool whose installs cannot be read fails the command, as in every other command (section 5) |
@@ -262,7 +262,7 @@ latest = { kind = "highest" }
 "3" = { kind = "fixed", target = "3" }   # newest 3.x
 
 [index]
-url = "https://github.com/jtm-dev/index/releases/download/maven-{index_version}/maven-{os}-{arch}.json"
+url = "https://github.com/jtm-dev/index/releases/latest/download/maven-any.json"
 signing_keys = ["RWS...base64..."]
 format = 1
 
@@ -352,7 +352,7 @@ Each plugin publishes one signed JSON index per platform; jtm embeds a snapshot 
 ### Where indices come from
 
 1. **Embedded snapshot.** Release builds include the signed first-party indices and their signatures via `include_bytes!`. They are verified at runtime like any other copy, so a fresh install works offline from the first run.
-2. **Canonical remote.** GitHub Release assets of the `jtm-dev/index` repository, one release per publish, referenced by tag rather than branch.
+2. **Canonical remote.** GitHub Release assets of the `jtm-dev/index` repository, one release per publish, referenced by tag rather than branch. Every release carries every signed index file, `keys.json` and their signatures, so the newest release alone is a complete copy and clients read it from the stable `https://github.com/jtm-dev/index/releases/latest/download/<file>` location. A client needs no release name: the tag is only a label for humans (`index-<UTC time>-seq<N>`), and what makes a copy newer is its signed `sequence`, so the release a copy came from never matters. `jtm update` fetches the `latest` location again and keeps whichever valid copy has the highest `sequence`. `{index_version}` in a manifest's `[index] url` is still accepted and is replaced by the literal `latest`, which suits a third-party host that keeps its newest index under a `latest` path or tag; the first-party manifests do not use it.
 3. **Cache.** `<JTM_HOME>/cache/index/<plugin>/<platform>.json` plus `.minisig`, written atomically after verification.
 4. **Override.** Any URL or local path the user configures (below).
 
@@ -374,7 +374,7 @@ Overrides change where bytes come from, never which keys are trusted. A copied i
 # ~/.config/jtm/config.toml  (or %APPDATA%\jtm\config.toml)
 [mirrors]
 # prefix rewrites, applied to index URLs and artifact URLs
-"https://github.com/jtm-dev/index/releases/download/" = "https://artifactory.corp.example/jtm-index/"
+"https://github.com/jtm-dev/index/releases/latest/download/" = "https://artifactory.corp.example/jtm-index/"
 "https://github.com/adoptium/" = "https://artifactory.corp.example/github-adoptium/"
 
 [plugins.java]

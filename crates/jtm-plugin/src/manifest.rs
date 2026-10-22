@@ -18,7 +18,9 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// The only index format this build understands.
 pub const INDEX_FORMAT: i64 = 1;
 
-/// Placeholders allowed in `[index] url`.
+/// Placeholders allowed in `[index] url`. `{index_version}` is kept for manifests written
+/// before the client read the newest release from a stable location; it always means `latest`
+/// (SPEC.md section 8).
 pub const INDEX_URL_PLACEHOLDERS: &[&str] = &["index_version", "os", "arch"];
 /// Names no plugin may use. `marketplace` is the scope of the key that signs the marketplace.
 pub const RESERVED_NAMES: &[&str] = &["marketplace"];

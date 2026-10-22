@@ -59,10 +59,16 @@ fn every_first_party_plugin_shares_the_root_keys_and_keys_file() {
         assert_eq!(m.index.signing_keys, first.signing_keys, "{}", m.name);
         assert_eq!(m.index.threshold, first.threshold, "{}", m.name);
         assert_eq!(m.index.keys_url, first.keys_url, "{}", m.name);
+        // Every release carries every index, so the newest one is always at the `latest`
+        // location and no manifest needs `{index_version}` (SPEC.md section 8).
         assert!(
             m.index
                 .url
-                .starts_with("https://github.com/jtm-dev/index/releases/download/")
+                .starts_with("https://github.com/jtm-dev/index/releases/latest/download/"),
+            "{}: {}",
+            m.name,
+            m.index.url
         );
+        assert!(!m.index.url.contains("{index_version}"), "{}", m.name);
     }
 }

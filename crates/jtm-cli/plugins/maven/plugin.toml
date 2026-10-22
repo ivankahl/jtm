@@ -23,7 +23,7 @@ latest = { kind = "highest" }
 
 # Maven runs on any platform, so one index with `"platform": "any"` serves them all.
 [index]
-url = "https://github.com/jtm-dev/index/releases/download/maven-{index_version}/maven-any.json"
+url = "https://github.com/jtm-dev/index/releases/latest/download/maven-any.json"
 signing_keys = [
   "RWRysDZolh28UjrMjL/6mCMDPnqfDtDj5Al+TxN8z6RkXGawmRo1ob7K",
   "RWTzLKb42g206mejNh0fzVSVIUErPPx9vwRRSf+bTzSu3b21Ok57nca0",

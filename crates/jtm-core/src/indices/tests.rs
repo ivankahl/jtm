@@ -413,6 +413,12 @@ fn urls_expand_os_and_arch() {
         expand("https://x/{os}/{arch}", "macos-aarch64"),
         "https://x/macos/aarch64"
     );
+    // The rolling release: a template that still names `{index_version}` (a third-party
+    // plugin written to the older SPEC) is read from the stable `latest` location.
+    assert_eq!(
+        expand("https://x/download/{index_version}/j-{os}.json", "linux-x64"),
+        "https://x/download/latest/j-linux.json"
+    );
     assert_eq!(local_path("https://x"), None);
     assert_eq!(
         local_path("file:///opt/m.json"),
@@ -797,5 +803,33 @@ fn files_over_their_format_limit_are_refused_before_reading() {
         err.to_string()
             .contains("larger than the limit for a keys file"),
         "{err}"
+    );
+}
+
+#[test]
+fn index_version_placeholder_names_the_latest_release() {
+    let f = Fixture::new();
+    let mut net = FakeNet::default();
+    net.serve(
+        "https://index.example.test/rel/latest/demo-linux-x64.json",
+        f.signed(5, FUTURE),
+    );
+    let sources = IndexSources {
+        plugin: "demo",
+        platform: "linux-x64",
+        remote_url: "https://index.example.test/rel/{index_version}/demo-{os}-{arch}.json",
+        override_url: None,
+    };
+    let loader = IndexLoader {
+        dirs: &f.dirs,
+        embedded: &[],
+        embedded_keys: &[],
+        fetcher: Some(&net),
+    };
+    let loaded = loader.load(&sources, &f.keyring, &refresh()).unwrap();
+    assert_eq!(loaded.index.sequence, 5);
+    assert_eq!(
+        loaded.origin,
+        "https://index.example.test/rel/latest/demo-linux-x64.json"
     );
 }

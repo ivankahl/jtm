@@ -98,8 +98,8 @@ pub struct IndexSources<'a> {
     pub plugin: &'a str,
     /// A platform such as `linux-musl-x64`. `{os}` and `{arch}` in URLs are filled from it.
     pub platform: &'a str,
-    /// The canonical remote URL from the manifest's `[index] url`. Placeholders other than
-    /// `{os}` and `{arch}` must already be filled.
+    /// The canonical remote URL from the manifest's `[index] url`. `{os}`, `{arch}` and
+    /// `{index_version}` are filled when it is used.
     pub remote_url: &'a str,
     /// `plugins.<name>.index_url`, which replaces the canonical remote entirely.
     pub override_url: Option<&'a str>,
@@ -436,10 +436,23 @@ impl IndexLoader<'_> {
     }
 }
 
-/// Fills `{os}` and `{arch}` from a platform such as `linux-musl-x64` (`linux-musl`, `x64`).
+/// What `{index_version}` stands for in an index URL.
+///
+/// There is no version to learn: the canonical remote publishes every index as an asset of its
+/// newest release, which a stable `latest` location always serves (SPEC.md section 8). Rollback
+/// protection rests on the signed `sequence`, not on which release a copy came from, so a
+/// client never needs a release name. The placeholder stays valid so that a manifest written
+/// for it still loads; it works for a host that keeps its newest index under a `latest` path
+/// or tag, and a manifest that names a release in some other way should not use it.
+pub const INDEX_VERSION_LATEST: &str = "latest";
+
+/// Fills `{os}` and `{arch}` from a platform such as `linux-musl-x64` (`linux-musl`, `x64`),
+/// and `{index_version}` with [`INDEX_VERSION_LATEST`].
 fn expand(url: &str, platform: &str) -> String {
     let (os, arch) = platform.rsplit_once('-').unwrap_or((platform, platform));
-    url.replace("{os}", os).replace("{arch}", arch)
+    url.replace("{os}", os)
+        .replace("{arch}", arch)
+        .replace("{index_version}", INDEX_VERSION_LATEST)
 }
 
 /// The local path a `file://` URL or plain path names, or `None` for a network URL.
