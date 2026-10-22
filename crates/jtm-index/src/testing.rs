@@ -226,3 +226,50 @@ impl TestKey {
         self.sign(data, HashAlgorithm::Sha256).to_bytes().unwrap()
     }
 }
+
+/// A minisign key pair made for the test.
+pub(crate) struct MinisignKey {
+    /// The contents of the `minisign.key` file.
+    pub(crate) secret_file: String,
+    /// The public key line.
+    pub(crate) public: String,
+}
+
+pub(crate) fn minisign_key() -> MinisignKey {
+    let pair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    MinisignKey {
+        secret_file: pair.sk.to_box(Some("jtm test key")).unwrap().into_string(),
+        public: pair.pk.to_base64(),
+    }
+}
+
+/// A confirmed entry for `version` with the digest `ab` repeated, served from vendor.test.
+pub(crate) fn confirmed_entry(
+    variant: Option<&str>,
+    version: &str,
+    target: crate::candidate::Target,
+) -> crate::confirm::ConfirmedEntry {
+    use crate::confirm::{ClaimRecord, Confirmation, ConfirmedEntry, Provenance};
+    ConfirmedEntry {
+        variant: variant.map(str::to_owned),
+        version: version.to_owned(),
+        target,
+        tags: vec!["ga".to_owned()],
+        url: format!("https://vendor.test/{version}.zip"),
+        archive: jtm_security::ArchiveKind::Zip,
+        size: 1234,
+        sha256: "ab".repeat(32),
+        distribution_version: None,
+        provenance: Provenance {
+            confirmation: Confirmation::Independent,
+            sources: vec!["src-a".to_owned(), "src-b".to_owned()],
+            claims: vec![ClaimRecord {
+                source: "src-a".to_owned(),
+                algorithm: crate::HashAlgorithm::Sha256,
+                origin: "https://x.test/sum".to_owned(),
+            }],
+            signatures: Vec::new(),
+            fetched_at: "2026-10-19T02:00:00Z".to_owned(),
+        },
+    }
+}

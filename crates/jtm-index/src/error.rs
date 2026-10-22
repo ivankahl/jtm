@@ -2,6 +2,7 @@
 //! (SPEC.md section 12) so the commands built on top report them like every other jtm failure.
 
 use std::fmt;
+use std::path::PathBuf;
 
 use jtm_core::ErrorCode;
 
@@ -46,6 +47,42 @@ pub enum Error {
     /// A temporary file for a download could not be made or read.
     #[error("cannot use a temporary file: {0}")]
     Io(#[source] std::io::Error),
+
+    /// The command line or its environment is wrong. Maps to `E_USAGE`.
+    #[error("{message}")]
+    Usage { message: String },
+
+    /// The signing key cannot be used: it is not a minisign secret key, or the password is
+    /// missing or wrong. The message never repeats key material or the password. Maps to
+    /// `E_USAGE`.
+    #[error("signing key: {message}")]
+    SigningKey { message: String },
+
+    /// An index the generator refuses to write, or whose written form does not verify with
+    /// the client's loader. Maps to `E_INDEX_INVALID`.
+    #[error("{message}")]
+    Invalid { message: String },
+
+    /// Writing would take an index's sequence or time backwards. Maps to `E_INDEX_ROLLBACK`.
+    #[error("{file}: {message}")]
+    Rollback { file: String, message: String },
+
+    /// The previously published index could not be read or does not verify. Its failure keeps
+    /// the code the client would give it.
+    #[error("previous index {file}: {error}")]
+    Previous {
+        file: String,
+        #[source]
+        error: jtm_security::Error,
+    },
+
+    /// An output file could not be written. Maps to `E_IO`.
+    #[error("cannot write {}: {source}", path.display())]
+    Output {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// One entry the confirmation step refused, and why.
@@ -251,7 +288,11 @@ impl Error {
                 .map(|r| &r.reason)
                 .max_by_key(|reason| reason.severity())
                 .map_or(ErrorCode::IndexInvalid, Reason::code),
-            Error::Io(_) => ErrorCode::Io,
+            Error::Io(_) | Error::Output { .. } => ErrorCode::Io,
+            Error::Usage { .. } | Error::SigningKey { .. } => ErrorCode::Usage,
+            Error::Invalid { .. } => ErrorCode::IndexInvalid,
+            Error::Rollback { .. } => ErrorCode::IndexRollback,
+            Error::Previous { error, .. } => security_code(error),
         }
     }
 
@@ -261,6 +302,21 @@ impl Error {
             url: url.to_owned(),
             message: message.to_string(),
         }
+    }
+}
+
+/// The code the client gives a failure of the same check.
+fn security_code(error: &jtm_security::Error) -> ErrorCode {
+    use jtm_security::Error as S;
+    match error {
+        S::SignatureInvalid { .. } => ErrorCode::SignatureInvalid,
+        S::KeyUntrusted { .. } => ErrorCode::KeyUntrusted,
+        S::Invalid { .. } => ErrorCode::IndexInvalid,
+        S::IndexBinding { .. } => ErrorCode::IndexBinding,
+        S::IndexRollback { .. } => ErrorCode::IndexRollback,
+        S::IndexExpired { .. } => ErrorCode::IndexExpired,
+        S::Io { .. } => ErrorCode::Io,
+        _ => ErrorCode::Internal,
     }
 }
 
