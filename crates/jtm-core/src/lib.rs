@@ -4,6 +4,7 @@ pub mod activate;
 pub mod config;
 pub mod context;
 pub mod dirs;
+pub mod doctor;
 pub mod error;
 pub mod here;
 pub mod indices;
