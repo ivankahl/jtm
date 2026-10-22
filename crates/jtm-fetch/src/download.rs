@@ -1,6 +1,11 @@
 //! Streaming downloads into the content-addressed archive cache (SPEC.md section 10, steps 4
 //! to 6).
 //!
+//! An archive comes from the network ([`DownloadCache::fetch`]) or, when a `[mirrors]` entry
+//! points at a `file://` URL or a path, from a local file ([`DownloadCache::fetch_file`]). Both
+//! stream into the same `.part` file through the same hash and size checks, so a local copy is
+//! trusted no more than a downloaded one.
+//!
 //! Archives live at `<cache>/downloads/<sha256>`. A cached file is re-hashed before every use.
 //! A download streams into `<sha256>.part`, hashing as bytes arrive and aborting the moment the
 //! expected size is exceeded. Network failures retry with backoff and resume from the bytes
@@ -10,10 +15,11 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use crate::client::{Client, body_error};
+use crate::client::{Client, Response, RetryPolicy, body_error};
 use crate::error::{Error, Result};
 
 /// The size of each read from the network or disk.
@@ -34,6 +40,8 @@ pub struct Artifact<'a> {
 pub enum Origin {
     Cache,
     Network,
+    /// A local file reached through a `file://` or path mirror.
+    File,
 }
 
 /// A verified archive in the cache.
@@ -99,6 +107,45 @@ impl DownloadCache {
         artifact: &Artifact<'_>,
         progress: Progress<'_>,
     ) -> Result<Downloaded> {
+        self.fetch_with(
+            artifact,
+            client.options().retry,
+            Origin::Network,
+            &|offset| client.open(artifact.url, offset).map(Opened::from),
+            progress,
+        )
+    }
+
+    /// Returns the verified archive for `artifact`, from the cache or copied from the local
+    /// file `source`. `artifact.url` only names the location in results and errors. The copy
+    /// is hashed and size-checked like a download, and nothing reaches the cache otherwise.
+    pub fn fetch_file(
+        &self,
+        source: &Path,
+        artifact: &Artifact<'_>,
+        progress: Progress<'_>,
+    ) -> Result<Downloaded> {
+        let no_retry = RetryPolicy {
+            retries: 0,
+            backoff: Duration::ZERO,
+        };
+        self.fetch_with(
+            artifact,
+            no_retry,
+            Origin::File,
+            &|_| open_file(source, artifact),
+            progress,
+        )
+    }
+
+    fn fetch_with(
+        &self,
+        artifact: &Artifact<'_>,
+        retry: RetryPolicy,
+        origin: Origin,
+        open: &dyn Fn(u64) -> Result<Opened>,
+        progress: Progress<'_>,
+    ) -> Result<Downloaded> {
         let path = self.path(artifact.sha256)?;
         if let Some(path) = self.lookup(artifact)? {
             return Ok(cached(path, artifact));
@@ -120,16 +167,9 @@ impl DownloadCache {
         }
 
         let part = self.dir.join(format!("{}.part", artifact.sha256));
-        let url = client
-            .options()
-            .retry
-            .run(|_| download_part(client, artifact, &part, &mut *progress))?;
+        let url = retry.run(|_| download_part(artifact, &part, open, &mut *progress))?;
         fs::rename(&part, &path).map_err(|e| Error::io(&path, e))?;
-        Ok(Downloaded {
-            path,
-            origin: Origin::Network,
-            url,
-        })
+        Ok(Downloaded { path, origin, url })
     }
 }
 
@@ -144,9 +184,9 @@ fn cached(path: PathBuf, artifact: &Artifact<'_>) -> Downloaded {
 /// One attempt at completing `part`. Returns the URL the bytes came from once `part` holds
 /// exactly the expected bytes.
 fn download_part(
-    client: &Client,
     artifact: &Artifact<'_>,
     part: &Path,
+    open: &dyn Fn(u64) -> Result<Opened>,
     progress: Progress<'_>,
 ) -> Result<String> {
     let io_err = |e| Error::io(part, e);
@@ -184,7 +224,7 @@ fn download_part(
         offset = 0;
     }
 
-    let mut response = client.open(artifact.url, offset)?;
+    let mut response = open(offset)?;
     if !response.resumed && offset > 0 {
         // The server sent the whole body, so start over.
         file.set_len(0).map_err(io_err)?;
@@ -210,7 +250,7 @@ fn download_part(
     let mut buf = vec![0u8; CHUNK];
     progress(total, artifact.size);
     loop {
-        let n = match response.read(&mut buf) {
+        let n = match response.body.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -243,6 +283,45 @@ fn download_part(
         });
     }
     Ok(url)
+}
+
+/// An open source of bytes: a response, or a local file.
+struct Opened {
+    body: Box<dyn Read>,
+    final_url: String,
+    resumed: bool,
+    content_length: Option<u64>,
+}
+
+impl From<Response> for Opened {
+    fn from(response: Response) -> Opened {
+        Opened {
+            final_url: response.final_url.clone(),
+            resumed: response.resumed,
+            content_length: response.content_length,
+            body: Box::new(response),
+        }
+    }
+}
+
+/// Opens a mirror file from its start. Only regular files are read, so a mirror path cannot
+/// name a device or a pipe.
+fn open_file(source: &Path, artifact: &Artifact<'_>) -> Result<Opened> {
+    let io_err = |e| Error::io(source, e);
+    let file = File::open(source).map_err(io_err)?;
+    let meta = file.metadata().map_err(io_err)?;
+    if !meta.is_file() {
+        return Err(io_err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        )));
+    }
+    Ok(Opened {
+        body: Box::new(file),
+        final_url: artifact.url.to_owned(),
+        resumed: false,
+        content_length: Some(meta.len()),
+    })
 }
 
 /// Hashes at most `limit` bytes of `reader`, returning the hex digest and the bytes read.
