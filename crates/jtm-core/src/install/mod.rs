@@ -16,6 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use jtm_fetch::mirrors::Location;
 use jtm_fetch::{Artifact, Client, DownloadCache, Downloaded};
 use jtm_plugin::Manifest;
 use jtm_plugin::script::{PostExtract, Script};
@@ -37,7 +38,8 @@ pub struct Archives<'a> {
     pub cache: &'a DownloadCache,
     /// `None` when offline: only cached archives can be used.
     pub client: Option<&'a Client>,
-    /// `[mirrors]` prefix rewrites, applied to artifact URLs before downloading.
+    /// `[mirrors]` prefix rewrites, applied to artifact URLs before downloading. A `file://` or
+    /// path target is read from disk, with or without a client.
     pub mirrors: &'a std::collections::BTreeMap<String, String>,
 }
 
@@ -48,21 +50,27 @@ impl Archives<'_> {
         entry: &IndexEntry,
         progress: &mut dyn FnMut(Progress),
     ) -> Result<Downloaded> {
-        let url = jtm_fetch::mirrors::rewrite(&entry.url, self.mirrors);
+        let location = jtm_fetch::mirrors::resolve(&entry.url, self.mirrors)?;
+        let (url, source) = match &location {
+            Location::Url(url) => (url, None),
+            Location::File { path, display } => (display, Some(path.as_path())),
+        };
         let artifact = Artifact {
-            url: &url,
+            url,
             sha256: &entry.sha256,
             size: entry.size,
         };
-        match self.client {
-            Some(client) => Ok(self.cache.fetch(client, &artifact, &mut |done, total| {
-                progress(Progress::Download { done, total });
-            })?),
-            None => match self.cache.lookup(&artifact)? {
+        let mut report = |done, total| progress(Progress::Download { done, total });
+        // A file mirror works offline: it is read through the same hash and size checks as a
+        // download, so the SHA-256 from the signed index or lockfile still decides.
+        match (source, self.client) {
+            (Some(source), _) => Ok(self.cache.fetch_file(source, &artifact, &mut report)?),
+            (None, Some(client)) => Ok(self.cache.fetch(client, &artifact, &mut report)?),
+            (None, None) => match self.cache.lookup(&artifact)? {
                 Some(path) => Ok(Downloaded {
                     path,
                     origin: jtm_fetch::Origin::Cache,
-                    url,
+                    url: url.clone(),
                 }),
                 None => Err(JtmError::Offline {
                     action: format!("downloading {url}"),

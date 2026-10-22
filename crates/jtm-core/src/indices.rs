@@ -14,10 +14,12 @@
 //! while any other manifest's anchors ([`ManifestOrigin::External`]) count only once the user
 //! has trusted them.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use jtm_fetch::mirrors::{Location, local_path, resolve};
 use jtm_security::select::{IndexCopy, Selection};
 use jtm_security::{
     ExpiryPolicy, IndexFile, IndexRequest, Keyring, KeysFile, SourceKind, Timestamp, TrustAnchors,
@@ -116,10 +118,20 @@ pub struct LoadOptions {
     pub now: Timestamp,
 }
 
+/// The exact bytes of a verified file and the detached signature that verified them. These are
+/// what `jtm mirror export` copies: a mirror holds the signed bytes, never a re-serialisation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedCopy {
+    pub data: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
 /// The index that was chosen, and where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginIndex {
     pub index: IndexFile,
+    /// The raw bytes `index` was parsed from, and their signature, after verification.
+    pub copy: SignedCopy,
     pub source: SourceKind,
     /// The path or URL the chosen copy was read from.
     pub origin: String,
@@ -132,6 +144,11 @@ pub struct IndexLoader<'a> {
     pub embedded: &'a [EmbeddedIndex],
     pub embedded_keys: &'a [EmbeddedKeysFile],
     pub fetcher: Option<&'a dyn Fetcher>,
+    /// `[mirrors]` prefix rewrites. They apply to the canonical URL of every index and keys
+    /// file and, separately, to the URL of its `.minisig`. A `file://` or path target is read
+    /// from disk even offline. A rewrite changes where bytes come from, never how they are
+    /// verified.
+    pub mirrors: &'a BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for IndexLoader<'_> {
@@ -141,6 +158,7 @@ impl std::fmt::Debug for IndexLoader<'_> {
             .field("embedded", &self.embedded.len())
             .field("embedded_keys", &self.embedded_keys.len())
             .field("fetcher", &self.fetcher.is_some())
+            .field("mirrors", &self.mirrors.len())
             .finish()
     }
 }
@@ -173,6 +191,16 @@ impl IndexLoader<'_> {
         keys: &PluginKeys<'_>,
         options: &LoadOptions,
     ) -> Result<(Keyring, Vec<Warning>)> {
+        let (keyring, _, warnings) = self.keyring_with_keys_file(keys, options)?;
+        Ok((keyring, warnings))
+    }
+
+    /// [`IndexLoader::keyring`], and also the verified bytes of the keys file it used, if any.
+    pub fn keyring_with_keys_file(
+        &self,
+        keys: &PluginKeys<'_>,
+        options: &LoadOptions,
+    ) -> Result<(Keyring, Option<SignedCopy>, Vec<Warning>)> {
         let trust_file = trust_path(self.dirs);
         let state = TrustState::load(&trust_file)?;
         let anchors = match keys.origin {
@@ -186,7 +214,7 @@ impl IndexLoader<'_> {
         let mut warnings = Vec::new();
         let keys_file = match keys.keys_url {
             Some(url) => match self.load_keys_file(url, &anchors, &state, options)? {
-                Ok(file) => Some(file),
+                Ok(loaded) => Some(loaded),
                 Err(reason) => {
                     warnings.push(Warning {
                         code: W_KEYS_FILE_UNAVAILABLE,
@@ -200,10 +228,12 @@ impl IndexLoader<'_> {
             },
             None => None,
         };
-        Ok((
-            jtm_security::plugin_keyring(&anchors, keys_file.as_ref(), &state),
-            warnings,
-        ))
+        let keyring = jtm_security::plugin_keyring(
+            &anchors,
+            keys_file.as_ref().map(|(file, _)| file),
+            &state,
+        );
+        Ok((keyring, keys_file.map(|(_, copy)| copy), warnings))
     }
 
     /// Finds the newest valid copy of the keys file at `url`, records it and caches it. The
@@ -214,7 +244,7 @@ impl IndexLoader<'_> {
         anchors: &TrustAnchors,
         state: &TrustState,
         options: &LoadOptions,
-    ) -> Result<std::result::Result<KeysFile, String>> {
+    ) -> Result<std::result::Result<(KeysFile, SignedCopy), String>> {
         let plugin = anchors.plugin.as_str();
         let cache_file = keys_cache_path(self.dirs, plugin);
         let mut copies: Vec<IndexCopy> = self
@@ -235,14 +265,28 @@ impl IndexLoader<'_> {
             "the limit for a keys file",
         )?);
         let mut problems = Vec::new();
-        if !options.offline
-            && (options.refresh || copies.is_empty())
-            && let Some(fetcher) = self.fetcher
-        {
-            match fetch_copy(fetcher, url, SourceKind::Remote) {
-                Ok(Some(copy)) => copies.push(copy),
-                Ok(None) => problems.push(format!("{url} was not found")),
-                Err(err) => problems.push(err.to_string()),
+        match self.locate(url, SourceKind::Remote) {
+            Err(err) => problems.push(err.to_string()),
+            Ok(Located::Local(path)) => match read_local(
+                &path,
+                SourceKind::Mirror,
+                jtm_security::keys_json::MAX_KEYS_FILE,
+                "the limit for a keys file",
+            )? {
+                Some(copy) => copies.push(copy),
+                None => problems.push(format!("{} was not found", path.display())),
+            },
+            Ok(Located::Remote(remote)) => {
+                if !options.offline
+                    && (options.refresh || copies.is_empty())
+                    && let Some(fetcher) = self.fetcher
+                {
+                    match fetch_copy(fetcher, &remote) {
+                        Ok(Some(copy)) => copies.push(copy),
+                        Ok(None) => problems.push(format!("{} was not found", remote.url)),
+                        Err(err) => problems.push(err.to_string()),
+                    }
+                }
             }
         }
 
@@ -302,10 +346,41 @@ impl IndexLoader<'_> {
             let changed = state.record_keys_file(plugin, seen);
             Ok(((), changed))
         })?;
-        if copy.source == SourceKind::Remote {
+        if matches!(copy.source, SourceKind::Remote | SourceKind::Mirror) {
             write_cache(&cache_file, &copy.data, &copy.signature)?;
         }
-        Ok(Ok(file))
+        Ok(Ok((
+            file,
+            SignedCopy {
+                data: copy.data,
+                signature: copy.signature,
+            },
+        )))
+    }
+
+    /// Applies `[mirrors]` to the canonical `url` of an index or keys file, and to the URL of
+    /// its signature. For a network copy the signature is looked for where its own rewritten
+    /// URL leads; a local file's signature is always read next to it.
+    fn locate(&self, url: &str, source: SourceKind) -> Result<Located> {
+        // SPEC-QUESTION: section 8 says mirrors apply to "index URLs and artifact URLs" and is
+        // silent on `keys_url` and on `.minisig` files. `keys_url` is rewritten like an index
+        // URL and the signature URL as a URL of its own, so a corporate network only needs
+        // the approved hosts (section 13). A `plugins.<name>.index_url` override is used as
+        // written and is not rewritten.
+        match resolve(url, self.mirrors)? {
+            Location::File { path, .. } => Ok(Located::Local(path)),
+            Location::Url(rewritten) => Ok(Located::Remote(Remote {
+                // Section 9 enforces expiry only for the canonical remote; a copy that came
+                // through a `[mirrors]` rewrite is a mirror copy, like an `https` `index_url`.
+                source: if rewritten == url {
+                    source
+                } else {
+                    SourceKind::Mirror
+                },
+                sig: resolve(&format!("{url}.minisig"), self.mirrors)?,
+                url: rewritten,
+            })),
+        }
     }
 
     /// Gathers every available copy, verifies each against `keyring`, and returns the valid
@@ -339,35 +414,48 @@ impl IndexLoader<'_> {
             "the limit for an index",
         )?);
 
-        let override_url = sources.override_url.map(|u| expand(u, sources.platform));
-        let local_override = override_url.as_deref().and_then(local_path);
-        if let Some(path) = &local_override {
-            copies.extend(read_local(
-                path,
-                SourceKind::Mirror,
-                jtm_security::index::MAX_INDEX_FILE,
-                "the limit for an index",
-            )?);
-        }
-
-        // A local override is read on every load; a network location only when refreshing or
-        // when no local copy exists.
-        let network = match (&override_url, &local_override) {
-            (Some(_), Some(_)) => None,
-            (Some(url), None) => Some((url.clone(), SourceKind::Mirror)),
-            (None, _) => Some((
-                expand(sources.remote_url, sources.platform),
+        // A plugin's `index_url` replaces the canonical location entirely and is used as
+        // written. Otherwise `[mirrors]` rewrite the canonical URL, and may lead to a file.
+        let mut fetch_error = None;
+        let located = match sources.override_url.map(|u| expand(u, sources.platform)) {
+            Some(url) => Ok(match local_path(&url) {
+                Some(path) => Located::Local(path),
+                None => Located::Remote(Remote {
+                    sig: Location::Url(format!("{url}.minisig")),
+                    url,
+                    source: SourceKind::Mirror,
+                }),
+            }),
+            None => self.locate(
+                &expand(sources.remote_url, sources.platform),
                 SourceKind::Remote,
-            )),
+            ),
+        };
+        // A local copy is read on every load; a network location only when refreshing or
+        // when no local copy exists.
+        let network = match located {
+            Ok(Located::Local(path)) => {
+                copies.extend(read_local(
+                    &path,
+                    SourceKind::Mirror,
+                    jtm_security::index::MAX_INDEX_FILE,
+                    "the limit for an index",
+                )?);
+                None
+            }
+            Ok(Located::Remote(remote)) => Some(remote),
+            Err(err) => {
+                fetch_error = Some(err);
+                None
+            }
         };
         let mut not_found = false;
-        let mut fetch_error = None;
-        if let Some((url, source)) = network
+        if let Some(remote) = network
             && !options.offline
             && (options.refresh || copies.is_empty())
             && let Some(fetcher) = self.fetcher
         {
-            match fetch_copy(fetcher, &url, source) {
+            match fetch_copy(fetcher, &remote) {
                 Ok(Some(copy)) => copies.push(copy),
                 Ok(None) => not_found = true,
                 Err(err) => fetch_error = Some(err),
@@ -429,6 +517,10 @@ impl IndexLoader<'_> {
 
         Ok(PluginIndex {
             index: selected.loaded.index,
+            copy: SignedCopy {
+                data: selected.data,
+                signature: selected.signature,
+            },
             source: selected.source,
             origin: selected.origin,
             warnings,
@@ -437,23 +529,24 @@ impl IndexLoader<'_> {
 }
 
 /// Fills `{os}` and `{arch}` from a platform such as `linux-musl-x64` (`linux-musl`, `x64`).
-fn expand(url: &str, platform: &str) -> String {
+pub fn expand(url: &str, platform: &str) -> String {
     let (os, arch) = platform.rsplit_once('-').unwrap_or((platform, platform));
     url.replace("{os}", os).replace("{arch}", arch)
 }
 
-/// The local path a `file://` URL or plain path names, or `None` for a network URL.
-fn local_path(location: &str) -> Option<PathBuf> {
-    if location.starts_with("https://") || location.starts_with("http://") {
-        return None;
-    }
-    let Some(rest) = location.strip_prefix("file://") else {
-        return Some(PathBuf::from(location));
-    };
-    // `file:///C:/x` names `C:/x` on Windows.
-    let bytes = rest.as_bytes();
-    let windows_drive = bytes.len() >= 3 && bytes[0] == b'/' && bytes[2] == b':';
-    Some(PathBuf::from(if windows_drive { &rest[1..] } else { rest }))
+/// Where a copy is read from once `[mirrors]` or an `index_url` override has been applied.
+enum Located {
+    /// A file on disk, with its signature next to it.
+    Local(PathBuf),
+    Remote(Remote),
+}
+
+/// A copy to fetch over the network, and where its signature is.
+struct Remote {
+    url: String,
+    /// Where the `.minisig` is, rewritten separately from `url`.
+    sig: Location,
+    source: SourceKind,
 }
 
 fn signature_path(path: &Path) -> PathBuf {
@@ -476,22 +569,27 @@ fn read_local(
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(JtmError::io(path, e)),
     };
-    let sig_path = signature_path(path);
-    let signature = match read_capped(
-        &sig_path,
-        jtm_security::signature::MAX_SIGNATURE_FILE,
-        "the limit for a signature file",
-    ) {
-        Ok(sig) => sig,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(JtmError::io(&sig_path, e)),
-    };
+    // A missing signature is empty and fails verification, never skipped.
+    let signature = read_signature(&signature_path(path))?.unwrap_or_default();
     Ok(Some(IndexCopy {
         source,
         origin: path.display().to_string(),
         data,
         signature,
     }))
+}
+
+/// Reads a signature file, or `None` when it does not exist.
+fn read_signature(path: &Path) -> Result<Option<Vec<u8>>> {
+    match read_capped(
+        path,
+        jtm_security::signature::MAX_SIGNATURE_FILE,
+        "the limit for a signature file",
+    ) {
+        Ok(sig) => Ok(Some(sig)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(JtmError::io(path, e)),
+    }
 }
 
 /// Reads a file, refusing one larger than its format's limit before reading it.
@@ -506,18 +604,20 @@ fn read_capped(path: &Path, limit: usize, what: &str) -> io::Result<Vec<u8>> {
     fs::read(path)
 }
 
-fn fetch_copy(fetcher: &dyn Fetcher, url: &str, source: SourceKind) -> Result<Option<IndexCopy>> {
-    let Some(data) = fetcher.fetch(url)? else {
+fn fetch_copy(fetcher: &dyn Fetcher, remote: &Remote) -> Result<Option<IndexCopy>> {
+    let Some(data) = fetcher.fetch(&remote.url)? else {
         return Ok(None);
     };
-    let sig_url = format!("{url}.minisig");
-    // A missing signature is fetched as empty and fails verification, never skipped.
-    let signature = fetcher.fetch(&sig_url)?.unwrap_or_default();
+    let signature = match &remote.sig {
+        Location::Url(url) => fetcher.fetch(url)?,
+        Location::File { path, .. } => read_signature(path)?,
+    };
     Ok(Some(IndexCopy {
-        source,
-        origin: url.to_owned(),
+        source: remote.source,
+        origin: remote.url.clone(),
         data,
-        signature,
+        // A missing signature is empty and fails verification, never skipped.
+        signature: signature.unwrap_or_default(),
     }))
 }
 
