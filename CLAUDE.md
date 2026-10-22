@@ -72,7 +72,7 @@ Pick the scope from this list:
 | `deps` | Dependency additions, removals and version bumps (`Cargo.toml`, `Cargo.lock`) |
 | `workspace` | Root build and tooling config: `Cargo.toml` workspace settings, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `.cargo/` |
 | `spec` | `SPEC.md` |
-| `docs` | `README.md`, `GLOSSARY.md`, `docs/adr/` |
+| `docs` | `README.md`, `GLOSSARY.md`, `docs/adr/`, runbooks directly under `docs/` |
 | `agents` | `CLAUDE.md`, `docs/agents/`, `.claude/` |
 
 When a change spans two or three scopes, list them comma-separated, as in `fix(fetch,core): ...`. When it touches more than that, leave the scope out. If no scope fits, add a row to this table in the same commit instead of inventing one.

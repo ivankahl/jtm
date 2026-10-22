@@ -107,6 +107,13 @@ pub(crate) fn sha256(data: &[u8]) -> String {
     jtm_fetch::download::hash_reader(data, u64::MAX).unwrap().0
 }
 
+/// A mirror directory holding `data` as `a.zip`.
+pub(crate) fn mirror_dir(data: &[u8]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.zip"), data).unwrap();
+    dir
+}
+
 /// A server whose first answer announces all of `body` but stops after `cut` bytes, and whose
 /// later answers honour a `Range: bytes=<n>-` request. Returns its URL and the `Range` header
 /// of each request, or `None` without one.

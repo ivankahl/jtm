@@ -18,6 +18,7 @@ name = "jtm-index"
 path = "src/main.rs"
 
 [dependencies]
+clap.workspace = true
 jtm-core.workspace = true
 jtm-fetch.workspace = true
 jtm-plugin.workspace = true
@@ -35,6 +36,8 @@ toml.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+assert_cmd.workspace = true
+jtm-security = { workspace = true, features = ["testing"] }
 rand.workspace = true
 tokio.workspace = true
 wiremock.workspace = true

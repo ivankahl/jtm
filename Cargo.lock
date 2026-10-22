@@ -1698,6 +1698,8 @@ dependencies = [
 name = "jtm-index"
 version = "0.1.0"
 dependencies = [
+ "assert_cmd",
+ "clap",
  "jtm-core",
  "jtm-fetch",
  "jtm-plugin",

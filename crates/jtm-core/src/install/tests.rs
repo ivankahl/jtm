@@ -428,6 +428,92 @@ fn a_tampered_cached_archive_is_never_extracted() {
     assert!(!f.dest().exists());
 }
 
+/// `dir` as a `file://` URL ending in a slash, `file:///C:/x/` on Windows.
+fn file_url(dir: &Path) -> String {
+    let path = dir.display().to_string().replace('\\', "/");
+    let slash = if path.starts_with('/') { "" } else { "/" };
+    format!("file://{slash}{path}/")
+}
+
+/// A fixture whose `https://example.test/` is mirrored by a directory holding `archive`, and
+/// the entry describing the genuine archive.
+fn file_mirrored(
+    archive: &[u8],
+    genuine: &[u8],
+    target: impl Fn(&Path) -> String,
+) -> (Fixture, IndexEntry, tempfile::TempDir) {
+    let mut f = Fixture::new();
+    let mirror = tempfile::tempdir().unwrap();
+    fs::write(mirror.path().join("demo-1.0.0.tar.gz"), archive).unwrap();
+    f.mirrors
+        .insert("https://example.test/".into(), target(mirror.path()));
+    let entry = entry(&jtm_security::sha256_hex(genuine), genuine.len() as u64);
+    (f, entry, mirror)
+}
+
+#[test]
+fn a_file_mirror_installs_offline_and_still_verifies() {
+    let archive = good_archive();
+    for target in [file_url as fn(&Path) -> String, |dir: &Path| {
+        format!("{}/", dir.display())
+    }] {
+        let (f, entry, _mirror) = file_mirrored(&archive, &archive, target);
+        let installed = f.install(&entry, false).unwrap();
+        assert_eq!(installed.status, Status::Installed);
+        assert_eq!(installed.receipt.sha256, entry.sha256);
+        assert!(f.dest().join("bin/demo").is_file());
+        assert!(f.dirs.downloads().join(&entry.sha256).is_file());
+    }
+}
+
+#[test]
+fn a_tampered_file_mirror_copy_installs_nothing() {
+    let genuine = good_archive();
+    let mut tampered = genuine.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 1;
+    let (f, entry, _mirror) = file_mirrored(&tampered, &genuine, file_url);
+    let err = f.install(&entry, false).unwrap_err();
+    assert_eq!(err.code(), "E_HASH_MISMATCH", "{err}");
+    assert!(!f.dest().exists());
+    assert!(!f.dirs.downloads().join(&entry.sha256).exists());
+}
+
+#[test]
+fn a_missing_file_mirror_copy_fails_without_a_fallback() {
+    let archive = good_archive();
+    let (f, entry, mirror) = file_mirrored(&archive, &archive, |dir| format!("{}/", dir.display()));
+    fs::remove_file(mirror.path().join("demo-1.0.0.tar.gz")).unwrap();
+    assert_eq!(f.install(&entry, false).unwrap_err().code(), "E_IO");
+    assert!(!f.dest().exists());
+}
+
+#[test]
+fn an_entry_url_is_never_read_from_disk_unless_a_mirror_says_so() {
+    let archive = good_archive();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.tar.gz");
+    fs::write(&path, &archive).unwrap();
+    let f = Fixture::new();
+    let mut entry = entry(&jtm_security::sha256_hex(&archive), archive.len() as u64);
+    entry.url = format!("file://{}", path.display());
+    // Offline there is no client; with a mirror-less `file://` URL nothing may read the disk.
+    assert_eq!(f.install(&entry, false).unwrap_err().code(), "E_OFFLINE");
+    assert!(!f.dest().exists());
+}
+
+#[test]
+fn a_network_mirror_still_needs_the_network() {
+    let archive = good_archive();
+    let mut f = Fixture::new();
+    f.mirrors.insert(
+        "https://example.test/".into(),
+        "https://mirror.test/".into(),
+    );
+    let entry = entry(&jtm_security::sha256_hex(&archive), archive.len() as u64);
+    assert_eq!(f.install(&entry, false).unwrap_err().code(), "E_OFFLINE");
+}
+
 #[test]
 fn install_paths_must_be_one_directory() {
     let f = Fixture::new();
