@@ -3,10 +3,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 
-use jtm_fetch::{Client, mirrors};
+use jtm_fetch::{Client, Response, RetryPolicy, mirrors};
 use serde::de::DeserializeOwned;
 
+use crate::digest::{Computed, Digests};
 use crate::error::{Error, Result};
 
 /// The largest JSON, XML or HTML document an adapter reads. Version lists are a few hundred
@@ -16,6 +20,8 @@ pub(crate) const DOCUMENT_LIMIT: u64 = 16 * 1024 * 1024;
 const GITHUB_API: &str = "https://api.github.com/";
 /// The largest checksum file an adapter reads.
 pub(crate) const CHECKSUM_LIMIT: u64 = 64 * 1024;
+/// The largest detached signature the generator reads. Real ones are a few hundred bytes.
+pub(crate) const SIGNATURE_LIMIT: u64 = 64 * 1024;
 
 /// Shared by every adapter run.
 pub struct Context {
@@ -104,11 +110,80 @@ impl Context {
             .map_err(|error| fetch_error(source, error))
     }
 
+    /// Downloads the artifact at `url` into an anonymous temporary file, hashing it as the
+    /// bytes arrive, and returns the file rewound to its start together with its digests.
+    ///
+    /// The transfer is aborted the moment it passes `limit` bytes, whatever the server
+    /// declared, so a hostile or broken upstream cannot fill the disk. A dropped connection
+    /// restarts the transfer from byte 0 under the client's retry policy, so a half-read body
+    /// is never mistaken for a whole one.
+    pub(crate) fn download(&self, source: &str, url: &str, limit: u64) -> Result<(File, Computed)> {
+        let target = mirrors::rewrite(url, &self.mirrors);
+        let mut file = tempfile::tempfile().map_err(Error::Io)?;
+        let retry: RetryPolicy = self.client.options().retry;
+        let computed = retry
+            .run(|_| {
+                file.set_len(0).map_err(|e| temp_error(&e))?;
+                file.seek(SeekFrom::Start(0)).map_err(|e| temp_error(&e))?;
+                let response = self.client.open(&target, 0)?;
+                stream_into(response, &mut file, url, limit)
+            })
+            .map_err(|error| fetch_error(source, error))?;
+        file.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
+        Ok((file, computed))
+    }
+
     /// Fetches a checksum file as text. `Ok(None)` when it does not exist.
     pub(crate) fn get_text(&self, source: &str, url: &str, limit: u64) -> Result<Option<String>> {
         Ok(self
             .get_optional(source, url, limit)?
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    }
+}
+
+/// Copies `response` into `file` and hashes it, refusing more than `limit` bytes.
+fn stream_into(
+    mut response: Response,
+    file: &mut File,
+    url: &str,
+    limit: u64,
+) -> jtm_fetch::Result<Computed> {
+    let too_large = || jtm_fetch::Error::TooLarge {
+        url: url.to_owned(),
+        limit,
+    };
+    if response.content_length.is_some_and(|len| len > limit) {
+        return Err(too_large());
+    }
+    let mut digests = Digests::new();
+    let mut total = 0u64;
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|e| jtm_fetch::Error::Network {
+                url: url.to_owned(),
+                message: format!("the transfer broke off: {e}"),
+                transient: true,
+                source: Some(Box::new(e)),
+            })?;
+        if read == 0 {
+            return Ok(digests.finish());
+        }
+        total += read as u64;
+        if total > limit {
+            return Err(too_large());
+        }
+        digests.update(&buffer[..read]);
+        file.write_all(&buffer[..read])
+            .map_err(|e| temp_error(&e))?;
+    }
+}
+
+fn temp_error(error: &std::io::Error) -> jtm_fetch::Error {
+    jtm_fetch::Error::Io {
+        path: PathBuf::from("<temporary file>"),
+        source: std::io::Error::new(error.kind(), error.to_string()),
     }
 }
 

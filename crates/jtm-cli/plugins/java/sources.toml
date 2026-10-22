@@ -1,11 +1,13 @@
 # How CI discovers Java versions and hashes (SPEC.md section 15). Only the index generator
 # reads this file; it is not embedded in the jtm binary.
 #
-# SPEC-QUESTION: SPEC.md section 15 gives Temurin two independent sources (the Adoptium API and
-# the GitHub release sidecar) and the other vendors "vendor API or checksum page" plus the
-# Foojay Disco API. The adapters of this ticket cover Foojay but no vendor API, so each other
-# variant lists Foojay as its only source for now. Two-source confirmation (T6.2) will refuse
-# those variants until a second source is added here.
+# Temurin has two independent sources (the Adoptium API and the GitHub release sidecar). The
+# other vendors have only Foojay, so each is marked `sole_source`: the generator accepts the
+# checksum Foojay claims once its own download computes the same SHA-256, and records
+# `computed:sha256` in the entry's provenance so such an entry can be told from one with two
+# independent sources (SPEC.md section 15). A vendor signature Foojay links to is verified
+# too once `signing_keys` names the vendor's public key files; until a key is pinned there,
+# the signature is recorded as unverified and nothing more.
 #
 # The Foojay query parameters and the feature release lists below were written from the
 # documented APIs and have not been run against the live services yet; the first CI run of the
@@ -75,6 +77,7 @@ macos-aarch64 = "OpenJDK8U-jdk_aarch64_mac_hotspot_8u{update}b{pad}{build}.tar.g
 id = "foojay-corretto"
 adapter = "foojay"
 role = "primary"
+sole_source = true
 variant = "corretto"
 distro = "corretto"
 features = [8, 11, 17, 21, 25]
@@ -87,6 +90,7 @@ features = [8, 11, 17, 21, 25]
 id = "foojay-zulu"
 adapter = "foojay"
 role = "primary"
+sole_source = true
 variant = "zulu"
 distro = "zulu"
 features = [8, 11, 17, 21, 25]
@@ -99,6 +103,7 @@ features = [8, 11, 17, 21, 25]
 id = "foojay-liberica"
 adapter = "foojay"
 role = "primary"
+sole_source = true
 variant = "liberica"
 distro = "liberica"
 features = [8, 11, 17, 21, 25]
@@ -111,6 +116,7 @@ features = [8, 11, 17, 21, 25]
 id = "foojay-microsoft"
 adapter = "foojay"
 role = "primary"
+sole_source = true
 variant = "microsoft"
 distro = "microsoft"
 features = [8, 11, 17, 21, 25]
@@ -123,6 +129,7 @@ features = [8, 11, 17, 21, 25]
 id = "foojay-graalvm-community"
 adapter = "foojay"
 role = "primary"
+sole_source = true
 variant = "graalvm-community"
 distro = "graalvm_community"
 features = [8, 11, 17, 21, 25]

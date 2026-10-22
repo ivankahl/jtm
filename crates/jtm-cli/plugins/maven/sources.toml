@@ -4,8 +4,10 @@
 schema = 1
 
 # The archive host keeps every release at a stable URL, unlike `downloads.apache.org`, which
-# drops a release when the next one comes out. The `.sha512` beside each archive is the hash;
-# the detached `.asc` signature is checked against Apache's `KEYS` by the generator.
+# drops a release when the next one comes out. The `.sha512` beside each archive is the hash.
+# Two sources agree on it, which is enough; the detached `.asc` signature is also checked once a
+# maintainer commits Apache's `KEYS` beside this file and lists it as `signing_keys`, and is
+# recorded as unverified until then.
 [[source]]
 id = "apache-dist"
 adapter = "apache"

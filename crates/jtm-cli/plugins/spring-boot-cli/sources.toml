@@ -6,6 +6,11 @@ schema = 1
 # Maven Central publishes a `.sha1` and a detached `.asc` signature beside each archive. SHA-1
 # alone confirms nothing, so the generator also computes SHA-256 of the download and checks the
 # signature before an entry is written.
+#
+# That check needs the signer's public key, which a maintainer must verify out of band and commit
+# beside this file, then list here as `signing_keys = ["keys/spring.asc"]`. Until then the
+# generator refuses every Spring Boot CLI entry ("lists no `signing_keys`"), which is the safe
+# default: it will not guess which key to trust.
 [[source]]
 id = "maven-central"
 adapter = "maven-central"

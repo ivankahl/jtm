@@ -56,7 +56,8 @@ impl fmt::Display for Target {
 /// A hash algorithm an upstream publishes. SHA-1 is here because some vendors publish nothing
 /// else; it can never confirm an artifact by itself, which is why every claim records the
 /// algorithm and the generator computes SHA-256 independently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum HashAlgorithm {
     Sha1,
     Sha256,

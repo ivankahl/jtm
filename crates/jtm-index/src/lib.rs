@@ -4,13 +4,17 @@
 //! A plugin's `sources.toml` lists the upstreams CI queries to discover versions and the
 //! hashes they publish. Each [`sources::Source`] names an adapter; running it gives a
 //! [`candidate::Discovery`] of [`candidate::Candidate`]s. Adapters only report what an
-//! upstream claims. Whether two sources agree, whether a vendor signature holds, and the
-//! SHA-256 that goes into an index are decided after them.
+//! upstream claims. [`confirm::Confirmer`] then decides, by downloading every artifact,
+//! whether the claims agree with each other and with the bytes, whether a vendor signature
+//! holds, and what SHA-256 goes into an index, and it records why in each entry's provenance.
 
 pub mod adapters;
 pub mod candidate;
+pub mod confirm;
 pub mod context;
+pub mod digest;
 pub mod error;
+pub mod signature;
 pub mod sources;
 
 #[cfg(test)]
