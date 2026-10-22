@@ -1,0 +1,32 @@
+# How CI discovers Maven versions and hashes (SPEC.md section 15). Only the index generator
+# reads this file; it is not embedded in the jtm binary.
+
+schema = 1
+
+# The archive host keeps every release at a stable URL, unlike `downloads.apache.org`, which
+# drops a release when the next one comes out. The `.sha512` beside each archive is the hash;
+# the detached `.asc` signature is checked against Apache's `KEYS` by the generator.
+[[source]]
+id = "apache-dist"
+adapter = "apache"
+role = "primary"
+listings = [
+  "https://archive.apache.org/dist/maven/maven-3/",
+  "https://archive.apache.org/dist/maven/maven-4/",
+]
+artifact = "binaries/apache-maven-{version}-bin.tar.gz"
+hash = "sha512"
+signature_suffix = ".asc"
+
+# Maven Central carries the same archives with its own checksum files.
+[[source]]
+id = "maven-central"
+adapter = "maven-central"
+role = "confirm"
+group = "org.apache.maven"
+artifact = "apache-maven"
+classifier = "bin"
+extension = "tar.gz"
+hashes = ["sha512", "sha1"]
+signature = true
+version_pattern = '^[34]\.'
