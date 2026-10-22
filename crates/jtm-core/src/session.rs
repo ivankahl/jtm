@@ -20,8 +20,8 @@ use crate::context::Context;
 use crate::dirs::{Dirs, dir_name};
 use crate::error::{JtmError, Result};
 use crate::indices::{
-    EmbeddedIndex, EmbeddedKeysFile, Fetcher, IndexLoader, IndexSources, LoadOptions, PluginIndex,
-    PluginKeys, SignedCopy, cache_path,
+    Fetcher, IndexLoader, IndexSources, LoadOptions, PluginIndex, PluginKeys, SignedCopy,
+    cache_path,
 };
 use crate::install::{self, Archives, InstallRequest, Progress, Receipt, Status, VersionId};
 use crate::links;
@@ -38,11 +38,6 @@ pub const W_NOT_INSTALLED: &str = "W_NOT_INSTALLED";
 
 /// The `PATH` list separator on this OS.
 pub const PATH_SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
-
-/// The first-party indices compiled into this build.
-// Embedded by T6.6; until then every index comes from the cache or the network.
-const EMBEDDED_INDICES: &[EmbeddedIndex] = &[];
-const EMBEDDED_KEYS: &[EmbeddedKeysFile] = &[];
 
 /// The keys `plugin`'s indices are checked against, and the keys file they came from.
 #[derive(Debug)]
@@ -280,8 +275,8 @@ impl<'a> Session<'a> {
     fn index_loader(&self) -> Result<IndexLoader<'_>> {
         Ok(IndexLoader {
             dirs: &self.dirs,
-            embedded: EMBEDDED_INDICES,
-            embedded_keys: EMBEDDED_KEYS,
+            embedded: self.ctx.snapshot.indices,
+            embedded_keys: self.ctx.snapshot.keys,
             fetcher: self.client()?.map(|c| c as &dyn Fetcher),
             mirrors: &self.settings.mirrors,
         })

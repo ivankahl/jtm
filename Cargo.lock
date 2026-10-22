@@ -4156,7 +4156,17 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "jtm-archive",
+ "jtm-core",
+ "jtm-fetch",
+ "jtm-index",
+ "jtm-plugin",
+ "jtm-security",
+ "serde_json",
+ "tempfile",
+ "tokio",
  "toml",
+ "wiremock",
 ]
 
 [[package]]

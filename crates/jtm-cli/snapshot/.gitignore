@@ -1,0 +1,4 @@
+# Filled by `cargo xtask embed-snapshot` for a release build; never committed.
+*
+!.gitignore
+!README.md
