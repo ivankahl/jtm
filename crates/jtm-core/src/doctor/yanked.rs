@@ -68,6 +68,7 @@ fn listings(marketplace: &dyn Marketplace, plugins: &[String]) -> Check {
     const ID: &str = "yanked_plugins";
     let mut check = Check::pass(ID, "");
     let mut unlisted = Vec::new();
+    let mut unread = None;
     for plugin in plugins {
         match marketplace.listing(plugin) {
             Ok(Listing::Active) => {}
@@ -85,12 +86,17 @@ fn listings(marketplace: &dyn Marketplace, plugins: &[String]) -> Check {
                 .detail("reason", reason),
             ),
             Err(err) => {
-                return Check::skipped(
-                    ID,
-                    format!("not checked: the marketplace could not be read: {err}"),
-                );
+                unread = Some(format!("the marketplace could not be read: {err}"));
+                break;
             }
         }
+    }
+    // What was found before the failure still counts.
+    if let Some(why) = unread {
+        if check.findings.is_empty() {
+            return Check::skipped(ID, format!("not checked: {why}"));
+        }
+        check.notes.push(format!("the check is incomplete: {why}"));
     }
     check.summary = format!(
         "{} installed third-party plugin{} checked against the marketplace",

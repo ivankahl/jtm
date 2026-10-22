@@ -278,7 +278,7 @@ fn main() -> ExitCode {
         Some(Command::Doctor) => match doctor::doctor(&ctx) {
             Ok(report) => match report.first_error() {
                 None => {
-                    let _ = renderer.success(&doctor::outcome(report));
+                    let _ = renderer.success(&doctor::outcome(report, ctx.json));
                     JtmExitCode::Success.into()
                 }
                 Some(finding) => {

@@ -5,7 +5,7 @@
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::activate::{Defaults, tool_env};
 use crate::dirs::dir_name;
@@ -221,8 +221,8 @@ fn inspect(default: &Default) -> Result<(), Box<Finding>> {
         Err(e) => return Err(Box::new(Finding::from_error(&JtmError::io(link, e)))),
         Ok(_) => {}
     }
-    for bin in &plugin.manifest.layout.bin_dirs {
-        let dir = join(link, bin);
+    let bin_dirs = &plugin.manifest.layout.bin_dirs;
+    for (bin, dir) in bin_dirs.iter().zip(tool_env(&plugin.manifest, link).path) {
         if !dir.is_dir() {
             return problem(
                 ErrorCode::Io,
@@ -240,12 +240,4 @@ fn inspect(default: &Default) -> Result<(), Box<Finding>> {
         }
     }
     Ok(())
-}
-
-/// `base` joined with the `/`-separated `relative`.
-fn join(base: &Path, relative: &str) -> PathBuf {
-    relative
-        .split('/')
-        .filter(|part| !part.is_empty() && *part != ".")
-        .fold(base.to_path_buf(), |dir, part| dir.join(part))
 }

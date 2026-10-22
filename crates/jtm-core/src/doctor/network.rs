@@ -187,8 +187,8 @@ fn connect(inputs: &Inputs<'_>, check: &mut Check, parts: &mut Vec<String>) {
         Some(prober) => prober,
         None => {
             let options = jtm_fetch::ClientOptions {
-                connect_timeout: Duration::from_secs(10),
-                read_timeout: Duration::from_secs(15),
+                connect_timeout: Duration::from_secs(5),
+                read_timeout: Duration::from_secs(10),
                 ..client_options(inputs.settings)
             };
             match Client::new(options) {
@@ -210,11 +210,31 @@ fn connect(inputs: &Inputs<'_>, check: &mut Check, parts: &mut Vec<String>) {
         }
     };
     let secrets = secrets(inputs);
+    // The hosts are independent, so a blocked network costs one timeout, not one per host.
+    let results: Vec<jtm_fetch::Result<()>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = hosts
+            .iter()
+            .map(|host| scope.spawn(|| prober.probe(host)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(jtm_fetch::Error::Network {
+                        url: String::new(),
+                        message: "the connection test stopped unexpectedly".to_owned(),
+                        transient: false,
+                        source: None,
+                    })
+                })
+            })
+            .collect()
+    });
     let mut reached = Vec::new();
-    for host in hosts {
-        match prober.probe(&host) {
-            Ok(()) => reached.push(host_name(&host).to_owned()),
-            Err(err) => check.push(unreachable_host(&host, err, &secrets)),
+    for (host, result) in hosts.iter().zip(results) {
+        match result {
+            Ok(()) => reached.push(host_name(host).to_owned()),
+            Err(err) => check.push(unreachable_host(host, err, &secrets)),
         }
     }
     if !reached.is_empty() {
@@ -296,18 +316,21 @@ fn hosts(inputs: &Inputs<'_>) -> Vec<String> {
             continue;
         };
         let index = &plugin.manifest.index;
-        let urls = match settings
+        // As `Session` loads indices: the index comes from `index_url` or else the mirrored
+        // canonical URL, and the keys file is always fetched from its own, unmirrored URL.
+        let index_url = match settings
             .plugins
             .get(&name)
             .and_then(|p| p.index_url.as_deref())
         {
-            Some(url) => vec![url.to_owned()],
-            None => std::iter::once(index.url.as_str())
-                .chain(index.keys_url.as_deref())
-                .map(|url| mirrors::rewrite(url, &settings.mirrors))
-                .collect(),
+            Some(url) => url.to_owned(),
+            None => mirrors::rewrite(&index.url, &settings.mirrors),
         };
-        found.extend(urls.iter().filter_map(|url| origin(url)));
+        found.extend(
+            std::iter::once(index_url.as_str())
+                .chain(index.keys_url.as_deref())
+                .filter_map(origin),
+        );
     }
     found.into_iter().take(MAX_HOSTS).collect()
 }

@@ -34,6 +34,8 @@ pub use yanked::{Listing, Marketplace};
 pub const W_PATH_MISSING: &str = "W_PATH_MISSING";
 /// Warning code for a shell hook that is not loaded where it should be.
 pub const W_SHELL_HOOK_MISSING: &str = "W_SHELL_HOOK_MISSING";
+/// Warning code for a pinned project used in a shell where the hook is not active.
+pub const W_SHELL_HOOK_INACTIVE: &str = "W_SHELL_HOOK_INACTIVE";
 /// Warning code for a proxy setting jtm found but cannot honour, such as a PAC file.
 pub const W_PROXY_UNSUPPORTED: &str = "W_PROXY_UNSUPPORTED";
 /// Warning code for an expired index key while another key still signs for the plugin.
@@ -220,7 +222,7 @@ impl Report {
 }
 
 /// Opens a connection to a URL, to find out whether TLS and the network work.
-pub trait Prober {
+pub trait Prober: Sync {
     /// Succeeds when the host answered at all; see [`Client::probe`].
     fn probe(&self, url: &str) -> jtm_fetch::Result<()>;
 }

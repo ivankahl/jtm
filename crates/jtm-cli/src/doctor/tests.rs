@@ -164,3 +164,35 @@ fn the_human_report_shows_status_code_message_and_hint() {
     let text = String::from_utf8(out).unwrap();
     insta::assert_snapshot!(text);
 }
+
+#[test]
+fn shell_init_outside_the_jtm_block_does_not_count_as_the_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    let rc = dir.path().join(".bashrc");
+    let block = rc_block(
+        Some(std::path::Path::new("/data/env.sh")),
+        Some(Shell::Bash),
+        None,
+    );
+    std::fs::write(
+        &rc,
+        format!("# eval \"$(other shell-init)\"\n{block}alias x='shell-init'\n"),
+    )
+    .unwrap();
+    let check = hook_check(&inputs(Some((rc, Some(Shell::Bash))), &[], false));
+    assert_eq!(codes(&check), ["W_SHELL_HOOK_MISSING"]);
+}
+
+#[test]
+fn a_human_run_leaves_the_warnings_to_the_report() {
+    let mut check = Check::pass("path", "");
+    check.push(Finding::warning("W_PATH_MISSING", "not on PATH").hint("run `jtm self setup`"));
+    let report = Report {
+        checks: vec![check],
+    };
+    assert!(outcome(report.clone(), false).warnings.is_empty());
+    let json = outcome(report, true);
+    assert_eq!(json.warnings.len(), 1);
+    assert_eq!(json.warnings[0].code, "W_PATH_MISSING");
+    assert_eq!(json.warnings[0].details["hint"], "run `jtm self setup`");
+}

@@ -9,7 +9,10 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use jtm_core::doctor::{Check, Finding, Inputs, Report, Severity, Status, run};
+use jtm_core::doctor::{
+    Check, Finding, Inputs, Report, Severity, Status, W_SHELL_HOOK_INACTIVE, W_SHELL_HOOK_MISSING,
+    run,
+};
 use jtm_core::plugins::Registry;
 use jtm_core::session::load_config;
 use jtm_core::{Context, Dirs, Os, Result};
@@ -17,13 +20,8 @@ use jtm_security::Timestamp;
 
 use crate::activate::HOOK_DIR_VAR;
 use crate::output::{Human, Outcome, Warning};
-use crate::setup::{START, powershell_profile, rc_file, read_existing};
+use crate::setup::{END, START, powershell_profile, rc_file, read_existing};
 use crate::shell::Shell;
-
-/// Warning code for a shell hook that is not loaded from the shell's rc file.
-pub(crate) const W_SHELL_HOOK_MISSING: &str = "W_SHELL_HOOK_MISSING";
-/// Warning code for a pinned project used in a shell where the hook is not active.
-pub(crate) const W_SHELL_HOOK_INACTIVE: &str = "W_SHELL_HOOK_INACTIVE";
 
 /// What the shell hook check looks at.
 #[derive(Debug)]
@@ -72,7 +70,11 @@ pub(crate) fn hook_check(hook: &Hook<'_>) -> Check {
         }
     };
     // `--no-hook` leaves the block without the `jtm shell-init` line.
-    let loaded = text.is_some_and(|text| text.contains(START) && text.contains("shell-init"));
+    let loaded = text.is_some_and(|text| {
+        text.find(START)
+            .and_then(|start| text[start..].split(END).next())
+            .is_some_and(|block| block.contains("shell-init"))
+    });
     if !loaded {
         check.summary = format!("the shell hook is not loaded from {}", rc.display());
         check.push(
@@ -176,9 +178,11 @@ fn pinned_tools(registry: &Registry<'_>, cwd: Option<&std::path::Path>) -> Vec<S
 }
 
 /// The successful result of `jtm doctor`: the report, with each warning in the envelope.
-pub(crate) fn outcome(report: Report) -> Outcome<Report> {
+pub(crate) fn outcome(report: Report, json: bool) -> Outcome<Report> {
+    // For a human the report already shows every warning, so the renderer must not repeat them.
     let warnings = report
         .warnings()
+        .filter(|_| json)
         .map(|finding| {
             let mut details = finding.details.clone();
             if let Some(hint) = &finding.hint {

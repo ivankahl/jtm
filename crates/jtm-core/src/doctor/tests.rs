@@ -1169,3 +1169,58 @@ fn a_marketplace_that_fails_skips_the_check_with_the_reason() {
         yanked.summary
     );
 }
+
+#[test]
+fn a_keys_file_is_probed_at_its_own_unmirrored_host() {
+    let recorder = Recorder::default();
+    let home = Home::with_index(KEYS_URL)
+        .online()
+        .config("[mirrors]\n\"https://index.example.test/\" = \"https://mirror.corp.test/jtm/\"\n");
+    check_with(&home, "tls", Some(&recorder), None);
+    assert_eq!(
+        recorder.urls(),
+        ["https://index.example.test/", "https://mirror.corp.test/"],
+        "the loader fetches the keys file from keys_url as written"
+    );
+
+    let recorder = Recorder::default();
+    let home = Home::with_index(KEYS_URL)
+        .online()
+        .config("[plugins.demo]\nindex_url = \"https://override.test/demo.json\"\n");
+    check_with(&home, "tls", Some(&recorder), None);
+    assert_eq!(
+        recorder.urls(),
+        ["https://index.example.test/", "https://override.test/"],
+        "an index_url override does not move the keys file"
+    );
+}
+
+#[test]
+fn a_failing_lookup_keeps_the_yanked_plugins_found_before_it() {
+    let home = Home::new().online();
+    let author = TestKey::generate();
+    home.add_external(&author, "");
+    let other = home.dirs.plugins().join("acme--zeta@abc123");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(
+        other.join("plugin.toml"),
+        manifest("acme/zeta", &author.public_str(), ""),
+    )
+    .unwrap();
+    let market = Listed(vec![
+        (
+            "acme/widget",
+            Ok(Listing::Yanked {
+                reason: "withdrawn".to_owned(),
+            }),
+        ),
+        ("acme/zeta", Err("the listing is corrupt")),
+    ]);
+    let yanked = check_with(&home, "yanked_plugins", None, Some(&market));
+    assert_eq!(codes(&yanked), ["W_PLUGIN_YANKED"]);
+    assert!(
+        yanked.notes.iter().any(|n| n.contains("incomplete")),
+        "{:?}",
+        yanked.notes
+    );
+}
