@@ -217,6 +217,7 @@ impl World {
             embedded: &[],
             embedded_keys: std::slice::from_ref(self.keys_file),
             fetcher: Some(net),
+            mirrors: &std::collections::BTreeMap::new(),
         };
         let signing_keys = [self.root.public.clone()];
         let options = LoadOptions {

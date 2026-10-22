@@ -127,6 +127,9 @@ pub fn verify(req: &Request<'_>) -> Result<Report> {
         embedded: &[],
         embedded_keys: &[],
         fetcher: Some(&fetcher),
+        // No mirrors, so every copy counts as the canonical remote and expiry is enforced, as
+        // for a client fetching the release.
+        mirrors: &std::collections::BTreeMap::new(),
     };
     let options = LoadOptions {
         refresh: true,

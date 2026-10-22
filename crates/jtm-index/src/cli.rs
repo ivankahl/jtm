@@ -33,6 +33,10 @@ use crate::release;
 use crate::signing::Signer;
 use crate::writer::{DEFAULT_VALIDITY_DAYS, Settings, Validity, Warning};
 
+mod keys;
+
+pub use keys::KeysCommand;
+
 /// The version reported in every envelope.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The largest key or password file read.
@@ -62,6 +66,9 @@ pub enum Command {
     Generate(Box<GenerateArgs>),
     /// Check a release directory the way a client will, before it is published.
     Verify(VerifyArgs),
+    /// The first-party `keys.json` and the root key ceremony.
+    #[command(subcommand)]
+    Keys(KeysCommand),
 }
 
 #[derive(Debug, Args)]
@@ -164,21 +171,24 @@ pub struct GenerateArgs {
 /// process exit status.
 pub fn run(cli: &Cli, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     let env = |name: &str| std::env::var(name).ok();
-    let Command::Generate(args) = &cli.command else {
-        return execute_verify(cli, stdout, stderr);
-    };
-    let acquire = |plugin: &Plugin| -> Result<Confirmed> {
-        let ctx = context(args, &env)?;
-        let discovery = plugin.discover(&ctx)?;
-        plugin.confirm(
-            &ctx,
-            discovery,
-            Options {
-                max_artifact_bytes: args.max_artifact_bytes,
-            },
-        )
-    };
-    execute(cli, &env, &acquire, stdout, stderr)
+    match &cli.command {
+        Command::Generate(args) => {
+            let acquire = |plugin: &Plugin| -> Result<Confirmed> {
+                let ctx = context(args, &env)?;
+                let discovery = plugin.discover(&ctx)?;
+                plugin.confirm(
+                    &ctx,
+                    discovery,
+                    Options {
+                        max_artifact_bytes: args.max_artifact_bytes,
+                    },
+                )
+            };
+            execute(cli, &env, &acquire, stdout, stderr)
+        }
+        Command::Verify(_) => execute_verify(cli, stdout, stderr),
+        Command::Keys(command) => keys::run(command, cli.json, stdout, stderr),
+    }
 }
 
 /// Runs the command line with `env` for variables and `acquire` for turning a plugin into
@@ -190,11 +200,14 @@ pub fn execute(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> u8 {
-    let Command::Generate(args) = &cli.command else {
-        return execute_verify(cli, stdout, stderr);
-    };
-    let result = generate(args, env, acquire);
-    render(cli.json, "generate", &result, stdout, stderr)
+    match &cli.command {
+        Command::Generate(args) => {
+            let result = generate(args, env, acquire);
+            render(cli.json, "generate", &result, stdout, stderr)
+        }
+        Command::Verify(_) => execute_verify(cli, stdout, stderr),
+        Command::Keys(command) => keys::run(command, cli.json, stdout, stderr),
+    }
 }
 
 /// Runs `verify`, which never touches the network or the sources.

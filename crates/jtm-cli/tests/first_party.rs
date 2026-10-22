@@ -481,7 +481,7 @@ fn the_java_manifest_declares_variants_aliases_layout_and_interop() {
     assert_eq!(m.env["JAVA_HOME"], "{home}");
     let files: Vec<&str> = m.interop.iter().map(|i| i.file.as_str()).collect();
     assert_eq!(files, [".sdkmanrc", ".tool-versions", ".java-version"]);
-    assert_eq!(m.index.threshold(), 2);
+    assert_eq!(m.index.threshold(), 1);
     assert!(m.index.keys_url.is_some());
     assert!(m.hooks.post_extract.is_none());
 }

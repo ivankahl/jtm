@@ -16,6 +16,7 @@ pub mod confirmed_file;
 pub mod context;
 pub mod digest;
 pub mod error;
+mod keys_file;
 pub mod plugin;
 pub mod publish;
 pub mod release;

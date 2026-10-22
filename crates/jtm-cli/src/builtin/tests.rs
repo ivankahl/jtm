@@ -45,15 +45,16 @@ fn every_embedded_manifest_is_valid_builtin_and_named_after_its_directory() {
 }
 
 #[test]
-fn every_first_party_plugin_shares_the_root_keys_and_keys_file() {
-    // SPEC.md section 15: each lists jtm's root keys with threshold 2 and the shared keys.json.
+fn every_first_party_plugin_shares_the_root_key_and_keys_file() {
+    // SPEC.md section 15: each lists jtm's single root key with threshold 1 and the shared
+    // keys.json.
     let manifests: Vec<jtm_plugin::Manifest> = MANIFESTS
         .iter()
         .map(|m| jtm_plugin::Manifest::parse(m.text).unwrap_or_else(|e| panic!("{e}")))
         .collect();
     let first = &manifests[0].index;
-    assert_eq!(first.threshold(), 2);
-    assert_eq!(first.signing_keys.len(), 3);
+    assert_eq!(first.threshold(), 1);
+    assert_eq!(first.signing_keys.len(), 1);
     assert!(first.keys_url.is_some());
     for m in &manifests {
         assert_eq!(m.index.signing_keys, first.signing_keys, "{}", m.name);

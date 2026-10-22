@@ -4,7 +4,7 @@ mod common;
 
 use std::fs;
 
-use common::{Mock, client, sha256, unsized_server};
+use common::{Mock, client, mirror_dir, sha256, unsized_server};
 use jtm_fetch::{Artifact, DownloadCache, Error, Origin};
 use wiremock::matchers::{header, header_exists, method, path};
 use wiremock::{Mock as Route, ResponseTemplate};
@@ -355,4 +355,178 @@ fn a_full_size_corrupt_partial_file_starts_over() {
     let requests = mock.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].headers.get("range").is_none());
+}
+
+#[test]
+fn a_file_mirror_is_verified_and_cached_without_a_client() {
+    let data = body();
+    let mirror = mirror_dir(&data);
+    let dir = tempfile::tempdir().unwrap();
+    let cache = DownloadCache::new(dir.path().join("downloads"));
+    let digest = sha256(&data);
+    let artifact = Artifact {
+        url: "file:///mirror/a.zip",
+        sha256: &digest,
+        size: data.len() as u64,
+    };
+
+    let mut last = (0, 0);
+    let got = cache
+        .fetch_file(
+            &mirror.path().join("a.zip"),
+            &artifact,
+            &mut |done, total| last = (done, total),
+        )
+        .unwrap();
+    assert_eq!(got.origin, Origin::File);
+    assert_eq!(got.url, "file:///mirror/a.zip");
+    assert_eq!(got.path, dir.path().join("downloads").join(&digest));
+    assert_eq!(fs::read(&got.path).unwrap(), data);
+    assert_eq!(last, (data.len() as u64, data.len() as u64));
+    assert!(
+        !dir.path()
+            .join("downloads")
+            .join(format!("{digest}.part"))
+            .exists()
+    );
+
+    // The verified copy is reused without touching the mirror again.
+    fs::remove_file(mirror.path().join("a.zip")).unwrap();
+    let again = cache
+        .fetch_file(&mirror.path().join("a.zip"), &artifact, &mut noop())
+        .unwrap();
+    assert_eq!(again.origin, Origin::Cache);
+}
+
+#[test]
+fn a_tampered_file_mirror_copy_is_rejected_and_leaves_nothing() {
+    let data = body();
+    let mut tampered = data.clone();
+    tampered[77] ^= 1;
+    let mirror = mirror_dir(&tampered);
+    let dir = tempfile::tempdir().unwrap();
+    let cache = DownloadCache::new(dir.path());
+    let digest = sha256(&data);
+    let artifact = Artifact {
+        url: "file:///mirror/a.zip",
+        sha256: &digest,
+        size: data.len() as u64,
+    };
+
+    let err = cache
+        .fetch_file(&mirror.path().join("a.zip"), &artifact, &mut noop())
+        .unwrap_err();
+    match &err {
+        Error::HashMismatch {
+            url,
+            expected,
+            actual,
+        } => {
+            assert_eq!(url, "file:///mirror/a.zip");
+            assert_eq!(expected, &digest);
+            assert_eq!(actual, &sha256(&tampered));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(!err.is_transient());
+    assert!(!dir.path().join(format!("{digest}.part")).exists());
+    assert!(!dir.path().join(&digest).exists());
+}
+
+#[test]
+fn a_file_mirror_copy_of_the_wrong_size_is_rejected() {
+    let data = body();
+    let digest = sha256(&data);
+    let artifact = Artifact {
+        url: "file:///mirror/a.zip",
+        sha256: &digest,
+        size: data.len() as u64,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let cache = DownloadCache::new(dir.path());
+
+    let longer = mirror_dir(&[data.clone(), vec![0; 10]].concat());
+    let err = cache
+        .fetch_file(&longer.path().join("a.zip"), &artifact, &mut noop())
+        .unwrap_err();
+    assert!(matches!(err, Error::TooLarge { .. }), "{err:?}");
+
+    let shorter = mirror_dir(&data[..1000]);
+    let err = cache
+        .fetch_file(&shorter.path().join("a.zip"), &artifact, &mut noop())
+        .unwrap_err();
+    assert!(matches!(err, Error::HashMismatch { .. }), "{err:?}");
+    assert!(!dir.path().join(&digest).exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_mirror_that_is_not_a_regular_file_is_refused_without_blocking() {
+    let data = body();
+    let digest = sha256(&data);
+    let artifact = Artifact {
+        url: "file:///mirror/a.zip",
+        sha256: &digest,
+        size: data.len() as u64,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let cache = DownloadCache::new(dir.path());
+
+    // A directory and a FIFO, which would block `open` until a writer appeared.
+    let fifo = dir.path().join("fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    for source in [dir.path().to_path_buf(), fifo] {
+        let err = cache
+            .fetch_file(&source, &artifact, &mut noop())
+            .unwrap_err();
+        assert!(matches!(err, Error::Io { .. }), "{err:?}");
+    }
+}
+
+#[test]
+fn a_missing_file_mirror_copy_is_an_io_error_and_leaves_nothing() {
+    let data = body();
+    let digest = sha256(&data);
+    let artifact = Artifact {
+        url: "file:///mirror/a.zip",
+        sha256: &digest,
+        size: data.len() as u64,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let cache = DownloadCache::new(dir.path());
+
+    let err = cache
+        .fetch_file(&dir.path().join("missing.zip"), &artifact, &mut noop())
+        .unwrap_err();
+    assert!(matches!(err, Error::Io { .. }), "{err:?}");
+    assert!(!dir.path().join(&digest).exists());
+}
+
+#[test]
+fn a_leftover_partial_file_never_bypasses_the_hash_of_a_file_mirror() {
+    let data = body();
+    let mirror = mirror_dir(&data);
+    let dir = tempfile::tempdir().unwrap();
+    let cache = DownloadCache::new(dir.path());
+    let digest = sha256(&data);
+    let artifact = Artifact {
+        url: "file:///mirror/a.zip",
+        sha256: &digest,
+        size: data.len() as u64,
+    };
+    // A full-size but wrong `.part` from an interrupted run.
+    fs::write(
+        dir.path().join(format!("{digest}.part")),
+        vec![7u8; data.len()],
+    )
+    .unwrap();
+
+    let got = cache
+        .fetch_file(&mirror.path().join("a.zip"), &artifact, &mut noop())
+        .unwrap();
+    assert_eq!(fs::read(&got.path).unwrap(), data);
 }

@@ -1,8 +1,9 @@
-# A first-party plugin, compiled into jtm (SPEC.md section 15). Its signing keys are jtm's
-# root keys and are pre-approved only because this file is embedded in the binary.
+# A first-party plugin, compiled into jtm (SPEC.md section 15). Its signing key is jtm's
+# root key and is pre-approved only because this file is embedded in the binary.
 #
-# The root keys below are placeholders whose private keys were never kept, so nothing can sign
-# for them; the root key ceremony (T6.5) replaces them in every first-party manifest at once.
+# The root key below is a placeholder whose private key was never kept, so nothing can sign
+# for it; the root key ceremony (T6.5) replaces it in every first-party manifest at once with
+# the maintainer's offline root key, backed up on encrypted offline media.
 
 schema = 1
 name = "maven"
@@ -26,10 +27,8 @@ latest = { kind = "highest" }
 url = "https://github.com/jtm-dev/index/releases/latest/download/maven-any.json"
 signing_keys = [
   "RWRysDZolh28UjrMjL/6mCMDPnqfDtDj5Al+TxN8z6RkXGawmRo1ob7K",
-  "RWTzLKb42g206mejNh0fzVSVIUErPPx9vwRRSf+bTzSu3b21Ok57nca0",
-  "RWSNUwyhcXRhYMqQR0mQfp48nxBnT4qSHl01yqJKVPSJEIFmmj+XtONm",
 ]
-threshold = 2
+threshold = 1
 keys_url = "https://github.com/jtm-dev/index/releases/latest/download/keys.json"
 format = 1
 
