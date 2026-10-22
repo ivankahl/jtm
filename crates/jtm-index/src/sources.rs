@@ -74,6 +74,18 @@ pub struct Source {
     /// The index entry variant this source covers; omitted for a tool without variants.
     #[serde(default)]
     pub variant: Option<String>,
+    /// Marks the one upstream of a variant that has no second one. Its hash is then confirmed
+    /// by the generator's own download rather than by a second source, and the entry's
+    /// provenance says so. Only a `primary` can set it, and not when the variant has another
+    /// source (SPEC.md section 15).
+    #[serde(default)]
+    pub sole_source: bool,
+    /// Files beside `sources.toml` holding the armored OpenPGP public keys whose signatures
+    /// count for artifacts this source reports (`keys/apache.asc`, or an Apache `KEYS` file).
+    /// The files are committed and reviewed with the plugin; nothing downloaded is trusted as
+    /// a key. Without them, a signature this source reports cannot be verified.
+    #[serde(default)]
+    pub signing_keys: Vec<String>,
     /// Which adapter runs, and its settings.
     #[serde(flatten)]
     pub adapter: Adapter,
@@ -139,8 +151,37 @@ impl Source {
         if let Some(variant) = &self.variant {
             check_name_segment(variant, "variant").map_err(|(_, m)| m)?;
         }
+        for path in &self.signing_keys {
+            check_key_path(path).map_err(|m| format!("signing_keys: {m}"))?;
+        }
+        if self.sole_source && self.role != Role::Primary {
+            return Err(
+                "sole_source can only be set on a source with role = \"primary\"".to_owned(),
+            );
+        }
         self.adapter.validate()
     }
+}
+
+/// A key file name: a relative path of `/`-separated segments of letters, digits, `-`, `_`
+/// and `.`, none empty, hidden or `..`, so it cannot leave the plugin directory.
+fn check_key_path(path: &str) -> std::result::Result<(), String> {
+    let bad = |why: &str| Err(format!("`{path}` {why}"));
+    if path.is_empty() {
+        return bad("is empty");
+    }
+    for segment in path.split('/') {
+        if segment.is_empty() || segment.starts_with('.') {
+            return bad("must be a relative path of plain, non-hidden names");
+        }
+        if !segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            return bad("may only use letters, digits, `-`, `_`, `.` and `/`");
+        }
+    }
+    Ok(())
 }
 
 impl SourcesFile {
@@ -216,6 +257,17 @@ impl SourcesFile {
             }
         }
         for variant in self.variants() {
+            let sole = self.for_variant(variant).any(|s| s.sole_source);
+            if sole && self.for_variant(variant).count() > 1 {
+                let which = variant.map_or_else(
+                    || "the sources without a variant".to_owned(),
+                    |v| format!("variant `{v}`"),
+                );
+                return Err(format!(
+                    "{which} sets sole_source but lists more than one source; \
+                     use the second source as the confirmation instead"
+                ));
+            }
             let primaries = self
                 .for_variant(variant)
                 .filter(|s| s.role == Role::Primary)

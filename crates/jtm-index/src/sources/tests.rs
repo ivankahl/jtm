@@ -272,3 +272,76 @@ fn a_loaded_source_runs_its_adapter() {
             .all(|c| c.source == "gradle-api")
     );
 }
+
+const SOLE: &str = r#"
+schema = 1
+
+[[source]]
+id = "foojay-zulu"
+adapter = "foojay"
+role = "primary"
+variant = "zulu"
+distro = "zulu"
+features = [21]
+sole_source = true
+signing_keys = ["keys/zulu.asc", "keys/other.asc"]
+"#;
+
+#[test]
+fn confirmation_settings_default_to_off() {
+    let file = parse(FULL).unwrap();
+    assert!(file.sources.iter().all(|s| !s.sole_source));
+    assert!(file.sources.iter().all(|s| s.signing_keys.is_empty()));
+}
+
+#[test]
+fn a_sole_source_and_its_signing_keys_are_read() {
+    let file = parse(SOLE).unwrap();
+    let source = &file.sources[0];
+    assert!(source.sole_source);
+    assert_eq!(source.signing_keys, ["keys/zulu.asc", "keys/other.asc"]);
+}
+
+#[test]
+fn only_a_primary_can_be_the_sole_source_of_its_variant() {
+    // A confirm source cannot be the sole source: it would not supply the entry.
+    let as_confirm = format!(
+        "{SOLE}\n[[source]]\nid = \"main\"\nadapter = \"foojay\"\nrole = \"primary\"\nvariant = \"zulu\"\n\
+         distro = \"zulu\"\nfeatures = [21]\n"
+    )
+    .replacen(r#"role = "primary""#, r#"role = "confirm""#, 1);
+    let message = error(&as_confirm);
+    assert!(message.contains("sole_source"), "{message}");
+
+    // A variant with a second source has a second opinion to use instead.
+    let with_second = format!(
+        "{SOLE}\n[[source]]\nid = \"second\"\nadapter = \"foojay\"\nrole = \"confirm\"\n\
+         variant = \"zulu\"\ndistro = \"zulu\"\nfeatures = [21]\n"
+    );
+    let message = error(&with_second);
+    assert!(message.contains("sole_source"), "{message}");
+    assert!(message.contains("zulu"), "{message}");
+}
+
+#[test]
+fn signing_key_paths_stay_inside_the_plugin_directory() {
+    for bad in [
+        "",
+        "/etc/keys.asc",
+        "../keys.asc",
+        "a/../b.asc",
+        "a//b.asc",
+        "a\\b.asc",
+        "C:keys.asc",
+        ".hidden",
+        "a b.asc",
+        "keys/",
+    ] {
+        let text = SOLE.replace(
+            r#"["keys/zulu.asc", "keys/other.asc"]"#,
+            &format!("[{bad:?}]"),
+        );
+        let message = error(&text);
+        assert!(message.contains("signing_keys"), "{bad}: {message}");
+    }
+}

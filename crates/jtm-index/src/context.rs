@@ -3,10 +3,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 
-use jtm_fetch::{Client, mirrors};
+use jtm_fetch::{Client, Response, RetryPolicy, mirrors};
 use serde::de::DeserializeOwned;
 
+use crate::digest::{Computed, Digests};
 use crate::error::{Error, Result};
 
 /// The largest JSON, XML or HTML document an adapter reads. Version lists are a few hundred
@@ -16,6 +20,8 @@ pub(crate) const DOCUMENT_LIMIT: u64 = 16 * 1024 * 1024;
 const GITHUB_API: &str = "https://api.github.com/";
 /// The largest checksum file an adapter reads.
 pub(crate) const CHECKSUM_LIMIT: u64 = 64 * 1024;
+/// The largest detached signature the generator reads. Real ones are a few hundred bytes.
+pub(crate) const SIGNATURE_LIMIT: u64 = 64 * 1024;
 
 /// Shared by every adapter run.
 pub struct Context {
@@ -104,6 +110,45 @@ impl Context {
             .map_err(|error| fetch_error(source, error))
     }
 
+    /// Downloads the artifact at `url`, hashing it as the bytes arrive, and returns its
+    /// digests. With `keep`, the bytes are also spooled to an anonymous temporary file that
+    /// is returned rewound to its start, for a signature check; without it nothing touches
+    /// the disk.
+    ///
+    /// The transfer is aborted the moment it passes `limit` bytes, whatever the server
+    /// declared, so a hostile or broken upstream cannot fill the disk. A dropped connection
+    /// restarts the transfer from byte 0 under the client's retry policy, so a half-read body
+    /// is never mistaken for a whole one.
+    pub(crate) fn download(
+        &self,
+        source: &str,
+        url: &str,
+        limit: u64,
+        keep: bool,
+    ) -> Result<(Option<File>, Computed)> {
+        let target = self.target(source, url)?;
+        let mut file = if keep {
+            Some(tempfile::tempfile().map_err(Error::Io)?)
+        } else {
+            None
+        };
+        let retry: RetryPolicy = self.client.options().retry;
+        let computed = retry
+            .run(|_| {
+                if let Some(file) = file.as_mut() {
+                    file.set_len(0).map_err(|e| temp_error(&e))?;
+                    file.seek(SeekFrom::Start(0)).map_err(|e| temp_error(&e))?;
+                }
+                let response = self.client.open(&target, 0)?;
+                stream_into(response, file.as_mut(), url, limit)
+            })
+            .map_err(|error| fetch_error(source, error))?;
+        if let Some(file) = file.as_mut() {
+            file.seek(SeekFrom::Start(0)).map_err(Error::Io)?;
+        }
+        Ok((file, computed))
+    }
+
     /// Where `url` is fetched from once `[mirrors]` has been applied. The generator reads
     /// upstreams over the network only, so a mirror pointing at a local directory is refused.
     fn target(&self, source: &str, url: &str) -> Result<String> {
@@ -124,6 +169,55 @@ impl Context {
         Ok(self
             .get_optional(source, url, limit)?
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    }
+}
+
+/// Hashes `response`, copying it into `file` if there is one, and refuses more than `limit`
+/// bytes.
+fn stream_into(
+    mut response: Response,
+    mut file: Option<&mut File>,
+    url: &str,
+    limit: u64,
+) -> jtm_fetch::Result<Computed> {
+    let too_large = || jtm_fetch::Error::TooLarge {
+        url: url.to_owned(),
+        limit,
+    };
+    if response.content_length.is_some_and(|len| len > limit) {
+        return Err(too_large());
+    }
+    let mut digests = Digests::new();
+    let mut total = 0u64;
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|e| jtm_fetch::Error::Network {
+                url: url.to_owned(),
+                message: format!("the transfer broke off: {e}"),
+                transient: true,
+                source: Some(Box::new(e)),
+            })?;
+        if read == 0 {
+            return Ok(digests.finish());
+        }
+        total += read as u64;
+        if total > limit {
+            return Err(too_large());
+        }
+        digests.update(&buffer[..read]);
+        if let Some(file) = file.as_mut() {
+            file.write_all(&buffer[..read])
+                .map_err(|e| temp_error(&e))?;
+        }
+    }
+}
+
+fn temp_error(error: &std::io::Error) -> jtm_fetch::Error {
+    jtm_fetch::Error::Io {
+        path: PathBuf::from("<temporary file>"),
+        source: std::io::Error::new(error.kind(), error.to_string()),
     }
 }
 

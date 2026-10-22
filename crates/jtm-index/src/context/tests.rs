@@ -142,3 +142,69 @@ fn json_errors_name_the_offending_field() {
     assert!(err.to_string().contains("items"), "{err}");
     assert_eq!(err.code().as_str(), "E_INDEX_INVALID");
 }
+
+#[test]
+fn a_download_is_hashed_and_kept_for_a_second_look() {
+    use std::io::Read;
+    let mock = Mock::start();
+    mock.serve("/a.zip", b"abc".to_vec());
+    let (file, computed) = mock
+        .context()
+        .download("s", &mock.url("/a.zip"), 1024, true)
+        .unwrap();
+    let mut file = file.expect("the bytes were asked for");
+    assert_eq!(computed.size, 3);
+    // The SHA-256 of "abc", from FIPS 180.
+    assert_eq!(
+        computed.sha256(),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    let mut kept = Vec::new();
+    file.read_to_end(&mut kept).unwrap();
+    assert_eq!(kept, b"abc");
+}
+
+#[test]
+fn a_download_nobody_will_read_again_is_hashed_without_touching_the_disk() {
+    let mock = Mock::start();
+    mock.serve("/a.zip", b"abc".to_vec());
+    let (file, computed) = mock
+        .context()
+        .download("s", &mock.url("/a.zip"), 1024, false)
+        .unwrap();
+    assert!(file.is_none());
+    assert_eq!(computed.size, 3);
+    assert_eq!(
+        computed.sha256(),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}
+
+#[test]
+fn a_download_over_the_limit_is_refused_before_it_is_read_in_full() {
+    let mock = Mock::start();
+    mock.serve("/big.zip", vec![b'x'; 100]);
+    let err = mock
+        .context()
+        .download("s", &mock.url("/big.zip"), 99, false)
+        .unwrap_err();
+    assert_eq!(err.code().as_str(), "E_SIZE_EXCEEDED");
+    // Exactly at the limit is fine.
+    let (_, computed) = mock
+        .context()
+        .download("s", &mock.url("/big.zip"), 100, false)
+        .unwrap();
+    assert_eq!(computed.size, 100);
+}
+
+#[test]
+fn a_missing_artifact_fails_the_download() {
+    let mock = Mock::start();
+    mock.status("/gone.zip", 404);
+    let err = mock
+        .context()
+        .download("vendor", &mock.url("/gone.zip"), 1024, false)
+        .unwrap_err();
+    assert_eq!(err.code().as_str(), "E_NETWORK");
+    assert!(err.to_string().contains("vendor"), "{err}");
+}
