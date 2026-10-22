@@ -331,19 +331,26 @@ impl IndexLoader<'_> {
     }
 
     /// Applies `[mirrors]` to the canonical `url` of an index or keys file, and to the URL of
-    /// its signature. A signature that no longer sits next to its file is looked for where
-    /// its own URL leads.
+    /// its signature. For a network copy the signature is looked for where its own rewritten
+    /// URL leads; a local file's signature is always read next to it.
     fn locate(&self, url: &str, source: SourceKind) -> Result<Located> {
-        // SPEC-QUESTION: section 8 says mirrors apply to "index URLs" but not to signatures or
-        // the keys file. The signature URL is rewritten as a URL of its own (so a mirror may
-        // serve it from elsewhere), and `keys_url` is rewritten like an index URL; a
-        // `plugins.<name>.index_url` override is used as written and is not rewritten.
+        // SPEC-QUESTION: section 8 says mirrors apply to "index URLs and artifact URLs" and is
+        // silent on `keys_url` and on `.minisig` files. `keys_url` is rewritten like an index
+        // URL and the signature URL as a URL of its own, so a corporate network only needs
+        // the approved hosts (section 13). A `plugins.<name>.index_url` override is used as
+        // written and is not rewritten.
         match resolve(url, self.mirrors)? {
             Location::File { path, .. } => Ok(Located::Local(path)),
             Location::Url(rewritten) => Ok(Located::Remote(Remote {
-                url: rewritten,
+                // Section 9 enforces expiry only for the canonical remote; a copy that came
+                // through a `[mirrors]` rewrite is a mirror copy, like an `https` `index_url`.
+                source: if rewritten == url {
+                    source
+                } else {
+                    SourceKind::Mirror
+                },
                 sig: resolve(&format!("{url}.minisig"), self.mirrors)?,
-                source,
+                url: rewritten,
             })),
         }
     }
@@ -530,22 +537,27 @@ fn read_local(
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(JtmError::io(path, e)),
     };
-    let sig_path = signature_path(path);
-    let signature = match read_capped(
-        &sig_path,
-        jtm_security::signature::MAX_SIGNATURE_FILE,
-        "the limit for a signature file",
-    ) {
-        Ok(sig) => sig,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(JtmError::io(&sig_path, e)),
-    };
+    // A missing signature is empty and fails verification, never skipped.
+    let signature = read_signature(&signature_path(path))?.unwrap_or_default();
     Ok(Some(IndexCopy {
         source,
         origin: path.display().to_string(),
         data,
         signature,
     }))
+}
+
+/// Reads a signature file, or `None` when it does not exist.
+fn read_signature(path: &Path) -> Result<Option<Vec<u8>>> {
+    match read_capped(
+        path,
+        jtm_security::signature::MAX_SIGNATURE_FILE,
+        "the limit for a signature file",
+    ) {
+        Ok(sig) => Ok(Some(sig)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(JtmError::io(path, e)),
+    }
 }
 
 /// Reads a file, refusing one larger than its format's limit before reading it.
@@ -566,15 +578,7 @@ fn fetch_copy(fetcher: &dyn Fetcher, remote: &Remote) -> Result<Option<IndexCopy
     };
     let signature = match &remote.sig {
         Location::Url(url) => fetcher.fetch(url)?,
-        Location::File { path, .. } => match read_capped(
-            path,
-            jtm_security::signature::MAX_SIGNATURE_FILE,
-            "the limit for a signature file",
-        ) {
-            Ok(sig) => Some(sig),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-            Err(e) => return Err(JtmError::io(path, e)),
-        },
+        Location::File { path, .. } => read_signature(path)?,
     };
     Ok(Some(IndexCopy {
         source: remote.source,

@@ -459,6 +459,34 @@ fn a_file_mirror_copy_of_the_wrong_size_is_rejected() {
     assert!(!dir.path().join(&digest).exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_file_mirror_that_is_not_a_regular_file_is_refused_without_blocking() {
+    let data = body();
+    let digest = sha256(&data);
+    let artifact = Artifact {
+        url: "file:///mirror/a.zip",
+        sha256: &digest,
+        size: data.len() as u64,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let cache = DownloadCache::new(dir.path());
+
+    // A directory and a FIFO, which would block `open` until a writer appeared.
+    let fifo = dir.path().join("fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    for source in [dir.path().to_path_buf(), fifo] {
+        let err = cache
+            .fetch_file(&source, &artifact, &mut noop())
+            .unwrap_err();
+        assert!(matches!(err, Error::Io { .. }), "{err:?}");
+    }
+}
+
 #[test]
 fn a_missing_file_mirror_copy_is_an_io_error_and_leaves_nothing() {
     let data = body();

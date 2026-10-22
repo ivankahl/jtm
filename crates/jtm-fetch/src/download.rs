@@ -308,13 +308,20 @@ impl From<Response> for Opened {
 /// name a device or a pipe.
 fn open_file(source: &Path, artifact: &Artifact<'_>) -> Result<Opened> {
     let io_err = |e| Error::io(source, e);
+    let not_regular = || {
+        io_err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ))
+    };
+    // Checked before opening: opening a FIFO blocks until a writer appears.
+    if !fs::metadata(source).map_err(io_err)?.is_file() {
+        return Err(not_regular());
+    }
     let file = File::open(source).map_err(io_err)?;
     let meta = file.metadata().map_err(io_err)?;
     if !meta.is_file() {
-        return Err(io_err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a regular file",
-        )));
+        return Err(not_regular());
     }
     Ok(Opened {
         body: Box::new(file),

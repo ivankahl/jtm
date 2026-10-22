@@ -850,6 +850,27 @@ fn mirrors_apply_to_the_index_the_keys_file_and_their_signatures() {
 }
 
 #[test]
+fn an_expired_index_from_a_rewritten_url_only_warns() {
+    // Section 9: expiry is enforced for the canonical remote, and is a warning for a
+    // configured mirror, because mirrors go stale by design.
+    let mut f = Fixture::new();
+    f.mirrors
+        .insert("https://index.example.test/".into(), CORP.into());
+    let mut net = FakeNet::default();
+    net.serve(&format!("{CORP}demo-linux-x64.json"), f.signed(4, PAST));
+    let loaded = f.load(&[], Some(&net), None, refresh()).unwrap();
+    assert_eq!(loaded.source, SourceKind::Mirror);
+    assert_eq!(loaded.warnings[0].code, "W_INDEX_EXPIRED");
+
+    // Without the rewrite the same copy is the canonical remote and is refused.
+    let f = Fixture::new();
+    let mut net = FakeNet::default();
+    net.serve(REMOTE_EXPANDED, f.signed(4, PAST));
+    let err = f.load(&[], Some(&net), None, refresh()).unwrap_err();
+    assert_eq!(err.code(), "E_INDEX_EXPIRED");
+}
+
+#[test]
 fn a_signature_can_be_mirrored_apart_from_its_file() {
     let mut f = Fixture::new();
     f.mirrors
