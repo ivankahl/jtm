@@ -235,7 +235,7 @@ jtm-plugin-maven/
 | top level | Yes | `schema` (manifest version, starts at 1), `name`, `display_name`, `description`, `homepage`, `license`, `min_jtm` |
 | `[versions]` | Yes | `scheme` (`java`, `maven`, `semver-loose`, or `script`), `default_variant`, `default_alias` (the alias a bare `<tool>` resolves to; without one, the highest version), `variants`, `include_prereleases` |
 | `[aliases]` | No | Named aliases and how each resolves: `highest`, `index-tag`, `fixed`, or `script` |
-| `[index]` | Yes | `url` template, `signing_keys` (Ed25519 public keys: the plugin's trust anchors), `threshold` (how many signing keys must sign; default 1), `keys_url` (optional `https` URL of a keys file signed by the signing keys), `format` |
+| `[index]` | Yes | `url` template (`{os}` and `{arch}` are filled from the platform; `{index_version}` is accepted but always stands for `latest`, section 8), `signing_keys` (Ed25519 public keys: the plugin's trust anchors), `threshold` (how many signing keys must sign; default 1), `keys_url` (optional `https` URL of a keys file signed by the signing keys), `format` |
 | `[layout]` | Yes | How to find the tool home inside the archive: `strip_components`, a number of leading directories to strip or `"auto"` (strip a single top-level directory, the default), per-OS `home_subdir` table keyed by `windows`, `macos` or `linux` (for example `home_subdir = { macos = "Contents/Home" }` for JDKs) whose value is a path or a list of candidate paths tried in order (the first that is a directory inside the archive wins; `""` is the archive root and can only come last in a list of two or more (leave the OS out for the root alone), and a `*` segment, allowed only as a whole segment, matches any one real directory, never a link; a `*` candidate that no directory fits is passed over, but one that two or more fit is an error, and a directory it matches must be named only with ASCII letters, digits, `.`, `_`, `+` and `-`, not starting with `.` or `-`), `bin_dirs` |
 | `[env]` | No | Variables to set when active, using `{home}` and `{bin}` placeholders, for example `JAVA_HOME = "{home}"` |
 | `[requires]` | No | Runtime dependencies, for example Maven requires `java >= 8`; used for `W_REQUIRES_UNMET` warnings by `current`, `exec`, `env`, `use` and the shell hook, never auto-installs; an unmet requirement only ever warns, but a tool whose installs cannot be read fails the command, as in every other command (section 5) |
@@ -262,7 +262,7 @@ latest = { kind = "highest" }
 "3" = { kind = "fixed", target = "3" }   # newest 3.x
 
 [index]
-url = "https://github.com/jtm-dev/index/releases/download/maven-{index_version}/maven-{os}-{arch}.json"
+url = "https://github.com/jtm-dev/index/releases/latest/download/maven-any.json"
 signing_keys = ["RWS...base64..."]
 format = 1
 
@@ -352,7 +352,7 @@ Each plugin publishes one signed JSON index per platform; jtm embeds a snapshot 
 ### Where indices come from
 
 1. **Embedded snapshot.** Release builds include the signed first-party indices and their signatures via `include_bytes!`. They are verified at runtime like any other copy, so a fresh install works offline from the first run.
-2. **Canonical remote.** GitHub Release assets of the `jtm-dev/index` repository, one release per publish, referenced by tag rather than branch.
+2. **Canonical remote.** GitHub Release assets of the `jtm-dev/index` repository, one release per publish. Every release carries every signed index file, `keys.json` and their signatures, so the newest release alone is a complete copy and clients read it from the stable `https://github.com/jtm-dev/index/releases/latest/download/<file>` location. A client needs no release name: the tag is only a label for humans (`index-<UTC time>-seq<N>`), and what makes a copy newer is its signed `sequence`, so the release a copy came from never matters. `jtm update` fetches the `latest` location again and keeps whichever valid copy has the highest `sequence`. `{index_version}` in a manifest's `[index] url` is still accepted and is replaced by the literal `latest`, which suits a third-party host that keeps its newest index under a `latest` path or tag; the first-party manifests do not use it.
 3. **Cache.** `<JTM_HOME>/cache/index/<plugin>/<platform>.json` plus `.minisig`, written atomically after verification.
 4. **Override.** Any URL or local path the user configures (below).
 
@@ -374,7 +374,7 @@ Overrides change where bytes come from, never which keys are trusted. A copied i
 # ~/.config/jtm/config.toml  (or %APPDATA%\jtm\config.toml)
 [mirrors]
 # prefix rewrites, applied to index URLs and artifact URLs
-"https://github.com/jtm-dev/index/releases/download/" = "https://artifactory.corp.example/jtm-index/"
+"https://github.com/jtm-dev/index/releases/latest/download/" = "https://artifactory.corp.example/jtm-index/"
 "https://github.com/adoptium/" = "https://artifactory.corp.example/github-adoptium/"
 
 [plugins.java]
@@ -821,6 +821,15 @@ Endpoints are settings with defaults (`api_url`, `versions_url`, `repository`), 
 - **Validity.** `expires` is `generated` plus `--validity-days`, 30 by default and between 1 and 90, the life of an index key. `generated` is signed so a verifier can judge the file as of the instant it was made.
 - **Signing.** Minisign, pre-hashed. The secret key is the contents of a `minisign.key` read from `--secret-key <file>` or from the environment variable named by `--secret-key-env`, and its password from `--password-file` or `--password-env`. There is no flag that takes either value, nothing ever prompts, and neither appears in output or errors. `--dry-run` needs no key, writes nothing, and with a key checks it.
 - **Output.** With `--json` stdout carries one envelope (section 12) whose `data` lists each file's action (`created`, `updated`, `renewed`, `resigned`, `unchanged`), sequence, times, entry counts and SHA-256. A version listed again with a different SHA-256 is reported as the warning `W_HASH_CHANGED`: clients with a lockfile for it will refuse the new index.
+
+#### Review and release
+
+The index repository (`jtm-dev/index`) splits the work so that the job holding the signing key never talks to an upstream and never signs anything a person has not read.
+
+- **Confirmed files.** `jtm-index generate --dry-run --write-confirmed confirmed/<plugin>.json` saves what the sources confirmed as normalised JSON: the fields of an index entry per platform, the provenance labels, nothing that varies between runs (no download time, no sequence). An unchanged upstream gives no diff; a new version, a changed hash or a dropped version is a few lines in a pull request. A scheduled workflow with no secrets opens that pull request.
+- **Signing reviewed content.** After the pull request is merged, `jtm-index generate --use-confirmed confirmed/<plugin>.json` turns exactly that file into signed indices, with `--previous` set to the last release, and downloads nothing. Sequences, expiry and the no-churn rule are those of the previous subsection. Because an unchanged index is reissued once less than half of its validity remains, the publish workflow also runs on a schedule and releases only when a file would change.
+- **Release.** A GitHub Release holds every index file, its `.minisig`, `keys.json` and `keys.json.minisig` as assets, so the newest release is a complete copy (section 8). Tags look like `index-<UTC time>-seq<N>`; a client never reads them.
+- **Pre-publish check.** `jtm-index verify --published <dir> --plugin-dir <dir>...` loads every file with the client's loader, with the manifests' root keys and `keys_url` served from `<dir>`, so it fails with the client's code when the signing key is not delegated to the plugin in `keys.json`, the delegation has expired, `keys.json` is not signed by the root keys, an index has expired, a signature does not match, or the manifest asks for a file name the release does not hold. It warns (`W_KEY_EXPIRES_SOON`) when the newest key for a plugin ends within `--min-key-days` (14). `--root-key` replaces the manifests' root keys for a rehearsal with throwaway keys. A release is created only after it passes.
 
 ## 16. Plugin marketplace
 

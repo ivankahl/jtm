@@ -22,7 +22,7 @@ latest = { kind = "highest" }
 
 # The CLI runs on any platform, so one index with `"platform": "any"` serves them all.
 [index]
-url = "https://github.com/jtm-dev/index/releases/download/spring-boot-cli-{index_version}/spring-boot-cli-any.json"
+url = "https://github.com/jtm-dev/index/releases/latest/download/spring-boot-cli-any.json"
 signing_keys = [
   "RWRysDZolh28UjrMjL/6mCMDPnqfDtDj5Al+TxN8z6RkXGawmRo1ob7K",
 ]

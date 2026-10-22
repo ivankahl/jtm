@@ -22,7 +22,7 @@ latest = { kind = "highest" }
 
 # The compiler runs on any platform, so one index with `"platform": "any"` serves them all.
 [index]
-url = "https://github.com/jtm-dev/index/releases/download/kotlin-{index_version}/kotlin-any.json"
+url = "https://github.com/jtm-dev/index/releases/latest/download/kotlin-any.json"
 signing_keys = [
   "RWRysDZolh28UjrMjL/6mCMDPnqfDtDj5Al+TxN8z6RkXGawmRo1ob7K",
 ]

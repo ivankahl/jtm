@@ -331,7 +331,7 @@ fn mirrors_and_index_urls_require_safe_schemes() {
         .user(&format!(
             r#"
 [mirrors]
-"https://github.com/jtm-dev/index/releases/download/" = "https://artifactory.corp.example/jtm-index/"
+"https://github.com/jtm-dev/index/releases/latest/download/" = "https://artifactory.corp.example/jtm-index/"
 "https://github.com/adoptium/" = "file:///opt/mirror/adoptium/"
 "https://example.test/" = {path:?}
 

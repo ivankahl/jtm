@@ -6,6 +6,9 @@
 //! its password come from files or environment variables (a CI secret), never from the
 //! command line, and a missing one is an error.
 //!
+//! `jtm-index verify` checks a directory laid out as a release is with the client's own loader,
+//! including the delegation of the signing key in `keys.json`, before anything is published.
+//!
 //! With `--json`, stdout carries exactly one envelope of the shape SPEC.md section 12
 //! describes and everything else goes to stderr.
 
@@ -21,10 +24,12 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::confirm::{Confirmed, DEFAULT_MAX_ARTIFACT_BYTES, Options};
+use crate::confirmed_file;
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::plugin::Plugin;
 use crate::publish::{Report, Request, publish};
+use crate::release;
 use crate::signing::Signer;
 use crate::writer::{DEFAULT_VALIDITY_DAYS, Settings, Validity, Warning};
 
@@ -59,9 +64,37 @@ pub struct Cli {
 pub enum Command {
     /// Query the sources, confirm the hashes, then write and sign the index files of a plugin.
     Generate(Box<GenerateArgs>),
+    /// Check a release directory the way a client will, before it is published.
+    Verify(VerifyArgs),
     /// The first-party `keys.json` and the root key ceremony.
     #[command(subcommand)]
     Keys(KeysCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct VerifyArgs {
+    /// The directory a release is made from: index files, their `.minisig` files, `keys.json`
+    /// and `keys.json.minisig`.
+    #[arg(long)]
+    pub published: PathBuf,
+
+    /// A plugin directory; only its `plugin.toml` is read. Repeat for every plugin in the
+    /// release.
+    #[arg(long = "plugin-dir", value_name = "DIR", required = true)]
+    pub plugin_dirs: Vec<PathBuf>,
+
+    /// A root key (`RW...`) to trust in place of every manifest's `signing_keys`, for a
+    /// rehearsal with throwaway keys. The manifests' thresholds still apply. Repeatable.
+    #[arg(long = "root-key", value_name = "KEY")]
+    pub root_keys: Vec<String>,
+
+    /// Treat this UTC time (`2026-10-19T03:00:00Z`) as now.
+    #[arg(long, value_name = "TIME")]
+    pub now: Option<String>,
+
+    /// Warn when the newest index key of a plugin is valid for fewer days than this.
+    #[arg(long, value_name = "DAYS", default_value_t = 14)]
+    pub min_key_days: u32,
 }
 
 #[derive(Debug, Args)]
@@ -114,6 +147,16 @@ pub struct GenerateArgs {
     #[arg(long)]
     pub dry_run: bool,
 
+    /// Save the confirmed entries to this file (also in a dry run): normalised JSON that a
+    /// person can review and `--use-confirmed` can sign later.
+    #[arg(long, value_name = "FILE", conflicts_with = "use_confirmed")]
+    pub write_confirmed: Option<PathBuf>,
+
+    /// Take the entries from a file written by `--write-confirmed` instead of asking the
+    /// sources, so what was reviewed is exactly what is signed. Nothing is downloaded.
+    #[arg(long, value_name = "FILE")]
+    pub use_confirmed: Option<PathBuf>,
+
     /// The most bytes of one artifact downloaded to compute its hash.
     #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_MAX_ARTIFACT_BYTES)]
     pub max_artifact_bytes: u64,
@@ -143,6 +186,7 @@ pub fn run(cli: &Cli, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             };
             execute(cli, &env, &acquire, stdout, stderr)
         }
+        Command::Verify(_) => execute_verify(cli, stdout, stderr),
         Command::Keys(command) => keys::run(command, cli.json, stdout, stderr),
     }
 }
@@ -161,8 +205,79 @@ pub fn execute(
             let result = generate(args, env, acquire);
             render(cli.json, "generate", &result, stdout, stderr)
         }
+        Command::Verify(_) => execute_verify(cli, stdout, stderr),
         Command::Keys(command) => keys::run(command, cli.json, stdout, stderr),
     }
+}
+
+/// Runs `verify`, which never touches the network or the sources.
+fn execute_verify(cli: &Cli, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
+    let Command::Verify(args) = &cli.command else {
+        return ExitCode::Usage.as_u8();
+    };
+    match check_release(args) {
+        Ok(report) => {
+            let written = if cli.json {
+                let envelope = json!({
+                    "ok": true,
+                    "command": "verify",
+                    "changed": false,
+                    "data": report,
+                    "warnings": warnings_out(&report.warnings),
+                    "jtm_version": VERSION,
+                });
+                writeln!(stdout, "{envelope}")
+            } else {
+                human_release(&report, stdout, stderr)
+            };
+            let _ = written;
+            ExitCode::Success.as_u8()
+        }
+        Err(error) => render_error(cli.json, "verify", &error, stdout, stderr),
+    }
+}
+
+fn check_release(args: &VerifyArgs) -> Result<release::Report> {
+    let now = parse_now(args.now.as_deref())?;
+    for key in &args.root_keys {
+        PublicKey::parse(key).map_err(|_| Error::Usage {
+            message: "--root-key must be a minisign public key (RW...)".to_owned(),
+        })?;
+    }
+    release::verify(&release::Request {
+        published: &args.published,
+        plugin_dirs: &args.plugin_dirs,
+        root_keys: &args.root_keys,
+        now,
+        min_key_days: args.min_key_days,
+    })
+}
+
+fn human_release(
+    report: &release::Report,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> std::io::Result<()> {
+    for warning in &report.warnings {
+        writeln!(stderr, "warning[{}]: {}", warning.code, warning.message)?;
+    }
+    for plugin in &report.plugins {
+        for file in &plugin.files {
+            writeln!(
+                stdout,
+                "ok {} (sequence {}, {} entries, expires {})",
+                file.file, file.sequence, file.entries, file.expires
+            )?;
+        }
+        if let Some(sequence) = plugin.keys_sequence {
+            writeln!(
+                stdout,
+                "ok keys.json (sequence {sequence}) for {}",
+                plugin.plugin
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn generate(
@@ -173,12 +288,7 @@ fn generate(
     // Everything that can be checked without the network is checked first, so a bad key or a
     // typo does not cost a long run of downloads.
     let validity = Validity::days(args.validity_days)?;
-    let now = match &args.now {
-        Some(text) => Timestamp::parse(text).ok_or_else(|| Error::Usage {
-            message: format!("--now `{text}` is not a UTC time like 2026-10-19T03:00:00Z"),
-        })?,
-        None => Timestamp::now(),
-    };
+    let now = parse_now(args.now.as_deref())?;
     let signer = load_signer(args, env)?;
     if signer.is_none() && !args.dry_run {
         return Err(Error::Usage {
@@ -210,7 +320,13 @@ fn generate(
     }
     let plugin = Plugin::load(&args.plugin_dir)?;
 
-    let confirmed = acquire(&plugin)?;
+    let confirmed = match &args.use_confirmed {
+        Some(path) => confirmed_file::parse(&plugin.binding.plugin, &read_confirmed(path)?)?,
+        None => acquire(&plugin)?,
+    };
+    if let Some(path) = &args.write_confirmed {
+        write_confirmed(path, &plugin.binding.plugin, &confirmed)?;
+    }
     publish(&Request {
         binding: &plugin.binding,
         confirmed: &confirmed,
@@ -220,6 +336,51 @@ fn generate(
         signer: signer.as_ref(),
         settings: Settings { now, validity },
         dry_run: args.dry_run,
+    })
+}
+
+/// The `--now` time, or the current time when none was given.
+fn parse_now(now: Option<&str>) -> Result<Timestamp> {
+    match now {
+        Some(text) => Timestamp::parse(text).ok_or_else(|| Error::Usage {
+            message: format!("--now `{text}` is not a UTC time like 2026-10-19T03:00:00Z"),
+        }),
+        None => Ok(Timestamp::now()),
+    }
+}
+
+/// Reads a confirmed file, refusing anything larger than the limit before reading it.
+fn read_confirmed(path: &Path) -> Result<Vec<u8>> {
+    let usage = |why: String| Error::Usage {
+        message: format!("cannot read {}: {why}", path.display()),
+    };
+    let size = std::fs::metadata(path)
+        .map_err(|e| usage(e.to_string()))?
+        .len();
+    if size > confirmed_file::MAX_CONFIRMED_FILE as u64 {
+        return Err(usage(format!(
+            "larger than {} bytes",
+            confirmed_file::MAX_CONFIRMED_FILE
+        )));
+    }
+    std::fs::read(path).map_err(|e| usage(e.to_string()))
+}
+
+/// Saves `confirmed` as a confirmed file, replacing the file atomically.
+fn write_confirmed(path: &Path, plugin: &str, confirmed: &Confirmed) -> Result<()> {
+    let text = confirmed_file::render(plugin, confirmed)?;
+    let io = |source| Error::Output {
+        path: path.to_path_buf(),
+        source,
+    };
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(io)?;
+    }
+    jtm_security::trust::write_atomically(path, text.as_bytes()).map_err(|error| match error {
+        jtm_security::Error::Io { path, source } => Error::Output { path, source },
+        other => Error::Invalid {
+            message: other.to_string(),
+        },
     })
 }
 
@@ -395,24 +556,33 @@ fn render(
             let _ = written;
             ExitCode::Success.as_u8()
         }
-        Err(error) => {
-            let code = error.code();
-            if json {
-                let mut details = Map::new();
-                if let Error::Rejected { rejections } = error {
-                    details.insert(
-                        "rejections".to_owned(),
-                        rejections.iter().map(ToString::to_string).collect(),
-                    );
-                }
-                let envelope = error_envelope(command, code, &error.to_string(), details);
-                let _ = writeln!(stdout, "{envelope}");
-            } else {
-                let _ = writeln!(stderr, "error[{}]: {error}", code.as_str());
-            }
-            code.exit_code().as_u8()
-        }
+        Err(error) => render_error(json, command, error, stdout, stderr),
     }
+}
+
+/// Writes a failure and returns the exit status that goes with it.
+fn render_error(
+    json: bool,
+    command: &str,
+    error: &Error,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> u8 {
+    let code = error.code();
+    if json {
+        let mut details = Map::new();
+        if let Error::Rejected { rejections } = error {
+            details.insert(
+                "rejections".to_owned(),
+                rejections.iter().map(ToString::to_string).collect(),
+            );
+        }
+        let envelope = error_envelope(command, code, &error.to_string(), details);
+        let _ = writeln!(stdout, "{envelope}");
+    } else {
+        let _ = writeln!(stderr, "error[{}]: {error}", code.as_str());
+    }
+    code.exit_code().as_u8()
 }
 
 fn human(report: &Report, stdout: &mut dyn Write, stderr: &mut dyn Write) -> std::io::Result<()> {

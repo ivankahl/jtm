@@ -76,6 +76,16 @@ pub enum Error {
         error: jtm_security::Error,
     },
 
+    /// A step of jtm's own loading failed while a release was being checked. It keeps the code
+    /// the client would report.
+    #[error("{0}")]
+    Client(#[from] jtm_core::JtmError),
+
+    /// The release's `keys.json` is missing or does not verify against the plugin's signing
+    /// keys, so none of its delegated keys count. Maps to `E_SIGNATURE_INVALID`.
+    #[error("{message}")]
+    KeysFile { message: String },
+
     /// A file of the publish could not be read or written. Maps to `E_IO`.
     #[error("cannot access {}: {source}", path.display())]
     Output {
@@ -292,6 +302,8 @@ impl Error {
             Error::Usage { .. } | Error::SigningKey { .. } => ErrorCode::Usage,
             Error::Invalid { .. } => ErrorCode::IndexInvalid,
             Error::Rollback { .. } => ErrorCode::IndexRollback,
+            Error::Client(error) => error.kind(),
+            Error::KeysFile { .. } => ErrorCode::SignatureInvalid,
             Error::Previous { error, .. } => security_code(error),
         }
     }

@@ -18,6 +18,24 @@ use crate::writer::Binding;
 /// The largest manifest read.
 const MAX_MANIFEST: u64 = 256 * 1024;
 
+/// Reads and validates the `plugin.toml` in `dir`.
+pub fn read_manifest(dir: &Path) -> Result<Manifest> {
+    let manifest_path = dir.join("plugin.toml");
+    let label = manifest_path.display().to_string();
+    let invalid = |message: String| Error::Sources {
+        file: label.clone(),
+        message,
+    };
+    let size = std::fs::metadata(&manifest_path)
+        .map_err(|e| invalid(e.to_string()))?
+        .len();
+    if size > MAX_MANIFEST {
+        return Err(invalid(format!("larger than {MAX_MANIFEST} bytes")));
+    }
+    let text = std::fs::read_to_string(&manifest_path).map_err(|e| invalid(e.to_string()))?;
+    Manifest::parse(&text).map_err(|e| invalid(e.to_string()))
+}
+
 /// A plugin ready for a generator run.
 #[derive(Debug)]
 pub struct Plugin {
@@ -31,20 +49,7 @@ pub struct Plugin {
 impl Plugin {
     /// Reads `plugin.toml` and `sources.toml` (and the key files it names) from `dir`.
     pub fn load(dir: &Path) -> Result<Plugin> {
-        let manifest_path = dir.join("plugin.toml");
-        let label = manifest_path.display().to_string();
-        let invalid = |message: String| Error::Sources {
-            file: label.clone(),
-            message,
-        };
-        let size = std::fs::metadata(&manifest_path)
-            .map_err(|e| invalid(e.to_string()))?
-            .len();
-        if size > MAX_MANIFEST {
-            return Err(invalid(format!("larger than {MAX_MANIFEST} bytes")));
-        }
-        let text = std::fs::read_to_string(&manifest_path).map_err(|e| invalid(e.to_string()))?;
-        let manifest = Manifest::parse(&text).map_err(|e| invalid(e.to_string()))?;
+        let manifest = read_manifest(dir)?;
 
         let sources = SourcesFile::load(&dir.join("sources.toml"))?;
         let keyrings = Confirmer::load_keyrings(dir, &sources)?;
