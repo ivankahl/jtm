@@ -162,3 +162,65 @@ fn the_message_names_each_entry_and_caps_a_long_list() {
     assert!(many.starts_with("25 index entries refused"), "{many}");
     assert!(many.contains("and 15 more"), "{many}");
 }
+
+#[test]
+fn writing_failures_have_stable_codes() {
+    let code = |error: Error| error.code().as_str();
+    assert_eq!(
+        code(Error::SigningKey {
+            message: "m".to_owned()
+        }),
+        "E_USAGE"
+    );
+    assert_eq!(
+        code(Error::Usage {
+            message: "m".to_owned()
+        }),
+        "E_USAGE"
+    );
+    assert_eq!(
+        code(Error::Invalid {
+            message: "m".to_owned()
+        }),
+        "E_INDEX_INVALID"
+    );
+    assert_eq!(
+        code(Error::Rollback {
+            file: "f".to_owned(),
+            message: "m".to_owned()
+        }),
+        "E_INDEX_ROLLBACK"
+    );
+    assert_eq!(
+        code(Error::Output {
+            path: "p".into(),
+            source: std::io::Error::other("disk full")
+        }),
+        "E_IO"
+    );
+}
+
+#[test]
+fn an_unreadable_previous_index_keeps_the_code_of_its_failure() {
+    let previous = |error: jtm_security::Error| Error::Previous {
+        file: "demo-any.json".to_owned(),
+        error,
+    };
+    let signature = previous(jtm_security::Error::SignatureInvalid {
+        file: "demo-any.json".to_owned(),
+        message: "m".to_owned(),
+    });
+    assert_eq!(signature.code().as_str(), "E_SIGNATURE_INVALID");
+    let untrusted = previous(jtm_security::Error::KeyUntrusted {
+        file: "demo-any.json".to_owned(),
+        key_id: "K".to_owned(),
+        resolve: "r".to_owned(),
+    });
+    assert_eq!(untrusted.code().as_str(), "E_KEY_UNTRUSTED");
+    let invalid = previous(jtm_security::Error::Invalid {
+        file: "demo-any.json".to_owned(),
+        message: "m".to_owned(),
+    });
+    assert_eq!(invalid.code().as_str(), "E_INDEX_INVALID");
+    assert!(invalid.to_string().contains("demo-any.json"));
+}

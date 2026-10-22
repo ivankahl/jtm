@@ -10,12 +10,19 @@
 
 pub mod adapters;
 pub mod candidate;
+pub mod cli;
 pub mod confirm;
 pub mod context;
 pub mod digest;
 pub mod error;
+mod keys_file;
+pub mod plugin;
+pub mod publish;
 pub mod signature;
+pub mod signing;
 pub mod sources;
+pub mod verify;
+pub mod writer;
 
 #[cfg(test)]
 mod testing;

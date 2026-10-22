@@ -1776,11 +1776,13 @@ name = "jtm-index"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
+ "base64 0.23.1",
  "clap",
  "jtm-core",
  "jtm-fetch",
  "jtm-plugin",
  "jtm-security",
+ "minisign",
  "pgp",
  "rand 0.8.8",
  "regex",
@@ -1794,6 +1796,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "wiremock",
 ]
 

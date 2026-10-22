@@ -811,6 +811,17 @@ An adapter queries its upstream and returns one candidate per artifact: version,
 
 Endpoints are settings with defaults (`api_url`, `versions_url`, `repository`), because vendors move them. They must be `https`.
 
+#### Writing and signing indices
+
+`jtm-index generate --plugin-dir <dir> --out <dir> [--previous <dir>]` runs the whole pipeline for one plugin: it queries the sources, confirms the hashes, writes one index file per platform, signs each, and loads each signed file with the client's own loader before anything is written to `--out`. A file the loader would refuse is never published.
+
+- **Files.** `<plugin>-<platform>.json` with a `.minisig` beside it, the platform being `any` exactly when the manifest's `[index] url` names no platform (section 15 above) and never otherwise. The signed bytes are pretty-printed JSON with two-space indentation and a final newline, fields in the order of section 8, entries ordered by variant and then version, tags and `provenance` sorted. The same entries, previous files and settings always give byte-identical files. A plugin without variants publishes its entries as the variant `default`.
+- **Sequence.** One more than the previous publish of that platform, or 1 for a platform never published. `--previous` names the directory of the last publish; its files are verified (with the signing key or `--previous-key`) before their sequence is trusted, so a tampered file cannot raise it. A run dated before the previous `generated`, a sequence that cannot grow, an empty result and a platform that had a file but now has no entries are all refused.
+- **No churn.** An index whose entries equal the previous file's keeps its sequence, times, bytes and signature, and the run reports `changed: false`. Once less than half of the validity remains, the same entries are issued again under the next sequence with fresh times, so a quiet upstream cannot let an index expire. An unchanged file whose signature is not the signing key's, as after a key rotation, keeps its bytes and is signed again (`resigned`), so clients that trust only the new key accept it at once.
+- **Validity.** `expires` is `generated` plus `--validity-days`, 30 by default and between 1 and 90, the life of an index key. `generated` is signed so a verifier can judge the file as of the instant it was made.
+- **Signing.** Minisign, pre-hashed. The secret key is the contents of a `minisign.key` read from `--secret-key <file>` or from the environment variable named by `--secret-key-env`, and its password from `--password-file` or `--password-env`. There is no flag that takes either value, nothing ever prompts, and neither appears in output or errors. `--dry-run` needs no key, writes nothing, and with a key checks it.
+- **Output.** With `--json` stdout carries one envelope (section 12) whose `data` lists each file's action (`created`, `updated`, `renewed`, `resigned`, `unchanged`), sequence, times, entry counts and SHA-256. A version listed again with a different SHA-256 is reported as the warning `W_HASH_CHANGED`: clients with a lockfile for it will refuse the new index.
+
 ## 16. Plugin marketplace
 
 Plugins are hosted by their authors on GitHub; the `jtm-dev/marketplace` repository is only a curated, signed index of them, built from one file per plugin submitted by pull request. It lists the first-party plugins too, with `source = "builtin"`, so `jtm plugin search`, `info`, yanking and `jtm doctor` treat every plugin alike.
