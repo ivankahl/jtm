@@ -772,6 +772,30 @@ The index generator (section 18, milestone M6) uses each plugin's `sources.toml`
 
 The generator stores SHA-256 for every entry regardless of what the vendor publishes, so clients need only one hash algorithm.
 
+#### `sources.toml`
+
+`sources.toml` sits next to `plugin.toml`. Only the index generator reads it; jtm never does, so it cannot widen what a client trusts. It starts with `schema = 1` and lists upstreams as `[[source]]` tables:
+
+| Key | Purpose |
+| --- | --- |
+| `id` | Name recorded in an entry's `provenance` when the source agrees on a hash. Unique in the file. |
+| `adapter` | `adoptium`, `foojay`, `apache`, `gradle`, `github-releases` or `maven-central`. The remaining keys belong to the adapter, and an unknown key is an error. |
+| `role` | `primary` supplies the entry (version, URL, size, tags); `confirm` only reports a second opinion on the hash. Each variant has exactly one primary. |
+| `variant` | The index variant the source covers; omitted for a tool without variants. |
+
+An adapter queries its upstream and returns one candidate per artifact: version, platform, URL, archive kind, tags, and the hash the upstream claims, with the algorithm it used. A candidate is a claim. Agreement between sources, vendor signatures and the SHA-256 that goes into an index are decided after the adapters run. Candidates with a URL that is not `https`, a version or name an index would refuse, or a malformed hash are dropped with a warning, and a response that does not have the expected shape fails the run.
+
+| Adapter | Reads | Main keys |
+| --- | --- | --- |
+| `adoptium` | The Adoptium API: packages with their SHA-256 and signature link; `lts`, `ga` and `ea` tags | `features`, `platforms`, `include_ea` |
+| `foojay` | The Foojay Disco API: packages, then each package's download link and checksum | `distro`, `features`, `platforms`, `include_ea` |
+| `apache` | An Apache `dist` directory listing and the `.sha512` (or other) file beside each artifact | `listings`, `artifact`, `hash`, `version_pattern` |
+| `gradle` | The Gradle versions API, with the hash from the listing or from each `.sha256` file | `hash_from`, `include_rc` |
+| `github-releases` | Release assets, with the hash from GitHub's asset digest or a checksum asset | `repo`, `tag_pattern`, `assets`, `hash_from` |
+| `maven-central` | A Maven repository's `maven-metadata.xml` and the checksum files beside each file | `group`, `artifact`, `classifier`, `extension`, `hashes` |
+
+Endpoints are settings with defaults (`api_url`, `versions_url`, `repository`), because vendors move them. They must be `https`.
+
 ## 16. Plugin marketplace
 
 Plugins are hosted by their authors on GitHub; the `jtm-dev/marketplace` repository is only a curated, signed index of them, built from one file per plugin submitted by pull request. It lists the first-party plugins too, with `source = "builtin"`, so `jtm plugin search`, `info`, yanking and `jtm doctor` treat every plugin alike.
