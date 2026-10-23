@@ -1,12 +1,12 @@
 # CLAUDE.md
 
-jtm is a single-binary Rust runtime manager for the JVM ecosystem (Java, Maven, Gradle, Kotlin, Spring Boot CLI) on Windows, macOS and Linux, without admin rights. Every tool is a plugin, and every downloaded artifact is verified against a hash from a signed version index.
+jtm is a single-binary Rust runtime manager for the JVM ecosystem (Java, Maven, Gradle, Kotlin, Spring Boot CLI) on Windows, macOS and Linux, without admin rights. Every tool is a declarative plugin compiled into the binary; there are no third-party plugins or plugin scripts (`docs/adr/0002-built-in-tools-and-no-third-party-plugins.md`). Every downloaded artifact is verified against a hash from a signed version index.
 
 `SPEC.md` is the source of truth. Read the relevant sections before starting a ticket; section numbers below refer to it.
 
 ## Status
 
-Workspace scaffolded (T0.1); crates are empty stubs. Work is tracked as GitHub issues in `ivankahl/jtm`:
+Implementation is in progress. Work is tracked as GitHub issues in `ivankahl/jtm`:
 
 - Milestone epics M0 to M10 are issues #1 to #11, labelled `epic` and `M<n>`.
 - Tickets T0.1 to T10.5 are issues #12 to #75, titled `[T<id>] ...`, attached as sub-issues of their epic. Each body lists its dependencies and "done when" criteria.
@@ -29,7 +29,7 @@ Do not start a ticket until the tickets it depends on are closed. The suggested 
 | `jtm-security` | lib | Signature verification, `keys.json`, trust state, index load checks |
 | `jtm-fetch` | lib | HTTP client, proxies, TLS, mirrors, streaming hash, download cache |
 | `jtm-archive` | lib | Safe zip and tar.gz extraction |
-| `jtm-plugin` | lib | Manifest schema, version schemes, aliases, interop parsers, Luau sandbox |
+| `jtm-plugin` | lib | Manifest schema, version schemes, aliases, interop parsers |
 | `jtm-cli` | bin (named `jtm`) | CLI (clap), output envelope, activation, shell hooks, MCP server |
 | `jtm-index` | bin | Index generator, signer and publisher (CI only) |
 | `xtask` | bin | Build helpers: embed snapshots, release packaging |

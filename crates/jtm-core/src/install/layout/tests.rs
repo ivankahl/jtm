@@ -166,7 +166,7 @@ fn the_first_candidate_home_that_exists_wins() {
     let home = mac_home(&["t/bin/java", "t/lib/x"]).unwrap();
     assert_eq!(home, PathBuf::new());
     // Only existence counts: a `Contents/Home` without bin files still wins, and its bin dirs are
-    // checked after `post_extract`.
+    // checked separately.
     let home = mac_home(&["t/Contents/Home/README", "t/bin/java"]).unwrap();
     assert_eq!(home, PathBuf::from("Contents/Home"));
 }
@@ -298,8 +298,7 @@ fn a_broken_or_escaping_link_never_hands_over_to_the_next_candidate() {
     }
 }
 
-/// `post_extract` runs between `apply` and `check_bin_dirs` and may fill the bin dirs, so a
-/// home only has to exist.
+/// The bin dirs are checked by `check_bin_dirs` after `apply`, so a home only has to exist.
 #[test]
 fn a_home_is_chosen_before_its_bin_dirs_hold_files() {
     for toml in [

@@ -1,0 +1,34 @@
+# The `demo` plugin of jtm-cli's end-to-end tests, compiled in only with the `test-plugins`
+# feature. Nobody holds the secret key of its anchor, so a test signs its indices with a key it
+# generates and trusts with `jtm trust add <key> --scope demo`.
+schema = 1
+name = "demo"
+display_name = "Demo"
+
+[versions]
+scheme = "semver-loose"
+default_alias = "latest"
+
+[aliases]
+latest = { kind = "highest" }
+rc = { kind = "index-tag", tag = "rc" }
+
+[index]
+url = "https://index.example.test/demo-{os}-{arch}.json"
+signing_keys = ["RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB"]
+format = 1
+
+[layout]
+bin_dirs = ["bin"]
+
+[env]
+DEMO_HOME = "{home}"
+
+[ide]
+maven_toolchain = "jdk"
+gradle_installations = true
+
+[[interop]]
+file = ".sdkmanrc"
+parser = "keyvalue"
+key = "demo"

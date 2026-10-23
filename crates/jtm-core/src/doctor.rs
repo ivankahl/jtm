@@ -2,7 +2,7 @@
 //! exactly what and how to fix it.
 //!
 //! A [`Report`] holds one [`Check`] per area, in a fixed order: `PATH`, current links, the
-//! shell hook, the proxy, TLS, the trust store and yanked plugins. A check holds the
+//! shell hook, the proxy, TLS and the trust store. A check holds the
 //! [`Finding`]s it made, each with a stable code, a specific message and a hint. An error
 //! finding carries one of the `E_` codes of section 12 and decides the exit code; a warning
 //! finding carries a `W_` code and never changes it. The first error in check order wins, so
@@ -16,7 +16,6 @@
 mod links;
 mod network;
 mod trust;
-mod yanked;
 
 use jtm_fetch::Client;
 use jtm_security::Timestamp;
@@ -28,8 +27,6 @@ use crate::dirs::Dirs;
 use crate::error::{ErrorCode, ExitCode, JtmError};
 use crate::plugins::Registry;
 
-pub use yanked::{Listing, Marketplace};
-
 /// Warning code for a current-link `bin` directory missing from `PATH`.
 pub const W_PATH_MISSING: &str = "W_PATH_MISSING";
 /// Warning code for a shell hook that is not loaded where it should be.
@@ -40,8 +37,6 @@ pub const W_SHELL_HOOK_INACTIVE: &str = "W_SHELL_HOOK_INACTIVE";
 pub const W_PROXY_UNSUPPORTED: &str = "W_PROXY_UNSUPPORTED";
 /// Warning code for an expired index key while another key still signs for the plugin.
 pub const W_INDEX_KEY_EXPIRED: &str = "W_INDEX_KEY_EXPIRED";
-/// Warning code for an installed plugin whose marketplace entry is yanked.
-pub const W_PLUGIN_YANKED: &str = "W_PLUGIN_YANKED";
 
 /// How a check came out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -246,8 +241,6 @@ pub struct Inputs<'a> {
     pub now: Timestamp,
     /// Makes the TLS connection test. `None` builds the HTTP client from `settings`.
     pub prober: Option<&'a dyn Prober>,
-    /// The signed marketplace listing, when it could be fetched. `None` skips the yanked check.
-    pub marketplace: Option<&'a dyn Marketplace>,
 }
 
 impl std::fmt::Debug for Inputs<'_> {
@@ -256,7 +249,6 @@ impl std::fmt::Debug for Inputs<'_> {
             .field("dirs", &self.dirs)
             .field("offline", &self.offline)
             .field("prober", &self.prober.is_some())
-            .field("marketplace", &self.marketplace.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -273,7 +265,6 @@ pub fn run(inputs: &Inputs<'_>, shell_hook: Check) -> Report {
             proxy,
             tls,
             trust::check(inputs),
-            yanked::check(inputs),
         ],
     }
 }

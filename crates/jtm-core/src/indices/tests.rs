@@ -659,37 +659,6 @@ fn the_verified_bytes_of_the_index_and_keys_file_are_available_for_export() {
 }
 
 #[test]
-fn a_third_party_plugin_needs_its_key_confirmed() {
-    let f = Fixture::new();
-    let author = TestKey::generate();
-    let anchors = [author.public_str()];
-    let mut net = FakeNet::default();
-    net.serve(REMOTE_EXPANDED, index_signed_by(&author, 1));
-
-    // `demo` has the shape of a first-party name, but an external manifest's anchors are
-    // confirmed, never pre-approved: provenance decides, not the name.
-    let err = f
-        .load_plugin(&anchors, ManifestOrigin::External, &net, refresh())
-        .unwrap_err();
-    assert_eq!(err.code(), "E_KEY_UNTRUSTED");
-    assert_eq!(err.exit_code(), crate::ExitCode::TrustRequired);
-    assert_eq!(
-        err.details()["resolve"],
-        format!("jtm trust add {} --scope demo", author.public_str())
-    );
-    assert!(
-        net.requests.borrow().is_empty(),
-        "nothing is fetched before trust"
-    );
-
-    crate::trust::add_key(&f.dirs, &author.public_str(), &["demo".to_owned()], NOW).unwrap();
-    let loaded = f
-        .load_plugin(&anchors, ManifestOrigin::External, &net, refresh())
-        .unwrap();
-    assert_eq!(loaded.index.sequence, 1);
-}
-
-#[test]
 fn a_bad_keys_file_only_drops_its_delegated_keys() {
     let f = Fixture::new();
     let (root, stranger, idx) = (

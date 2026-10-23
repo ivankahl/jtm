@@ -53,10 +53,6 @@ format = 1
 [layout]
 strip_components = 1
 bin_dirs = ["bin"]
-
-[hooks]
-resolve_alias = "resolve"
-script_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 "#
     );
     Manifest::parse(&text).unwrap_or_else(|e| panic!("{e}"))
@@ -84,8 +80,7 @@ default_variant = "temurin""#,
         r#"latest = { kind = "highest" }
 lts = { kind = "index-tag", tag = "lts" }
 ea = { kind = "index-tag", tag = "ea" }
-"21" = { kind = "fixed", target = "21" }
-custom = { kind = "script" }"#,
+"21" = { kind = "fixed", target = "21" }"#,
         "",
     )
 }
@@ -163,12 +158,6 @@ fn unknown_alias_and_no_match() {
         resolve_alias(&m, "lts", "zulu", &index),
         Err(ResolveError::AliasNoMatch { .. })
     ));
-}
-
-#[test]
-fn script_aliases_are_stubbed() {
-    let err = resolve_alias(&jdk(), "custom", "temurin", &jdk_index()).unwrap_err();
-    assert!(matches!(err, ResolveError::ScriptUnsupported { .. }));
 }
 
 #[test]
@@ -251,34 +240,6 @@ rc = { kind = "index-tag", tag = "rc" }
             .version,
         "8.11-rc-2"
     );
-}
-
-#[test]
-fn script_scheme_cannot_order_versions_yet() {
-    let text = r#"
-schema = 1
-name = "demo"
-display_name = "Demo"
-[versions]
-scheme = "script"
-default_alias = "latest"
-[aliases]
-latest = { kind = "highest" }
-[index]
-url = "https://example.test/demo.json"
-signing_keys = ["RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB"]
-format = 1
-[layout]
-strip_components = 1
-bin_dirs = ["bin"]
-[hooks]
-compare_versions = "compare"
-script_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-"#;
-    let m = Manifest::parse(text).unwrap();
-    let index = [entry("default", "1", &[])];
-    let err = resolve_alias(&m, "latest", "default", &index);
-    assert!(matches!(err, Err(ResolveError::ScriptUnsupported { .. })));
 }
 
 #[test]
@@ -367,48 +328,9 @@ fn resolve_value_prefers_aliases_over_prefixes() {
 }
 
 #[test]
-fn script_schemes_still_select_exact_versions() {
-    let text = r#"
-schema = 1
-name = "demo"
-display_name = "Demo"
-[versions]
-scheme = "script"
-default_alias = "latest"
-[aliases]
-latest = { kind = "highest" }
-[index]
-url = "https://example.test/demo.json"
-signing_keys = ["RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB"]
-format = 1
-[layout]
-strip_components = 1
-bin_dirs = ["bin"]
-[hooks]
-compare_versions = "compare"
-script_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-"#;
-    let m = Manifest::parse(text).unwrap();
-    let index = [
-        entry("default", "2024.1", &[]),
-        entry("default", "2024.2", &[]),
-    ];
-    assert_eq!(
-        resolve_value(&m, "2024.2", "default", &index)
-            .unwrap()
-            .version,
-        "2024.2"
-    );
-    assert!(matches!(
-        resolve_value(&m, "2024", "default", &index),
-        Err(ResolveError::ScriptUnsupported { .. })
-    ));
-}
-
-#[test]
 fn display_order_puts_raw_versions_last() {
     let index = jdk_with_vendor_strings();
-    let order: Vec<&str> = sorted_for_display(Some(VersionScheme::Java), &index)
+    let order: Vec<&str> = sorted_for_display(VersionScheme::Java, &index)
         .iter()
         .map(|e| e.version)
         .collect();

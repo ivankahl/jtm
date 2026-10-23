@@ -21,15 +21,6 @@ bin_dirs = ["bin"]
     )
 }
 
-/// The test manifest with a `post_extract` hook whose script is `source`.
-fn with_hook(source: &str) -> String {
-    format!(
-        "{}[hooks]\npost_extract = \"post\"\nscript_sha256 = \"{}\"\n",
-        manifest("acme/widget"),
-        jtm_security::sha256_hex(source.as_bytes())
-    )
-}
-
 fn dirs() -> (tempfile::TempDir, Dirs) {
     let home = tempfile::tempdir().unwrap();
     let dirs = Dirs::resolve(Os::host().unwrap(), Some(home.path()), None, &|_| None).unwrap();
@@ -42,62 +33,49 @@ fn add(dirs: &Dirs, dir: &str, text: &str) {
     fs::write(path.join("plugin.toml"), text).unwrap();
 }
 
-#[test]
-fn finds_external_plugins_by_name() {
-    let (_home, dirs) = dirs();
-    let text = manifest("acme/widget");
-    add(&dirs, "acme--widget@abc123", &text);
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &[],
-    };
-    let plugin = registry.find("acme/widget").unwrap();
-    assert_eq!(plugin.manifest.name, "acme/widget");
-    assert_eq!(plugin.origin, ManifestOrigin::External);
-    assert_eq!(plugin.sha256, jtm_security::sha256_hex(text.as_bytes()));
-    assert_eq!(registry.names().unwrap(), ["acme/widget"]);
+fn builtin(name: &'static str, declared: &str) -> [BuiltinManifest; 1] {
+    [BuiltinManifest {
+        name,
+        text: Box::leak(manifest(declared).into_boxed_str()),
+    }]
 }
 
 #[test]
-fn builtin_manifests_win_and_are_preapproved() {
-    let (_home, dirs) = dirs();
-    add(&dirs, "demo@abc", &manifest("demo"));
-    let text: &'static str = Box::leak(manifest("demo").into_boxed_str());
-    let builtin = [BuiltinManifest {
-        name: "demo",
-        text,
-        script: None,
-    }];
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &builtin,
-    };
+fn builtin_manifests_are_found_and_preapproved() {
+    let builtin = builtin("demo", "demo");
+    let registry = Registry { builtin: &builtin };
     let plugin = registry.find("demo").unwrap();
+    assert_eq!(plugin.manifest.name, "demo");
     assert_eq!(plugin.origin, ManifestOrigin::Builtin);
-    assert_eq!(registry.names().unwrap(), ["demo"]);
+    assert_eq!(plugin.location, "builtin");
+    assert_eq!(
+        plugin.sha256,
+        jtm_security::sha256_hex(builtin[0].text.as_bytes())
+    );
+    assert_eq!(registry.names(), ["demo"]);
 }
 
+/// ADR 0002: jtm never loads a tool definition from disk, neither a third-party plugin
+/// directory nor the old builtin working copy, even when one shadows a builtin name.
 #[test]
-fn the_builtin_working_copy_is_never_read() {
+fn a_manifest_on_disk_is_never_read() {
     let (_home, dirs) = dirs();
-    let path = dirs.plugins().join("builtin").join("demo");
-    fs::create_dir_all(&path).unwrap();
-    fs::write(path.join("plugin.toml"), manifest("demo")).unwrap();
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &[],
-    };
-    assert_eq!(registry.find("demo").unwrap_err().code(), "E_TOOL_UNKNOWN");
+    add(&dirs, "acme--widget@abc123", &manifest("acme/widget"));
+    add(&dirs, "demo@abc", &manifest("demo"));
+    add(&dirs, "builtin/other", &manifest("other"));
+    let builtin = builtin("demo", "demo");
+    let registry = Registry { builtin: &builtin };
+    assert_eq!(registry.names(), ["demo"]);
+    for name in ["acme/widget", "other"] {
+        assert_eq!(registry.find(name).unwrap_err().code(), "E_TOOL_UNKNOWN");
+    }
+    assert_eq!(registry.find("demo").unwrap().location, "builtin");
 }
 
 #[test]
 fn unknown_plugins_and_mismatched_names_fail() {
-    let (_home, dirs) = dirs();
-    add(&dirs, "demo@abc", &manifest("other"));
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &[],
-    };
+    let builtin = builtin("demo", "other");
+    let registry = Registry { builtin: &builtin };
     assert_eq!(registry.find("nope").unwrap_err().code(), "E_TOOL_UNKNOWN");
     assert_eq!(
         registry.find("demo").unwrap_err().code(),
@@ -106,178 +84,16 @@ fn unknown_plugins_and_mismatched_names_fail() {
 }
 
 #[test]
-fn several_revisions_are_refused() {
-    let (_home, dirs) = dirs();
-    add(&dirs, "demo@abc", &manifest("demo"));
-    add(&dirs, "demo@def", &manifest("demo"));
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &[],
-    };
-    assert_eq!(registry.find("demo").unwrap_err().code(), "E_USAGE");
-}
-
-#[test]
-fn external_plugins_read_their_script() {
-    let (_home, dirs) = dirs();
-    let source = "function post() end";
-    add(&dirs, "acme--widget@abc123", &with_hook(source));
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &[],
-    };
-    let err = registry.find("acme/widget").unwrap_err();
+fn a_builtin_manifest_with_hooks_is_invalid() {
+    let text = format!("{}[hooks]\npost_extract = \"post\"\n", manifest("demo"));
+    let builtin = [BuiltinManifest {
+        name: "demo",
+        text: Box::leak(text.into_boxed_str()),
+    }];
+    let registry = Registry { builtin: &builtin };
+    let err = registry.find("demo").unwrap_err();
     assert_eq!(err.code(), "E_PLUGIN_INVALID");
-    assert!(err.to_string().contains("plugin.lua"), "{err}");
-
-    fs::write(
-        dirs.plugins().join("acme--widget@abc123/plugin.lua"),
-        source,
-    )
-    .unwrap();
-    let plugin = registry.find("acme/widget").unwrap();
-    assert_eq!(plugin.script.as_deref(), Some(source));
-    assert!(
-        plugin
-            .script(crate::platform::Platform::LinuxX64)
-            .unwrap()
-            .is_some()
-    );
-}
-
-#[test]
-fn a_script_that_does_not_compile_is_an_invalid_plugin() {
-    let (_home, dirs) = dirs();
-    add(&dirs, "acme--widget@abc123", &with_hook("function ("));
-    fs::write(
-        dirs.plugins().join("acme--widget@abc123/plugin.lua"),
-        "function (",
-    )
-    .unwrap();
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &[],
-    };
-    let plugin = registry.find("acme/widget").unwrap();
-    let err = plugin
-        .script(crate::platform::Platform::LinuxX64)
-        .unwrap_err();
-    assert_eq!(err.code(), "E_PLUGIN_INVALID");
-}
-
-#[test]
-fn a_script_that_is_not_utf8_or_too_large_is_an_invalid_plugin() {
-    let (_home, dirs) = dirs();
-    add(
-        &dirs,
-        "acme--widget@abc123",
-        &with_hook("function post() end"),
-    );
-    let script = dirs.plugins().join("acme--widget@abc123/plugin.lua");
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &[],
-    };
-    for bytes in [vec![0xff, 0xfe], vec![b'-'; 1024 * 1024 + 1]] {
-        fs::write(&script, bytes).unwrap();
-        let err = registry.find("acme/widget").unwrap_err();
-        assert_eq!(err.code(), "E_PLUGIN_INVALID", "{err}");
-    }
-}
-
-#[test]
-fn a_script_no_hook_names_is_never_read() {
-    let (_home, dirs) = dirs();
-    add(&dirs, "acme--widget@abc123", &manifest("acme/widget"));
-    let script = dirs.plugins().join("acme--widget@abc123/plugin.lua");
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &[],
-    };
-    for bytes in [vec![0xff, 0xfe], vec![b'-'; 1024 * 1024 + 1]] {
-        fs::write(&script, bytes).unwrap();
-        let plugin = registry.find("acme/widget").unwrap();
-        assert!(plugin.script.is_none());
-    }
-    // Nor is a `plugin.lua` that is not even a file.
-    fs::remove_file(&script).unwrap();
-    fs::create_dir(&script).unwrap();
-    assert!(registry.find("acme/widget").unwrap().script.is_none());
-}
-
-#[test]
-fn parse_reads_the_script_only_when_a_hook_is_named() {
-    let text = manifest("acme/widget");
-    let plugin = parse(
-        text.as_bytes(),
-        || panic!("the script was read although no hook is named"),
-        ManifestOrigin::External,
-        "test",
-        "acme/widget",
-    )
-    .unwrap();
-    assert!(plugin.script.is_none());
-
-    let source = "function post() end";
-    let mut reads = 0;
-    let plugin = parse(
-        with_hook(source).as_bytes(),
-        || {
-            reads += 1;
-            Ok(Some(source.to_owned()))
-        },
-        ManifestOrigin::External,
-        "test",
-        "acme/widget",
-    )
-    .unwrap();
-    assert_eq!(reads, 1);
-    assert_eq!(plugin.script.as_deref(), Some(source));
-}
-
-#[test]
-fn a_script_that_does_not_match_its_hash_is_an_invalid_plugin() {
-    let (_home, dirs) = dirs();
-    add(
-        &dirs,
-        "acme--widget@abc123",
-        &with_hook("function post() end"),
-    );
-    fs::write(
-        dirs.plugins().join("acme--widget@abc123/plugin.lua"),
-        "function post() jtm.fs.remove('bin') end",
-    )
-    .unwrap();
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &[],
-    };
-    let err = registry.find("acme/widget").unwrap_err();
-    assert_eq!(err.code(), "E_PLUGIN_INVALID");
-    assert!(err.to_string().contains("script_sha256"), "{err}");
-}
-
-#[test]
-fn a_script_no_hook_names_is_not_loaded() {
-    let (_home, dirs) = dirs();
-    add(&dirs, "acme--widget@abc123", &manifest("acme/widget"));
-    fs::write(
-        dirs.plugins().join("acme--widget@abc123/plugin.lua"),
-        "function x() end",
-    )
-    .unwrap();
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: &[],
-    };
-    let plugin = registry.find("acme/widget").unwrap();
-    assert!(plugin.script.is_none());
-    assert!(
-        plugin
-            .script(crate::platform::Platform::LinuxX64)
-            .unwrap()
-            .is_none()
-    );
+    assert!(err.to_string().contains("[hooks]"), "{err}");
 }
 
 // --- the old builtin working copy ---

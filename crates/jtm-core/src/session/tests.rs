@@ -12,6 +12,7 @@ fn list_demo(prepare: impl FnOnce(&Path)) -> Result<Vec<InstalledItem>> {
             stdin: false,
             stderr: false,
         },
+        &[],
     )
     .unwrap();
     ctx.home = Some(home.path().to_path_buf());

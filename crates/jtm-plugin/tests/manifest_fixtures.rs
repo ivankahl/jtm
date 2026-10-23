@@ -77,7 +77,6 @@ fn java_style_manifest_uses_variants_and_per_os_layout() {
     assert!(m.layout.home_subdir_for("linux").is_empty());
     assert_eq!(m.interop[0].mapping["tem"], "temurin");
     assert_eq!(m.interop[2].parser, InteropParser::SingleLine);
-    assert_eq!(m.hooks.post_extract.as_deref(), Some("fix_permissions"));
     assert_eq!(m.index.threshold(), 2);
     assert_eq!(
         m.index.keys_url.as_deref(),
@@ -137,6 +136,27 @@ fn errors_are_readable() {
     .unwrap();
     let err = Manifest::parse(&text).unwrap_err().to_string();
     assert!(err.contains("may need a newer jtm"), "{err}");
+}
+
+/// Tools are declarative only (ADR 0002), so `[hooks]` is refused even when the rest is valid.
+#[test]
+fn hooks_section_is_refused() {
+    let text = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/manifests/invalid/hooks-refused.toml"),
+    )
+    .unwrap();
+    let err = Manifest::parse(&text).unwrap_err();
+    assert_eq!(err.problems.len(), 1, "{err}");
+    assert_eq!(err.problems[0].path, "hooks");
+    assert!(err.to_string().contains("declarative only"), "{err}");
+
+    let without_hooks: String = text
+        .lines()
+        .take_while(|line| *line != "[hooks]")
+        .collect::<Vec<_>>()
+        .join("\n");
+    Manifest::parse(&without_hooks).unwrap();
 }
 
 #[test]

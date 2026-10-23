@@ -214,7 +214,7 @@ fn wrapper_files_give_the_version_url_and_hash() {
 }
 
 #[test]
-fn wrapper_files_are_read_only_and_script_interop_needs_hooks() {
+fn wrapper_files_are_read_only() {
     let m = manifest(WRAPPED);
     let w = interop(&m, "wrapped/wrapper/wrapped-wrapper.properties");
     assert!(matches!(
@@ -224,13 +224,5 @@ fn wrapper_files_are_read_only_and_script_interop_needs_hooks() {
     assert!(matches!(
         read(&m, w, ""),
         Err(InteropError::ReadOnly { .. })
-    ));
-
-    let mut scripted = manifest(JAVA);
-    scripted.interop[0].script = true;
-    scripted.interop[0].mapping.clear();
-    assert!(matches!(
-        read(&scripted, &scripted.interop[0], "java=21-tem"),
-        Err(InteropError::ScriptUnsupported { .. })
     ));
 }

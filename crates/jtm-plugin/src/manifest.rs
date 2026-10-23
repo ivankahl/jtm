@@ -22,8 +22,6 @@ pub const INDEX_FORMAT: i64 = 1;
 /// before the client read the newest release from a stable location; it always means `latest`
 /// (SPEC.md section 8).
 pub const INDEX_URL_PLACEHOLDERS: &[&str] = &["index_version", "os", "arch"];
-/// Names no plugin may use. `marketplace` is the scope of the key that signs the marketplace.
-pub const RESERVED_NAMES: &[&str] = &["marketplace"];
 /// Placeholders allowed in `[env]` values.
 pub const ENV_PLACEHOLDERS: &[&str] = &["home", "bin"];
 /// OS names allowed as keys in per-OS tables.
@@ -55,8 +53,6 @@ pub struct Manifest {
     #[serde(default)]
     pub interop: Vec<Interop>,
     #[serde(default)]
-    pub hooks: Hooks,
-    #[serde(default)]
     pub ide: Ide,
 }
 
@@ -82,18 +78,15 @@ pub enum Scheme {
     Java,
     Maven,
     SemverLoose,
-    /// Ordered by the plugin's `compare_versions` hook.
-    Script,
 }
 
 impl Scheme {
-    /// The built-in scheme, or `None` for `script`.
-    pub fn builtin(self) -> Option<VersionScheme> {
+    /// The scheme that parses and orders versions.
+    pub fn version_scheme(self) -> VersionScheme {
         match self {
-            Scheme::Java => Some(VersionScheme::Java),
-            Scheme::Maven => Some(VersionScheme::Maven),
-            Scheme::SemverLoose => Some(VersionScheme::SemverLoose),
-            Scheme::Script => None,
+            Scheme::Java => VersionScheme::Java,
+            Scheme::Maven => VersionScheme::Maven,
+            Scheme::SemverLoose => VersionScheme::SemverLoose,
         }
     }
 }
@@ -108,8 +101,6 @@ pub enum Alias {
     IndexTag { tag: String },
     /// The highest version matching the version prefix `target`.
     Fixed { target: String },
-    /// Resolved by the plugin's `resolve_alias` hook.
-    Script {},
 }
 
 /// `[index]`.
@@ -174,7 +165,7 @@ impl Layout {
 
 /// The tool home candidates for one OS, written as one path or a list of paths and tried in
 /// order: the first that is a directory inside the archive wins, and the bin dirs are checked
-/// after `post_extract`. `""` is the archive root, and a `*` segment matches any one directory
+/// once it is chosen. `""` is the archive root, and a `*` segment matches any one directory
 /// (never a link). A `*` candidate that two or more directories fit, or that matches a name
 /// outside ASCII letters, digits, `.`, `_`, `+` and `-`, fails the install.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,9 +222,6 @@ pub struct Interop {
     /// Maps text in the file to a variant, such as `tem = "temurin"`.
     #[serde(default)]
     pub mapping: BTreeMap<String, String>,
-    /// Use the `parse_interop` and `format_interop` hooks instead of `mapping`.
-    #[serde(default)]
-    pub script: bool,
     /// For `wrapper`: the distribution file name, with `{version}` where the version is and
     /// `*` for any text, such as `gradle-{version}-*.zip`.
     pub pattern: Option<String>,
@@ -256,33 +244,6 @@ pub enum InteropParser {
     /// precedence (SPEC.md section 6, rule 5). A parser rather than core code, so the core
     /// stays free of tool names.
     Wrapper,
-}
-
-/// `[hooks]`: names of `plugin.lua` functions, and the script's hash.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Hooks {
-    pub resolve_alias: Option<String>,
-    pub parse_interop: Option<String>,
-    pub format_interop: Option<String>,
-    pub compare_versions: Option<String>,
-    pub post_extract: Option<String>,
-    /// Lowercase hex SHA-256 of `plugin.lua`, required when any hook is named. The manifest's
-    /// own hash is what receipts and `jtm.lock` record, so this pins the script too.
-    pub script_sha256: Option<String>,
-}
-
-impl Hooks {
-    /// Every hook as `(key, function)`, in manifest order.
-    pub fn named(&self) -> [(&'static str, Option<&str>); 5] {
-        [
-            ("resolve_alias", self.resolve_alias.as_deref()),
-            ("parse_interop", self.parse_interop.as_deref()),
-            ("format_interop", self.format_interop.as_deref()),
-            ("compare_versions", self.compare_versions.as_deref()),
-            ("post_extract", self.post_extract.as_deref()),
-        ]
-    }
 }
 
 /// `[ide]`: how `jtm ide sync` offers this tool's installs to build tools (SPEC.md section 7).
@@ -385,7 +346,6 @@ impl Manifest {
         self.validate_env(p);
         self.validate_requires(p);
         self.validate_interop(p);
-        self.validate_hooks(p);
         if let Some(kind) = &self.ide.maven_toolchain
             && let Err((_, message)) = check_name_segment(kind, "toolchain type")
         {
@@ -396,12 +356,6 @@ impl Manifest {
     fn validate_top_level(&self, p: &mut Problems) {
         if let Err((_, message)) = check_plugin_name(&self.name) {
             p.push("name", message);
-        }
-        if RESERVED_NAMES.contains(&self.name.as_str()) {
-            p.push(
-                "name",
-                format!("`{}` is reserved and cannot name a plugin", self.name),
-            );
         }
         check_text(p, "display_name", Some(&self.display_name), 100);
         check_text(p, "description", self.description.as_deref(), 1000);
@@ -453,12 +407,6 @@ impl Manifest {
                 format!("`{alias}` is not defined in `[aliases]`"),
             );
         }
-        if versions.scheme == Scheme::Script && self.hooks.compare_versions.is_none() {
-            p.push(
-                "versions.scheme",
-                "scheme `script` needs a `hooks.compare_versions` function",
-            );
-        }
     }
 
     fn validate_aliases(&self, p: &mut Problems) {
@@ -477,20 +425,10 @@ impl Manifest {
                 Alias::Fixed { target } => {
                     if let Err((_, message)) = check_version_or_alias(target) {
                         p.push(format!("{path}.target"), message);
-                    } else if let Some(scheme) = self.versions.scheme.builtin()
-                        && let Err(err) = scheme.parse(target)
-                    {
+                    } else if let Err(err) = self.versions.scheme.version_scheme().parse(target) {
                         // A target that is not a version, such as an alias name, could never
                         // match anything.
                         p.push(format!("{path}.target"), err.to_string());
-                    }
-                }
-                Alias::Script {} => {
-                    if self.hooks.resolve_alias.is_none() {
-                        p.push(
-                            format!("{path}.kind"),
-                            "kind `script` needs a `hooks.resolve_alias` function",
-                        );
                     }
                 }
             }
@@ -657,20 +595,6 @@ impl Manifest {
                     "parser `wrapper` reads a version only and takes no mapping",
                 );
             }
-            if interop.script {
-                if !interop.mapping.is_empty() {
-                    p.push(
-                        format!("{path}.mapping"),
-                        "use either `mapping` or `script = true`, not both",
-                    );
-                }
-                if self.hooks.parse_interop.is_none() {
-                    p.push(
-                        format!("{path}.script"),
-                        "`script = true` needs a `hooks.parse_interop` function",
-                    );
-                }
-            }
             for (from, variant) in &interop.mapping {
                 let entry = format!("{path}.mapping.{}", quote_key(from));
                 if !is_interop_text(from) {
@@ -681,34 +605,6 @@ impl Manifest {
                         format!("`{variant}` is not a variant of this plugin"),
                     );
                 }
-            }
-        }
-    }
-
-    fn validate_hooks(&self, p: &mut Problems) {
-        let named = self.hooks.named().iter().any(|(_, f)| f.is_some());
-        match (&self.hooks.script_sha256, named) {
-            (None, true) => p.push(
-                "hooks.script_sha256",
-                "hooks need the SHA-256 of plugin.lua, so a changed script is detected",
-            ),
-            (Some(_), false) => p.push(
-                "hooks.script_sha256",
-                "names no hooks, so there is no plugin.lua to check",
-            ),
-            (Some(hash), true) if !is_sha256_hex(hash) => {
-                p.push("hooks.script_sha256", "must be 64 lowercase hex characters")
-            }
-            _ => {}
-        }
-        for (name, function) in self.hooks.named() {
-            if let Some(function) = function
-                && !is_lua_identifier(function)
-            {
-                p.push(
-                    format!("hooks.{name}"),
-                    format!("`{function}` is not a Lua function name"),
-                );
             }
         }
     }
@@ -810,9 +706,24 @@ fn single(path: &str, message: String, line: Option<usize>) -> ManifestError {
 }
 
 /// Reads `schema` before anything else, so a manifest written for a newer jtm says so instead
-/// of failing on fields this version does not know.
+/// of failing on fields this version does not know. Then refuses `[hooks]`: tools are
+/// declarative only, and jtm runs no plugin scripts (ADR 0002).
 fn check_schema(text: &str) -> Result<(), ManifestError> {
     let table: toml::Table = toml::from_str(text).map_err(|e| toml_error(text, &e, ""))?;
+    check_schema_version(&table)?;
+    if table.contains_key("hooks") {
+        return Err(single(
+            "hooks",
+            "`[hooks]` is not supported: tools are declarative only, and jtm runs no plugin \
+             scripts"
+                .to_owned(),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn check_schema_version(table: &toml::Table) -> Result<(), ManifestError> {
     match table.get("schema") {
         None => Err(single("schema", "missing field `schema`".to_owned(), None)),
         Some(toml::Value::Integer(SCHEMA_VERSION)) => Ok(()),
@@ -1039,18 +950,6 @@ fn reserved_env(name: &str) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-fn is_sha256_hex(text: &str) -> bool {
-    text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-fn is_lua_identifier(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    bytes
-        .next()
-        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 /// A minisign public key: base64 of `Ed`, an 8-byte key id and a 32-byte Ed25519 key.

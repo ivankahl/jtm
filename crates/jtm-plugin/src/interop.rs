@@ -48,8 +48,6 @@ pub enum InteropError {
         value: String,
         message: String,
     },
-    /// The entry uses `script = true`, which needs the plugin's Lua hooks.
-    ScriptUnsupported { file: String },
     /// Wrapper files are never written, and are read with [`read_wrapper`].
     ReadOnly { file: String },
 }
@@ -62,10 +60,6 @@ impl fmt::Display for InteropError {
                 value,
                 message,
             } => write!(f, "{file}: `{value}` {message}"),
-            InteropError::ScriptUnsupported { file } => write!(
-                f,
-                "{file}: this plugin reads it with a Lua hook, which this jtm cannot run yet"
-            ),
             InteropError::ReadOnly { file } => {
                 write!(f, "{file}: jtm reads wrapper files but never writes them")
             }
@@ -82,7 +76,6 @@ pub fn read(
     interop: &Interop,
     text: &str,
 ) -> Result<Option<InteropValue>, InteropError> {
-    check_mapped(interop)?;
     if interop.parser == InteropParser::Wrapper {
         return read_only(interop);
     }
@@ -173,7 +166,6 @@ pub fn format(
     variant: Option<&str>,
     value: &str,
 ) -> Result<String, InteropError> {
-    check_mapped(interop)?;
     let variant = variant.unwrap_or_else(|| manifest.default_variant());
     let unmappable = |message: String| InteropError::Unmappable {
         file: interop.file.clone(),
@@ -293,15 +285,6 @@ pub fn read_wrapper(interop: &Interop, text: &str) -> Result<Option<WrapperPin>,
         file_name,
         sha256,
     }))
-}
-
-fn check_mapped(interop: &Interop) -> Result<(), InteropError> {
-    if interop.script {
-        return Err(InteropError::ScriptUnsupported {
-            file: interop.file.clone(),
-        });
-    }
-    Ok(())
 }
 
 fn read_only<T>(interop: &Interop) -> Result<T, InteropError> {

@@ -85,8 +85,7 @@ pub fn apply(plugin: &str, extracted: &Path, layout: &Layout, os: Os) -> Result<
         .iter()
         .map(|c| relative(c).ok_or_else(|| mismatch(format!("`{c}` is not a relative path"))))
         .collect::<Result<Vec<_>>>()?;
-    // The first candidate that exists wins. Its bin dirs are checked after `post_extract`,
-    // which may fill them.
+    // The first candidate that exists wins. Its bin dirs are checked by `check_bin_dirs`.
     for (candidate, rel) in candidates.iter().zip(&rels) {
         if let Some(home) = find_home(plugin, &root, candidate, rel)? {
             return Ok(Placed { root, home });

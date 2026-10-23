@@ -1,9 +1,10 @@
 //! The first-party manifests in `plugins/` end to end (SPEC.md section 15).
 //!
-//! Each test copies a real manifest into a fixture home under a test name (`fp-<name>`), with
-//! its root keys swapped for a key generated here, so it is an external plugin the test can
-//! sign indices for. Everything else in the manifest is used as shipped. Indices and archives
-//! come from a local mock server; nothing touches the real network.
+//! Each test uses the compiled-in manifests as shipped. A test cannot sign with jtm's root key,
+//! so it serves each index through a `[plugins.<name>] index_url` override, signed by a key
+//! generated here that the home trusts for the tool with `jtm trust add`, the way a company
+//! re-signs a vetted index. Indices and archives come from a local mock server; the keys file
+//! the manifests name is unavailable, and nothing touches the real network.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -53,11 +54,6 @@ fn shipped(name: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// The test name of first-party plugin `name`.
-fn test_name(name: &str) -> String {
-    format!("fp-{name}")
-}
-
 impl Home {
     fn new() -> Home {
         let rt = Runtime::new().unwrap();
@@ -74,31 +70,10 @@ impl Home {
         }
     }
 
-    /// Installs the shipped manifest for `name` as `fp-<name>`, signed by the test key, with
-    /// an index of `versions` for this platform, or for `any` with `any_platform`.
+    /// Serves an index of `versions` for the compiled-in tool `name`, for this platform or
+    /// for `any` with `any_platform`, signed by the test key, which the home trusts for it.
     fn add(&mut self, name: &str, any_platform: bool, versions: &[Version<'_>]) {
-        let plugin = test_name(name);
-        let mut manifest: toml::Table = toml::from_str(&shipped(name)).unwrap();
-        manifest["name"] = plugin.clone().into();
-        let index = manifest["index"].as_table_mut().unwrap();
-        index["signing_keys"] = vec![self.key.public_str()].into();
-        index.remove("threshold");
-        index.remove("keys_url");
-        // Requirements name other first-party plugins, which carry test names here too.
-        if let Some(requires) = manifest.get_mut("requires").and_then(|r| r.as_table_mut()) {
-            *requires = requires
-                .iter()
-                .map(|(tool, req)| (test_name(tool), req.clone()))
-                .collect();
-        }
-        let dir = self
-            .home
-            .path()
-            .join("plugins")
-            .join(format!("{plugin}@test"));
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("plugin.toml"), toml::to_string(&manifest).unwrap()).unwrap();
-
+        let plugin = name.to_owned();
         let platform = if any_platform { "any" } else { &self.platform };
         let mut entries = Vec::new();
         for v in versions {
@@ -142,7 +117,7 @@ impl Home {
     fn write_config(&self) {
         let config = format!(
             "[security]\nallow_http_mirrors = true\n\n[mirrors]\n\"https://dl.example.test/\" = \
-             \"{}/dl/\"\n\n{}",
+             \"{0}/dl/\"\n\"https://github.com/jtm-dev/index/\" = \"{0}/no-keys-file/\"\n\n{1}",
             self.server.uri(),
             self.plugin_config.join("\n")
         );
@@ -203,7 +178,7 @@ impl Home {
         self.home
             .path()
             .join("tools")
-            .join(test_name(name))
+            .join(name)
             .join(format!("{variant}-{version}"))
     }
 
@@ -483,7 +458,6 @@ fn the_java_manifest_declares_variants_aliases_layout_and_interop() {
     assert_eq!(files, [".sdkmanrc", ".tool-versions", ".java-version"]);
     assert_eq!(m.index.threshold(), 1);
     assert!(m.index.keys_url.is_some());
-    assert!(m.hooks.post_extract.is_none());
 }
 
 #[test]
@@ -491,20 +465,20 @@ fn java_installs_the_lts_alias_and_each_variant() {
     let mut h = Home::new();
     with_java(&mut h);
 
-    let value = h.ok(&["install", "fp-java@lts"]);
+    let value = h.ok(&["install", "java@lts"]);
     assert_eq!(value["data"]["installed"][0]["variant"], "temurin");
     assert_eq!(value["data"]["installed"][0]["version"], "21.0.5+11");
 
     // A bare `java` is the newest GA version, never an early-access build.
-    let value = h.ok(&["install", "fp-java"]);
+    let value = h.ok(&["install", "java"]);
     assert_eq!(value["data"]["installed"][0]["version"], "23.0.1+11");
 
     let value = h.ok(&[
         "install",
-        "fp-java@corretto:21",
-        "fp-java@zulu:lts",
-        "fp-java@zulu:17",
-        "fp-java@liberica:17",
+        "java@corretto:21",
+        "java@zulu:lts",
+        "java@zulu:17",
+        "java@liberica:17",
     ]);
     assert_eq!(value["data"]["installed"][0]["version"], "21.0.5.11.1");
     assert_eq!(value["data"]["installed"][1]["version"], "11.0.25+9");
@@ -535,9 +509,9 @@ fn java_installs_the_lts_alias_and_each_variant() {
 fn java_home_points_at_the_tool_home() {
     let mut h = Home::new();
     with_java(&mut h);
-    h.ok(&["install", "fp-java@21"]);
+    h.ok(&["install", "java@21"]);
     let home = h.home.path().to_path_buf();
-    let got = exec_env(&h, &home, &["fp-java@21"], "JAVA_HOME");
+    let got = exec_env(&h, &home, &["java@21"], "JAVA_HOME");
     assert_eq!(
         PathBuf::from(got),
         java_home(h.os, &h, "temurin", "21.0.5+11")
@@ -550,9 +524,9 @@ fn java_reads_sdkmanrc_tool_versions_and_java_version() {
     with_java(&mut h);
     h.ok(&[
         "install",
-        "fp-java@temurin:21",
-        "fp-java@corretto:21",
-        "fp-java@zulu:11",
+        "java@temurin:21",
+        "java@corretto:21",
+        "java@zulu:11",
     ]);
     for (files, variant, version) in [
         (
@@ -587,7 +561,7 @@ fn java_reads_sdkmanrc_tool_versions_and_java_version() {
         ),
     ] {
         let project = h.project(&files);
-        let (code, value) = h.json(&project, &["current", "fp-java"]);
+        let (code, value) = h.json(&project, &["current", "java"]);
         assert_eq!(code, 0, "{value}");
         let item = &value["data"]["tools"][0];
         assert_eq!(item["layer"], "project", "{files:?}: {value}");
@@ -603,7 +577,7 @@ fn an_unknown_sdkman_vendor_is_an_error() {
     let mut h = Home::new();
     with_java(&mut h);
     let project = h.project(&[(".sdkmanrc", "java=21.0.5-nope\n")]);
-    let (code, value) = h.json(&project, &["current", "fp-java"]);
+    let (code, value) = h.json(&project, &["current", "java"]);
     assert_ne!(code, 0, "{value}");
     assert!(
         value["error"]["message"]
@@ -618,7 +592,7 @@ fn an_unknown_sdkman_vendor_is_an_error() {
 fn pin_writes_java_interop_files() {
     let mut h = Home::new();
     with_java(&mut h);
-    h.ok(&["install", "fp-java@corretto:21"]);
+    h.ok(&["install", "java@corretto:21"]);
     let project = h.project(&[]);
     for (format, file, expected) in [
         ("sdkmanrc", ".sdkmanrc", "java=21.0.5.11.1-amzn\n"),
@@ -631,7 +605,7 @@ fn pin_writes_java_interop_files() {
     ] {
         let (code, value) = h.json(
             &project,
-            &["pin", "fp-java@corretto:21", "--exact", "--format", format],
+            &["pin", "java@corretto:21", "--exact", "--format", format],
         );
         assert_eq!(code, 0, "{value}");
         assert_eq!(fs::read_to_string(project.join(file)).unwrap(), expected);
@@ -760,7 +734,7 @@ fn each_build_tool_installs_from_an_any_index() {
         ("kotlin", Some("KOTLIN_HOME")),
         ("spring-boot-cli", None),
     ] {
-        let spec = format!("{}@1.2.0", test_name(name));
+        let spec = format!("{}@1.2.0", name);
         let value = h.ok(&["install", &spec]);
         assert_eq!(
             value["data"]["installed"][0]["status"], "installed",
@@ -785,7 +759,7 @@ fn each_build_tool_installs_from_an_any_index() {
     }
     let maven = h.install_dir("maven", "default", "1.2.0");
     assert_eq!(
-        PathBuf::from(exec_env(&h, &home, &["fp-maven@1.2.0"], "M2_HOME")),
+        PathBuf::from(exec_env(&h, &home, &["maven@1.2.0"], "M2_HOME")),
         maven
     );
 }
@@ -804,18 +778,18 @@ fn maven_and_gradle_aliases_pick_the_right_line() {
         &[("8.10.2", &[]), ("8.11-rc-1", &["rc"]), ("7.6.4", &[])],
     );
     for (spec, version) in [
-        ("fp-maven", "3.9.9"),
-        ("fp-maven@3", "3.9.9"),
-        ("fp-maven@3.8", "3.8.8"),
-        ("fp-gradle", "8.10.2"),
-        ("fp-gradle@rc", "8.11-rc-1"),
-        ("fp-gradle@7", "7.6.4"),
+        ("maven", "3.9.9"),
+        ("maven@3", "3.9.9"),
+        ("maven@3.8", "3.8.8"),
+        ("gradle", "8.10.2"),
+        ("gradle@rc", "8.11-rc-1"),
+        ("gradle@7", "7.6.4"),
     ] {
         let value = h.ok(&["install", spec, "--dry-run"]);
         assert_eq!(value["data"]["installed"][0]["version"], version, "{spec}");
     }
     // Maven 4 has no release yet, only a release candidate.
-    let (code, value) = h.json(h.home.path(), &["install", "fp-maven@4", "--dry-run"]);
+    let (code, value) = h.json(h.home.path(), &["install", "maven@4", "--dry-run"]);
     assert_eq!(code, 3, "{value}");
 }
 
@@ -824,7 +798,7 @@ fn wrapper_files_pin_maven_and_gradle() {
     let mut h = Home::new();
     with_any(&mut h, "maven", &[("3.9.9", &[]), ("3.8.8", &[])]);
     with_any(&mut h, "gradle", &[("8.10.2", &[]), ("7.6.4", &[])]);
-    h.ok(&["install", "fp-maven@3.8.8", "fp-gradle@7.6.4"]);
+    h.ok(&["install", "maven@3.8.8", "gradle@7.6.4"]);
     let project = h.project(&[
         (
             ".mvn/wrapper/maven-wrapper.properties",
@@ -838,7 +812,7 @@ fn wrapper_files_pin_maven_and_gradle() {
     ]);
     let (code, value) = h.json(&project, &["current"]);
     assert_eq!(code, 0, "{value}");
-    for tool in ["fp-maven", "fp-gradle"] {
+    for tool in ["maven", "gradle"] {
         let item = value["data"]["tools"]
             .as_array()
             .unwrap()
@@ -869,12 +843,12 @@ fn an_unmet_java_requirement_is_a_warning() {
     with_any(&mut h, "maven", &[("3.9.9", &[])]);
     h.ok(&[
         "install",
-        "fp-java@zulu:11",
-        "fp-java@temurin:21",
-        "fp-spring-boot-cli@3.3.5",
-        "fp-maven@3.9.9",
+        "java@zulu:11",
+        "java@temurin:21",
+        "spring-boot-cli@3.3.5",
+        "maven@3.9.9",
     ]);
-    // The builtin plugins read the same pin files, so only requirement warnings count here.
+    // The keys file is unavailable here, so only requirement warnings count.
     let codes = |value: &Value| -> Vec<String> {
         value["warnings"]
             .as_array()
@@ -902,12 +876,12 @@ fn an_unmet_java_requirement_is_a_warning() {
         .as_str()
         .unwrap();
     assert!(
-        message.contains("fp-spring-boot-cli") && message.contains(">=17"),
+        message.contains("spring-boot-cli") && message.contains(">=17"),
         "{message}"
     );
 
     // `jtm exec` with a newer Java meets it, and still warns for an older one.
-    let mut base = vec!["exec", "fp-java@temurin:21", "--"];
+    let mut base = vec!["exec", "java@temurin:21", "--"];
     let print = if cfg!(windows) {
         vec!["cmd", "/c", "echo"]
     } else {
@@ -917,7 +891,7 @@ fn an_unmet_java_requirement_is_a_warning() {
     let (code, value) = h.json(&project, &base);
     assert_eq!(code, 0, "{value}");
     assert!(codes(&value).is_empty(), "{value}");
-    let mut old = vec!["exec", "fp-java@zulu:11", "--"];
+    let mut old = vec!["exec", "java@zulu:11", "--"];
     old.extend(&print);
     let (_, value) = h.json(&project, &old);
     assert_eq!(codes(&value), ["W_REQUIRES_UNMET"], "{value}");
@@ -928,31 +902,28 @@ fn an_unmet_java_requirement_is_a_warning() {
     assert!(codes(&value).is_empty(), "{value}");
 }
 
-/// Makes `fp-<name>` a user default whose installs cannot be listed: `tools/fp-<name>` becomes
+/// Makes `<name>` a user default whose installs cannot be listed: `tools/<name>` becomes
 /// a file. The defaults file is written directly, so no link or junction points into it.
 fn break_default(h: &Home, name: &str, selector: &str) {
     let state = h.home.path().join("state");
     fs::create_dir_all(&state).unwrap();
     fs::write(
         state.join("defaults.toml"),
-        format!("[defaults]\n{} = \"{selector}\"\n", test_name(name)),
+        format!("[defaults]\n{} = \"{selector}\"\n", name),
     )
     .unwrap();
     let tools = h.home.path().join("tools");
     fs::create_dir_all(&tools).unwrap();
-    fs::write(tools.join(test_name(name)), "not a directory").unwrap();
+    fs::write(tools.join(name), "not a directory").unwrap();
 }
 
-/// Asserts that `value` is a failure because the installs of `fp-<name>` cannot be read.
+/// Asserts that `value` is a failure because the installs of `<name>` cannot be read.
 fn assert_unreadable(code: i32, value: &Value, name: &str, args: &[&str]) {
     assert_eq!(code, 4, "{args:?}: {value}");
     assert_eq!(value["ok"], false, "{args:?}: {value}");
     assert_eq!(value["error"]["code"], "E_IO", "{args:?}: {value}");
     assert!(
-        value["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains(&test_name(name)),
+        value["error"]["message"].as_str().unwrap().contains(name),
         "{args:?}: {value}"
     );
 }
@@ -974,9 +945,9 @@ fn a_requiring_tool_whose_installs_cannot_be_read_fails_the_command() {
     with_any(&mut h, "kotlin", &[("2.0.21", &[])]);
     h.ok(&[
         "install",
-        "fp-java@zulu:11",
-        "fp-java@temurin:21",
-        "fp-spring-boot-cli@3.3.5",
+        "java@zulu:11",
+        "java@temurin:21",
+        "spring-boot-cli@3.3.5",
     ]);
     // Kotlin has requirements of its own, and only the defaults set it.
     break_default(&h, "kotlin", "2.0");
@@ -984,14 +955,14 @@ fn a_requiring_tool_whose_installs_cannot_be_read_fails_the_command() {
 
     // jtm cannot tell which Kotlin is active, so it fails rather than check the other
     // requirements without it or show Kotlin as not installed.
-    let mut exec = vec!["exec", "fp-java@temurin:21", "--"];
+    let mut exec = vec!["exec", "java@temurin:21", "--"];
     exec.extend(noop());
     for args in [
         vec!["current"],
-        vec!["current", "fp-kotlin"],
+        vec!["current", "kotlin"],
         vec!["env"],
         vec!["hook-env", "--shell", "bash"],
-        vec!["use", "fp-java@zulu:11"],
+        vec!["use", "java@zulu:11"],
         exec,
     ] {
         let (code, value) = h.json(&project, &args);
@@ -1019,18 +990,18 @@ fn a_required_tool_whose_installs_cannot_be_read_fails_the_command() {
     let mut h = Home::new();
     with_java(&mut h);
     with_any(&mut h, "spring-boot-cli", &[("3.3.5", &[])]);
-    h.ok(&["install", "fp-spring-boot-cli@3.3.5"]);
+    h.ok(&["install", "spring-boot-cli@3.3.5"]);
     // The Java that Spring Boot CLI needs comes from the defaults, and cannot be read.
     break_default(&h, "java", "zulu:11");
     let project = h.project(&[(".sdkmanrc", "springboot=3.3.5\n")]);
 
-    let mut exec = vec!["exec", "fp-spring-boot-cli@3.3.5", "--"];
+    let mut exec = vec!["exec", "spring-boot-cli@3.3.5", "--"];
     exec.extend(noop());
     for args in [
         vec!["current"],
         vec!["env"],
         vec!["hook-env", "--shell", "bash"],
-        vec!["use", "fp-spring-boot-cli@3.3.5"],
+        vec!["use", "spring-boot-cli@3.3.5"],
         exec,
     ] {
         let (code, value) = h.json(&project, &args);
@@ -1151,7 +1122,7 @@ fn mvn_runs_with_the_pinned_java() {
     let project = h.project(&[(
         ".jtm.toml",
         &format!(
-            "[tools]\nfp-java = \"temurin:21.0.0+1\"\nfp-maven = \"3.9.0\"\n\n[lock]\n\
+            "[tools]\njava = \"temurin:21.0.0+1\"\nmaven = \"3.9.0\"\n\n[lock]\n\
              platforms = [\"{}\"]\n",
             h.platform
         ),
@@ -1169,7 +1140,7 @@ fn mvn_runs_with_the_pinned_java() {
         .find(|l| l.contains("Java home") || l.contains("runtime:"))
         .unwrap_or_else(|| panic!("no Java home in {stdout}"));
     let expected = Path::new("tools")
-        .join("fp-java")
+        .join("java")
         .join("temurin-21.0.0+1")
         .display()
         .to_string();
@@ -1185,13 +1156,13 @@ fn mvn_runs_with_the_pinned_java() {
 fn which_finds_any_command_in_the_active_bin_dirs() {
     let mut h = Home::new();
     with_java(&mut h);
-    h.ok(&["install", "fp-java@21"]);
+    h.ok(&["install", "java@21"]);
     let project = h.project(&[(".java-version", "21\n")]);
     // `jshell` is in no manifest; it is found because it is in the active JDK's bin dir.
     let (code, value) = h.json(&project, &["which", "jshell"]);
     assert_eq!(code, 0, "{value}");
     let item = &value["data"];
-    assert_eq!(item["tool"], "fp-java", "{value}");
+    assert_eq!(item["tool"], "java", "{value}");
     assert_eq!(item["layer"], "project", "{value}");
     let bin = java_home(h.os, &h, "temurin", "21.0.5+11").join("bin");
     assert!(

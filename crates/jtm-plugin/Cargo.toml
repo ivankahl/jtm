@@ -1,6 +1,6 @@
 [package]
 name = "jtm-plugin"
-description = "Manifest schema, version schemes, aliases, interop parsers and Luau sandbox for jtm."
+description = "Manifest schema, version schemes, aliases and interop parsers for jtm."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,11 +10,7 @@ authors.workspace = true
 
 [dependencies]
 base64.workspace = true
-jtm-archive.workspace = true
-mlua.workspace = true
-regex.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 serde_path_to_error.workspace = true
 thiserror.workspace = true
 toml.workspace = true
@@ -24,4 +20,3 @@ workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-tempfile.workspace = true

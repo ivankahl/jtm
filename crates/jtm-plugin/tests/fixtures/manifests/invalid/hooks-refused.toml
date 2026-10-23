@@ -1,13 +1,11 @@
-# expect: name
+# expect: hooks
 schema = 1
-name = "marketplace"
+name = "demo"
 display_name = "Demo Tool"
 homepage = "https://example.test"
 
 [versions]
 scheme = "semver-loose"
-variants = ["alpha-build", "beta-build"]
-default_variant = "alpha-build"
 default_alias = "latest"
 
 [aliases]
@@ -22,5 +20,6 @@ format = 1
 strip_components = 1
 bin_dirs = ["bin"]
 
-[env]
-DEMO_HOME = "{home}"
+[hooks]
+post_extract = "fix_permissions"
+script_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

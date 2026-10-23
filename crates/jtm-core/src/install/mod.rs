@@ -19,7 +19,6 @@ use std::time::Duration;
 use jtm_fetch::mirrors::Location;
 use jtm_fetch::{Artifact, Client, DownloadCache, Downloaded};
 use jtm_plugin::Manifest;
-use jtm_plugin::script::{PostExtract, Script};
 use jtm_security::{IndexEntry, Timestamp};
 use serde::Serialize;
 
@@ -100,9 +99,6 @@ pub struct InstallRequest<'a> {
     pub index_sequence: u64,
     /// Reinstall even when a matching receipt exists.
     pub force: bool,
-    /// The plugin's `plugin.lua`, which must be given when the manifest names a
-    /// `post_extract` hook.
-    pub script: Option<&'a Script>,
 }
 
 /// What happened, or with a dry run would happen, to one version.
@@ -218,16 +214,6 @@ pub fn install(
     {
         return Ok(installed);
     }
-    let post_extract = match (&manifest.hooks.post_extract, request.script) {
-        (Some(function), Some(script)) => Some((function.as_str(), script)),
-        (Some(_), None) => {
-            return Err(JtmError::internal(format!(
-                "installing `{plugin}` needs its post_extract hook, but no plugin.lua was given"
-            )));
-        }
-        (None, _) => None,
-    };
-
     let _lock = id.lock(dirs)?;
     // Whoever held the lock may have just installed this version.
     if !request.force
@@ -258,19 +244,6 @@ pub fn install(
 
     let os = request.platform.os();
     let placed = layout::apply(plugin, tmp.path(), &manifest.layout, os)?;
-    if let Some((function, script)) = post_extract {
-        // Confined to the directory that becomes the install dir; it only appears through
-        // the rename in `commit`, so a failed hook leaves nothing behind.
-        let home = receipt::home_string(&placed.home);
-        let context = PostExtract {
-            variant: &entry.variant,
-            version: &entry.version,
-            home: &home,
-        };
-        script
-            .post_extract(function, &placed.root, &context)
-            .map_err(|e| JtmError::script(plugin, e))?;
-    }
     layout::check_bin_dirs(plugin, &placed, &manifest.layout)?;
 
     let receipt = Receipt {

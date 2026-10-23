@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Compiles in the `demo` plugin of jtm-cli's end-to-end tests. Never enabled in a release.
+test-plugins = []
+
 [dependencies]
 jtm-archive.workspace = true
 jtm-fetch.workspace = true

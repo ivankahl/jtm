@@ -1,8 +1,9 @@
 //! Embeds the first-party plugins in `plugins/` (SPEC.md section 15).
 //!
-//! Each directory `plugins/<name>/` becomes one `BuiltinManifest` with its `plugin.toml` and
-//! any `plugin.lua`, so adding a first-party plugin needs no code change and no tool name
-//! appears in the source. The generated list is included by `src/builtin.rs`.
+//! Each directory `plugins/<name>/` becomes one `BuiltinManifest` with its `plugin.toml`, so
+//! adding a first-party plugin needs no code change and no tool name appears in the source.
+//! Plugins are declarative only (ADR 0002), so a `plugin.lua` fails the build. The generated
+//! list is included by `src/builtin.rs`.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -32,15 +33,15 @@ fn main() {
         let dir = plugins.join(name);
         let toml = dir.join("plugin.toml");
         let lua = dir.join("plugin.lua");
-        let script = if lua.is_file() {
-            format!("Some(include_str!({:?}))", lua.display().to_string())
-        } else {
-            "None".to_owned()
-        };
+        if lua.exists() {
+            fail(&format!(
+                "{} is not supported: plugins are declarative only",
+                lua.display()
+            ));
+        }
         let _ = writeln!(
             code,
-            "    jtm_core::plugins::BuiltinManifest {{ name: {name:?}, text: include_str!({:?}), \
-             script: {script} }},",
+            "    jtm_core::plugins::BuiltinManifest {{ name: {name:?}, text: include_str!({:?}) }},",
             toml.display().to_string()
         );
     }

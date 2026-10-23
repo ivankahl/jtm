@@ -125,7 +125,6 @@ pub(crate) fn doctor(ctx: &Context) -> Result<Report> {
     let cwd = std::env::current_dir().ok();
     let config = load_config(&dirs, cwd.as_deref(), &|key| std::env::var_os(key))?;
     let registry = Registry {
-        dirs: &dirs,
         builtin: ctx.builtin,
     };
     let env = |key: &str| std::env::var_os(key).map(|v| v.to_string_lossy().into_owned());
@@ -142,10 +141,6 @@ pub(crate) fn doctor(ctx: &Context) -> Result<Report> {
         env: &env,
         now: Timestamp::now(),
         prober: None,
-        // SPEC-QUESTION: section 16 says doctor reads `marketplace.json` when it can fetch it.
-        // The signed marketplace client arrives with T9.2, so until then the yanked check is
-        // skipped and says so rather than guessing.
-        marketplace: None,
     };
     Ok(run(&inputs, hook))
 }
@@ -168,7 +163,6 @@ fn pinned_tools(registry: &Registry<'_>, cwd: Option<&std::path::Path>) -> Vec<S
     };
     let plugins: Vec<_> = registry
         .names()
-        .unwrap_or_default()
         .iter()
         .filter_map(|name| registry.find(name).ok())
         .collect();

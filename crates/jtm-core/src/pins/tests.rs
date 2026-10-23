@@ -14,10 +14,9 @@ fn plugin(text: &str) -> Plugin {
     Plugin {
         manifest: Manifest::parse(text).unwrap_or_else(|e| panic!("{e}")),
         sha256: String::new(),
-        origin: ManifestOrigin::External,
+        origin: ManifestOrigin::Builtin,
         location: "test".to_owned(),
         text: String::new(),
-        script: None,
     }
 }
 
