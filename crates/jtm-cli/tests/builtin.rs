@@ -1,5 +1,4 @@
-//! The first-party manifests compiled into jtm and their `plugins/builtin` working copy
-//! (SPEC.md sections 9, 14 and 15).
+//! The first-party manifests compiled into jtm (SPEC.md sections 9, 14 and 15).
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -22,7 +21,7 @@ fn shipped(name: &str) -> String {
     fs::read_to_string(path).unwrap()
 }
 
-fn working_copy(f: &Fixture) -> PathBuf {
+fn old_working_copy(f: &Fixture) -> PathBuf {
     f.home.path().join("plugins").join("builtin")
 }
 
@@ -42,66 +41,59 @@ fn every_first_party_plugin_is_available_without_installing_anything() {
     }
 }
 
-#[test]
-fn the_working_copy_is_unpacked_and_repaired_from_the_binary() {
-    let f = Fixture::new(false);
-    let (code, value) = f.json(&["list"]);
-    assert_eq!(code, 0, "{value}");
-    let copy = working_copy(&f);
-    for name in FIRST_PARTY {
-        let text = fs::read_to_string(copy.join(name).join("plugin.toml")).unwrap();
-        assert_eq!(text, shipped(name), "{name}");
-    }
-
-    // Edited, deleted and extra files are all put back as the binary has them.
-    fs::write(copy.join("java").join("plugin.toml"), "edited").unwrap();
-    fs::remove_file(copy.join("maven").join("plugin.toml")).unwrap();
-    fs::write(copy.join("kotlin").join("plugin.lua"), "function x() end").unwrap();
-    fs::create_dir_all(copy.join("stale")).unwrap();
-    fs::write(copy.join("stale").join("plugin.toml"), "stale").unwrap();
-    let (code, value) = f.json(&["list"]);
-    assert_eq!(code, 0, "{value}");
-    for name in FIRST_PARTY {
-        let text = fs::read_to_string(copy.join(name).join("plugin.toml")).unwrap();
-        assert_eq!(text, shipped(name), "{name}");
-    }
-    assert!(!copy.join("kotlin").join("plugin.lua").exists());
-    assert!(!copy.join("stale").exists());
+/// What is in `<data>/plugins`, which holds only the fixture's own external plugin.
+fn plugins_dir(f: &Fixture) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(f.home.path().join("plugins"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
 }
 
-#[cfg(unix)]
 #[test]
-fn repairing_the_working_copy_never_writes_through_a_link() {
+fn no_command_writes_under_the_plugins_dir() {
     let f = Fixture::new(false);
-    f.json(&["list"]);
-    let outside = tempfile::tempdir().unwrap();
-    let victim = outside.path().join("victim");
-    fs::write(&victim, "keep").unwrap();
-    let manifest = working_copy(&f).join("java").join("plugin.toml");
-    fs::remove_file(&manifest).unwrap();
-    std::os::unix::fs::symlink(&victim, &manifest).unwrap();
+    let before = plugins_dir(&f);
+    for args in [&["list"][..], &["current"], &["available", "java"]] {
+        f.json(args);
+    }
+    assert_eq!(plugins_dir(&f), before);
+}
+
+/// Older versions unpacked the manifests to `<data>/plugins/builtin`; the first command that
+/// opens a session removes that copy, with the lock its repair took.
+#[test]
+fn an_old_working_copy_is_removed() {
+    let f = Fixture::new(false);
+    let copy = old_working_copy(&f);
+    fs::create_dir_all(copy.join("java")).unwrap();
+    fs::write(copy.join("java").join("plugin.toml"), shipped("java")).unwrap();
+    let lock = f
+        .home
+        .path()
+        .join("locks")
+        .join(".builtin-working-copy.lock");
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    fs::write(&lock, "").unwrap();
 
     let (code, value) = f.json(&["list"]);
     assert_eq!(code, 0, "{value}");
-    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
-    assert!(
-        !fs::symlink_metadata(&manifest)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-    assert_eq!(fs::read_to_string(&manifest).unwrap(), shipped("java"));
+    assert!(!copy.exists());
+    assert!(!lock.exists());
+    assert_eq!(plugins_dir(&f), ["demo@0123abc"]);
 }
 
-/// SPEC.md section 9: a tampered working copy never changes a trust decision. The copy's java
-/// manifest is rewritten to trust an attacker's key, and the attacker serves an index signed
-/// by it; jtm still verifies against the compiled-in anchors and refuses it.
+/// SPEC.md section 9: a manifest on disk never changes a trust decision. A java manifest that
+/// trusts an attacker's key is dropped in the old working copy and as an external plugin, and
+/// the attacker serves an index signed by it; jtm still verifies against the compiled-in anchors
+/// and refuses it.
 #[test]
-fn a_tampered_working_copy_never_changes_a_trust_decision() {
+fn a_tampered_manifest_on_disk_never_changes_a_trust_decision() {
     let f = Fixture::new(false);
-    f.json(&["list"]);
     let attacker = TestKey::generate();
-    let manifest = working_copy(&f).join("java").join("plugin.toml");
+    let manifest = old_working_copy(&f).join("java").join("plugin.toml");
+    fs::create_dir_all(manifest.parent().unwrap()).unwrap();
     let mut table: toml::Table = toml::from_str(&shipped("java")).unwrap();
     let index = table["index"].as_table_mut().unwrap();
     index["signing_keys"] = vec![attacker.public_str()].into();
@@ -156,6 +148,6 @@ fn a_tampered_working_copy_never_changes_a_trust_decision() {
         "{value}"
     );
     assert!(!f.home.path().join("tools").join("java").exists());
-    // And the copy is repaired again by that same run.
-    assert_eq!(fs::read_to_string(&manifest).unwrap(), shipped("java"));
+    // And the old copy is gone after that same run.
+    assert!(!manifest.exists());
 }
