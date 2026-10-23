@@ -145,14 +145,13 @@ impl Dirs {
         self.data.join("plugins")
     }
 
-    /// `<data>/plugins/builtin-<key>`, the first-party manifests unpacked from a binary whose
-    /// embedded set has the key `key` (see `plugins::working_copy_key`).
+    /// `<data>/plugins/builtin`, first-party manifests unpacked from the binary.
     ///
     /// A working copy for display and hooks only: the compiled-in manifests are authoritative,
     /// trust decisions never read this directory, and a mismatch is repaired from the binary
     /// and reported by `jtm doctor`.
-    pub fn builtin_plugins(&self, key: &str) -> PathBuf {
-        self.plugins().join(format!("builtin-{key}"))
+    pub fn builtin_plugins(&self) -> PathBuf {
+        self.plugins().join("builtin")
     }
 
     /// `<data>/state`: trust store, defaults and the shell hook cache.

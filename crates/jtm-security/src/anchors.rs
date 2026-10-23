@@ -15,8 +15,8 @@
 //! Pre-approval is provenance, never file contents: [`TrustAnchors::preapproved`] must only be
 //! called for anchors that ship inside the jtm binary. A signature checked inside the same
 //! binary cannot protect the binary's own data, so nothing read from disk (including the
-//! unpacked `plugins/builtin-<key>` working copies), the marketplace or the network may take
-//! this path; that is what [`TrustAnchors::confirmed`] is for.
+//! unpacked `plugins/builtin` working copy), the marketplace or the network may take this path;
+//! that is what [`TrustAnchors::confirmed`] is for.
 
 use crate::error::{Error, Result};
 use crate::key::{KeyGroup, Keyring, PublicKey, Scope, TrustedKey};

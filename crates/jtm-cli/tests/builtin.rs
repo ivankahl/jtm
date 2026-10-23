@@ -1,5 +1,5 @@
-//! The first-party manifests compiled into jtm and their `plugins/builtin-<key>` working copy
-//! (SPEC.md sections 7, 9, 14 and 15).
+//! The first-party manifests compiled into jtm and their `plugins/builtin` working copy
+//! (SPEC.md sections 9, 14 and 15).
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -7,7 +7,6 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
 
 use common::Fixture;
 use jtm_security::testing::TestKey;
@@ -23,44 +22,8 @@ fn shipped(name: &str) -> String {
     fs::read_to_string(path).unwrap()
 }
 
-/// The working copies in the fixture's `plugins` directory.
-fn working_copies(f: &Fixture) -> Vec<PathBuf> {
-    let mut copies: Vec<PathBuf> = fs::read_dir(f.home.path().join("plugins"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("builtin-")
-        })
-        .collect();
-    copies.sort();
-    copies
-}
-
-/// The working copy of this binary's embedded set, once a command has unpacked it.
 fn working_copy(f: &Fixture) -> PathBuf {
-    let copies = working_copies(f);
-    assert_eq!(copies.len(), 1, "{copies:?}");
-    copies[0].clone()
-}
-
-/// Plants the working copy of another embedded set, last used `days` ago.
-fn plant_copy(f: &Fixture, key: &str, days: u64) -> PathBuf {
-    let copy = f.home.path().join("plugins").join(format!("builtin-{key}"));
-    fs::create_dir_all(copy.join("java")).unwrap();
-    fs::write(copy.join("java").join("plugin.toml"), "another set").unwrap();
-    let marker = copy.join(".last-used");
-    fs::write(&marker, "").unwrap();
-    let used = SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60);
-    fs::OpenOptions::new()
-        .write(true)
-        .open(&marker)
-        .unwrap()
-        .set_modified(used)
-        .unwrap();
-    copy
+    f.home.path().join("plugins").join("builtin")
 }
 
 #[test]
@@ -195,31 +158,4 @@ fn a_tampered_working_copy_never_changes_a_trust_decision() {
     assert!(!f.home.path().join("tools").join("java").exists());
     // And the copy is repaired again by that same run.
     assert_eq!(fs::read_to_string(&manifest).unwrap(), shipped("java"));
-}
-
-#[test]
-fn another_sets_copy_in_use_is_left_alone_and_a_stale_one_is_removed() {
-    let f = Fixture::new(false);
-    let (code, value) = f.json(&["list"]);
-    assert_eq!(code, 0, "{value}");
-    let ours = working_copy(&f);
-    let in_use = plant_copy(&f, "0123456789abcdef", 1);
-    let stale = plant_copy(&f, "fedcba9876543210", 31);
-
-    for _ in 0..2 {
-        let (code, value) = f.json(&["list"]);
-        assert_eq!(code, 0, "{value}");
-    }
-    assert_eq!(
-        fs::read_to_string(in_use.join("java").join("plugin.toml")).unwrap(),
-        "another set"
-    );
-    assert!(!stale.exists());
-    let mut expected = vec![in_use, ours.clone()];
-    expected.sort();
-    assert_eq!(working_copies(&f), expected);
-    for name in FIRST_PARTY {
-        let text = fs::read_to_string(ours.join(name).join("plugin.toml")).unwrap();
-        assert_eq!(text, shipped(name), "{name}");
-    }
 }
