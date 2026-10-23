@@ -12,6 +12,7 @@ mod project;
 mod prompt;
 mod setup;
 mod shell;
+mod snapshot;
 mod sync;
 mod tools;
 mod trust;
@@ -74,6 +75,7 @@ fn main() -> ExitCode {
     let ctx = match Context::resolve(&flags, |key| std::env::var_os(key), terminal) {
         Ok(ctx) => Context {
             builtin: builtin::MANIFESTS,
+            snapshot: snapshot::SNAPSHOT,
             ..ctx
         },
         Err(err) => return fail(&mut renderer, "jtm", &err),

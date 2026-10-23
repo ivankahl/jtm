@@ -7,6 +7,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::error::{JtmError, Result};
+use crate::indices::Snapshot;
 use crate::plugins::BuiltinManifest;
 
 /// The global flags as typed on the command line, before any environment is consulted.
@@ -77,6 +78,9 @@ pub struct Context {
     /// The plugin manifests compiled into this binary. Only these have pre-approved anchors;
     /// [`Context::resolve`] leaves it empty, and the binary sets it.
     pub builtin: &'static [BuiltinManifest],
+    /// The signed indices and keys files compiled into this binary, verified on load like any
+    /// other copy. [`Context::resolve`] leaves it empty, and the binary sets it.
+    pub snapshot: Snapshot,
 }
 
 const DEFAULT_LOG_FILTER: &str = "warn";
@@ -140,6 +144,7 @@ impl Context {
             use_lockfile: !flags.no_lock,
             ci,
             builtin: &[],
+            snapshot: Snapshot::default(),
         })
     }
 }

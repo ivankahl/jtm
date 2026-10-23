@@ -64,7 +64,7 @@ pub struct PluginKeys<'a> {
 }
 
 /// A signed keys file compiled into the binary, identified by its URL.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedKeysFile {
     pub url: &'static str,
     pub data: &'static [u8],
@@ -86,12 +86,38 @@ impl Fetcher for jtm_fetch::Client {
 }
 
 /// A signed index compiled into the binary.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedIndex {
     pub plugin: &'static str,
     pub platform: &'static str,
     pub data: &'static [u8],
     pub signature: &'static [u8],
+}
+
+/// The signed indices and keys files compiled into the binary (SPEC.md section 8). Each copy
+/// is verified on every load like a cached or downloaded one, so the snapshot only adds
+/// copies to choose from and never widens trust. A build without one leaves it empty.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    pub indices: &'static [EmbeddedIndex],
+    pub keys: &'static [EmbeddedKeysFile],
+}
+
+impl std::fmt::Debug for Snapshot {
+    // The files are large; a debug log of the context names them without their bytes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Snapshot")
+            .field(
+                "indices",
+                &self
+                    .indices
+                    .iter()
+                    .map(|i| format!("{}/{}", i.plugin, i.platform))
+                    .collect::<Vec<_>>(),
+            )
+            .field("keys", &self.keys.iter().map(|k| k.url).collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 /// Where one plugin's index for one platform can be found.

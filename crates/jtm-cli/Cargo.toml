@@ -23,6 +23,9 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[build-dependencies]
+toml.workspace = true
+
 [dev-dependencies]
 flate2.workspace = true
 jtm-archive = { workspace = true, features = ["testing"] }
