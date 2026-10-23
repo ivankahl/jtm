@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use jtm_core::dirs::Dirs;
 use jtm_core::indices::ManifestOrigin;
-use jtm_core::platform::Os;
 use jtm_core::plugins::Registry;
 
 use super::*;
@@ -23,18 +21,7 @@ fn every_plugin_directory_is_embedded() {
 
 #[test]
 fn every_embedded_manifest_is_valid_builtin_and_named_after_its_directory() {
-    let home = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    let dirs = Dirs::resolve(
-        Os::host().unwrap_or(Os::Linux),
-        Some(home.path()),
-        None,
-        &|_| None,
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    let registry = Registry {
-        dirs: &dirs,
-        builtin: MANIFESTS,
-    };
+    let registry = Registry { builtin: MANIFESTS };
     for embedded in MANIFESTS {
         let plugin = registry
             .find(embedded.name)

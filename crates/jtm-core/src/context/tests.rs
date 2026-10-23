@@ -11,7 +11,7 @@ fn resolve(flags: GlobalFlags, vars: &[(&str, &str)], terminal: Terminal) -> Res
         .iter()
         .map(|(k, v)| ((*k).to_owned(), OsString::from(v)))
         .collect();
-    Context::resolve(&flags, |key| vars.get(key).cloned(), terminal)
+    Context::resolve(&flags, |key| vars.get(key).cloned(), terminal, &[])
 }
 
 fn ok(flags: GlobalFlags, vars: &[(&str, &str)]) -> Context {

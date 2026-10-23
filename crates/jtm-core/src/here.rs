@@ -341,7 +341,7 @@ impl<'s, 'c> Here<'s, 'c> {
 /// Whether `version` meets every clause of `requirement` under `manifest`'s scheme; `None`
 /// when that cannot be decided, such as for a version the scheme cannot parse.
 fn meets(manifest: &jtm_plugin::Manifest, version: &str, requirement: &str) -> Option<bool> {
-    let scheme = manifest.versions.scheme.builtin()?;
+    let scheme = manifest.versions.scheme.version_scheme();
     let have = scheme.parse(version).ok()?;
     for (op, wanted) in jtm_plugin::manifest::parse_requirement(requirement).ok()? {
         if !op.holds(have.cmp_precedence(&scheme.parse(&wanted).ok()?)) {

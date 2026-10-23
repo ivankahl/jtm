@@ -304,7 +304,7 @@ fn cause_of(err: &JtmError) -> String {
 fn hosts(inputs: &Inputs<'_>) -> Vec<String> {
     let settings = inputs.settings;
     let mut found = BTreeSet::new();
-    for name in inputs.registry.names().unwrap_or_default() {
+    for name in inputs.registry.names() {
         let Ok(plugin) = inputs.registry.find(&name) else {
             continue;
         };

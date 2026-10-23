@@ -1,5 +1,6 @@
-//! A fixture jtm home for end-to-end tests: a plugin, an index signed by a key generated here,
-//! and archives served by a local mock server reached through `[mirrors]`. Nothing touches the
+//! A fixture jtm home for end-to-end tests: an index for the compiled-in test plugin `demo`
+//! (`jtm-core/test-plugins/demo.toml`) signed by a key generated here, and archives served by a
+//! local mock server reached through `[mirrors]`. Nothing touches the
 //! real network.
 
 #![allow(clippy::unwrap_used, clippy::panic, dead_code, unreachable_pub)]
@@ -14,6 +15,9 @@ use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// The signing key in `jtm-core/test-plugins/demo.toml`. Nobody holds its secret key.
+pub const DEMO_ANCHOR: &str = "RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB";
 
 pub const VERSIONS: &[&str] = &["1.0.0", "1.1.0", "2.0.0-rc-1"];
 
@@ -37,7 +41,8 @@ pub fn archive(version: &str) -> Vec<u8> {
 }
 
 impl Fixture {
-    /// A home with the `demo` plugin installed and an index serving [`VERSIONS`]. With
+    /// A home with an index serving [`VERSIONS`] for the `demo` plugin; [`Fixture::trust`]
+    /// trusts the key that signs it. With
     /// `tamper`, the server sends different bytes than the index promises for `1.0.0`.
     pub fn new(tamper: bool) -> Fixture {
         Fixture::with_key(tamper, Arc::new(TestKey::generate()))
@@ -61,7 +66,6 @@ impl Fixture {
             key,
             platform,
         };
-        f.write_plugin();
         f.write_config();
 
         for version in VERSIONS {
@@ -143,42 +147,6 @@ impl Fixture {
              \"https://dl.example.test/\" = \"{root}/dl.example.test/\"\n"
         );
         std::fs::write(self.home.path().join("config.toml"), config).unwrap();
-    }
-
-    pub fn write_plugin(&self) {
-        let dir = self.home.path().join("plugins").join("demo@0123abc");
-        std::fs::create_dir_all(&dir).unwrap();
-        let manifest = format!(
-            r#"schema = 1
-name = "demo"
-display_name = "Demo"
-
-[versions]
-scheme = "semver-loose"
-default_alias = "latest"
-
-[aliases]
-latest = {{ kind = "highest" }}
-rc = {{ kind = "index-tag", tag = "rc" }}
-
-[index]
-url = "https://index.example.test/demo-{{os}}-{{arch}}.json"
-signing_keys = ["{}"]
-format = 1
-
-[layout]
-bin_dirs = ["bin"]
-
-[env]
-DEMO_HOME = "{{home}}"
-
-[ide]
-maven_toolchain = "jdk"
-gradle_installations = true
-"#,
-            self.key.public_str()
-        );
-        std::fs::write(dir.join("plugin.toml"), manifest).unwrap();
     }
 
     pub fn write_config(&self) {

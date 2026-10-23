@@ -36,19 +36,6 @@ fn json_in(f: &Fixture, dir: &Path, args: &[&str]) -> (i32, Value) {
     )
 }
 
-/// Adds an sdkmanrc interop entry to the fixture plugin.
-fn with_sdkmanrc(f: &Fixture) {
-    let path = f
-        .home
-        .path()
-        .join("plugins")
-        .join("demo@0123abc")
-        .join("plugin.toml");
-    let mut text = fs::read_to_string(&path).unwrap();
-    text.push_str("\n[[interop]]\nfile = \".sdkmanrc\"\nparser = \"keyvalue\"\nkey = \"demo\"\n");
-    fs::write(path, text).unwrap();
-}
-
 #[test]
 fn pin_writes_jtm_toml_and_is_idempotent() {
     let f = ready();
@@ -87,7 +74,6 @@ fn pin_exact_and_dry_run() {
 #[test]
 fn pin_format_writes_the_chosen_file() {
     let f = ready();
-    with_sdkmanrc(&f);
     let project = tempfile::tempdir().unwrap();
     fs::write(project.path().join(".sdkmanrc"), "# keep me\nother=1\n").unwrap();
     let (code, value) = json_in(
@@ -131,7 +117,6 @@ fn pin_needs_a_version_and_a_known_tool() {
 #[test]
 fn unpin_removes_the_pin() {
     let f = ready();
-    with_sdkmanrc(&f);
     let project = tempfile::tempdir().unwrap();
     fs::write(
         project.path().join(".jtm.toml"),
@@ -350,7 +335,6 @@ fn activation_uses_the_locked_version() {
 #[test]
 fn conflicts_name_both_files_and_the_winner_in_json() {
     let f = ready();
-    with_sdkmanrc(&f);
     let project = tempfile::tempdir().unwrap();
     fs::write(
         project.path().join(".jtm.toml"),

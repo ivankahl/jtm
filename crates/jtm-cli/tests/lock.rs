@@ -90,9 +90,10 @@ fn lock_writes_every_platform_that_has_the_version() {
     );
     let plugin = &value["plugin"][0];
     assert_eq!(plugin["name"].as_str(), Some("demo"));
+    // The anchors of the compiled-in manifest, not the key the test trusts to re-sign.
     assert_eq!(
         plugin["signing_keys"][0].as_str(),
-        Some(f.key.public_str().as_str())
+        Some(common::DEMO_ANCHOR)
     );
 
     // Stable: a second run changes nothing, byte for byte.
@@ -176,33 +177,4 @@ fn no_pins_means_nothing_to_lock() {
             .unwrap()
             .contains("jtm pin")
     );
-}
-
-#[test]
-fn a_changed_plugin_manifest_is_rejected_until_upgraded() {
-    let f = ready();
-    let p = project("1.0");
-    json_in(&f, p.path(), &["lock"]);
-    let manifest = f
-        .home
-        .path()
-        .join("plugins")
-        .join("demo@0123abc")
-        .join("plugin.toml");
-    let mut text = fs::read_to_string(&manifest).unwrap();
-    text.push_str("\n# changed\n");
-    fs::write(&manifest, text).unwrap();
-    let before = lock_text(p.path());
-
-    for args in [&["lock"][..], &["sync"][..]] {
-        let (code, value) = json_in(&f, p.path(), args);
-        assert_eq!(code, 6, "{args:?}: {value}");
-        assert_eq!(value["error"]["code"], "E_LOCK_INDEX_MISMATCH");
-        assert_eq!(value["error"]["details"]["tool"], "demo");
-    }
-    assert_eq!(lock_text(p.path()), before);
-
-    let (code, value) = json_in(&f, p.path(), &["lock", "--upgrade", "demo"]);
-    assert_eq!(code, 0, "{value}");
-    assert_ne!(lock_text(p.path()), before);
 }

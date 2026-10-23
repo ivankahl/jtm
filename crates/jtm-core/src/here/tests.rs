@@ -101,6 +101,16 @@ impl Broken {
     fn new(broken: &str) -> Broken {
         let home = tempfile::tempdir().unwrap();
         let cwd = tempfile::tempdir().unwrap();
+        let builtin: &'static [BuiltinManifest] = Box::leak(Box::new([
+            BuiltinManifest {
+                name: "app",
+                text: manifest("app", "base = \">=2\""),
+            },
+            BuiltinManifest {
+                name: "base",
+                text: manifest("base", ""),
+            },
+        ]));
         let mut ctx = Context::resolve(
             &GlobalFlags::default(),
             |_| None,
@@ -108,21 +118,10 @@ impl Broken {
                 stdin: false,
                 stderr: false,
             },
+            builtin,
         )
         .unwrap();
         ctx.home = Some(home.path().to_path_buf());
-        ctx.builtin = Box::leak(Box::new([
-            BuiltinManifest {
-                name: "app",
-                text: manifest("app", "base = \">=2\""),
-                script: None,
-            },
-            BuiltinManifest {
-                name: "base",
-                text: manifest("base", ""),
-                script: None,
-            },
-        ]));
         let f = Broken { home, cwd, ctx };
         let dirs = f.dirs();
         fs::create_dir_all(dirs.defaults_file().parent().unwrap()).unwrap();

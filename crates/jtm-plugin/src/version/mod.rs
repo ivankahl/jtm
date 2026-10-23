@@ -85,12 +85,11 @@ pub enum MaybeVersion {
 }
 
 impl MaybeVersion {
-    /// Parses `input` under `scheme`, or keeps it raw. `None` means the plugin orders versions
-    /// with a script, so every version stays raw until the script engine exists.
-    pub fn parse(scheme: Option<VersionScheme>, input: &str) -> MaybeVersion {
-        match scheme.map(|scheme| scheme.parse(input)) {
-            Some(Ok(version)) => MaybeVersion::Parsed(version),
-            _ => MaybeVersion::Raw(input.to_owned()),
+    /// Parses `input` under `scheme`, or keeps it raw.
+    pub fn parse(scheme: VersionScheme, input: &str) -> MaybeVersion {
+        match scheme.parse(input) {
+            Ok(version) => MaybeVersion::Parsed(version),
+            Err(_) => MaybeVersion::Raw(input.to_owned()),
         }
     }
 

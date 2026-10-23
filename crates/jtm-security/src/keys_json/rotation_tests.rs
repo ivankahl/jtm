@@ -128,25 +128,3 @@ fn cross_signed_keys_json_carries_releases_across_a_root_rotation() {
     let err = KeysFile::load(&data, &new_root.sign(&data), &root(&[&old_root]), NOW).unwrap_err();
     assert!(matches!(err, Error::KeyUntrusted { .. }), "{err:?}");
 }
-
-#[test]
-fn a_marketplace_scope_is_accepted() {
-    let (r, idx) = (TestKey::generate(), TestKey::generate());
-    let data = serde_json::to_vec(&serde_json::json!({
-        "format": 1, "sequence": 1, "threshold": 1,
-        "keys": [{ "key": idx.public_str(), "scope": ["marketplace"], "expires": LATER }]
-    }))
-    .unwrap();
-    let anchors = TrustAnchors {
-        plugin: "marketplace".into(),
-        ..root(&[&r])
-    };
-    let file = KeysFile::load(&data, &r.sign(&data), &anchors, NOW).unwrap();
-    let ring = Keyring::new().with(file.group());
-    let marketplace = Subject {
-        file: "marketplace.json",
-        plugin: "marketplace",
-    };
-    signature::verify(INDEX, &idx.sign(INDEX), &ring, marketplace, NOW).unwrap();
-    assert!(signature::verify(INDEX, &idx.sign(INDEX), &ring, subject(), NOW).is_err());
-}

@@ -84,10 +84,7 @@ pub enum ErrorCode {
     ArchiveUnsafe,
     LockOutdated,
     LockIndexMismatch,
-    PluginUntrusted,
-    KeyChanged,
     InputRequired,
-    PluginScriptLimit,
     PluginInvalid,
     InUse,
     Permission,
@@ -116,10 +113,7 @@ impl ErrorCode {
         ErrorCode::ArchiveUnsafe,
         ErrorCode::LockOutdated,
         ErrorCode::LockIndexMismatch,
-        ErrorCode::PluginUntrusted,
-        ErrorCode::KeyChanged,
         ErrorCode::InputRequired,
-        ErrorCode::PluginScriptLimit,
         ErrorCode::PluginInvalid,
         ErrorCode::InUse,
         ErrorCode::Permission,
@@ -148,10 +142,7 @@ impl ErrorCode {
             ErrorCode::ArchiveUnsafe => "E_ARCHIVE_UNSAFE",
             ErrorCode::LockOutdated => "E_LOCK_OUTDATED",
             ErrorCode::LockIndexMismatch => "E_LOCK_INDEX_MISMATCH",
-            ErrorCode::PluginUntrusted => "E_PLUGIN_UNTRUSTED",
-            ErrorCode::KeyChanged => "E_KEY_CHANGED",
             ErrorCode::InputRequired => "E_INPUT_REQUIRED",
-            ErrorCode::PluginScriptLimit => "E_PLUGIN_SCRIPT_LIMIT",
             ErrorCode::PluginInvalid => "E_PLUGIN_INVALID",
             ErrorCode::InUse => "E_IN_USE",
             ErrorCode::Permission => "E_PERMISSION",
@@ -183,13 +174,8 @@ impl ErrorCode {
             | ErrorCode::ArchiveUnsafe
             | ErrorCode::PluginInvalid => ExitCode::Verification,
             ErrorCode::LockOutdated | ErrorCode::LockIndexMismatch => ExitCode::LockOrPin,
-            ErrorCode::KeyUntrusted
-            | ErrorCode::PluginUntrusted
-            | ErrorCode::KeyChanged
-            | ErrorCode::InputRequired => ExitCode::TrustRequired,
-            // SPEC-QUESTION: section 12 gives no exit code for E_PLUGIN_SCRIPT_LIMIT; a plugin
-            // script exceeding its limits is treated as an unexpected failure.
-            ErrorCode::PluginScriptLimit | ErrorCode::Internal => ExitCode::Internal,
+            ErrorCode::KeyUntrusted | ErrorCode::InputRequired => ExitCode::TrustRequired,
+            ErrorCode::Internal => ExitCode::Internal,
         }
     }
 
@@ -344,55 +330,9 @@ pub enum JtmError {
     #[error("jtm.lock entry for `{tool}` does not match the signed index: {message}")]
     LockIndexMismatch { tool: String, message: String },
 
-    /// A third-party plugin's manifest differs from the one `jtm.lock` recorded (SPEC.md
-    /// section 11). Maps to `E_LOCK_INDEX_MISMATCH` and exits 6: it is a lock mismatch like a
-    /// changed hash.
-    #[error(
-        "plugin `{tool}` changed since jtm.lock recorded it (manifest sha256 {locked}, now \
-         {actual}); check the change, then run `jtm lock --upgrade {tool}`"
-    )]
-    LockPluginMismatch {
-        tool: String,
-        locked: String,
-        actual: String,
-    },
-
-    #[error("plugin `{plugin}` is not trusted; to trust it, use {resolve}")]
-    PluginUntrusted { plugin: String, resolve: String },
-
-    /// A plugin's signing keys changed without a rotation signed by a current key. `--yes`
-    /// never accepts this.
-    #[error(
-        "signing keys for plugin `{plugin}` changed without a signed rotation; \
-         if the change is expected, run {resolve}"
-    )]
-    KeyChanged {
-        plugin: String,
-        old_keys: Vec<String>,
-        new_keys: Vec<String>,
-        resolve: String,
-    },
-
     /// A step needed a confirmation or a choice while prompts were off.
     #[error("{action} needs confirmation, but prompts are off; rerun with {resolve}")]
     InputRequired { action: String, resolve: String },
-
-    /// A `plugin.lua` hook broke a sandbox limit: memory, time or install dir containment.
-    #[error("plugin `{plugin}` hook `{hook}` stopped at a sandbox limit: {limit}")]
-    PluginScriptLimit {
-        plugin: String,
-        hook: String,
-        limit: String,
-    },
-
-    /// A `plugin.lua` hook does not compile, is missing, raised an error or returned the wrong
-    /// thing.
-    #[error("plugin `{plugin}` hook `{hook}` failed: {message}")]
-    PluginScript {
-        plugin: String,
-        hook: String,
-        message: String,
-    },
 
     #[error("{} is in use", path.display())]
     InUse { path: PathBuf },
@@ -424,10 +364,7 @@ impl JtmError {
             JtmError::Usage { .. } | JtmError::InvalidSpec { .. } | JtmError::Config { .. } => {
                 ErrorCode::Usage
             }
-            // SPEC-QUESTION: section 12 has no code for a plugin script that fails without
-            // breaking a limit. The plugin is broken, so it is reported as an invalid plugin.
             JtmError::InvalidManifest { .. }
-            | JtmError::PluginScript { .. }
             | JtmError::PluginSigningKeys { .. }
             | JtmError::LayoutMismatch { .. } => ErrorCode::PluginInvalid,
             JtmError::ToolUnknown { .. } | JtmError::PinToolUnknown { .. } => {
@@ -450,13 +387,8 @@ impl JtmError {
             JtmError::SizeExceeded { .. } => ErrorCode::SizeExceeded,
             JtmError::ArchiveUnsafe { .. } => ErrorCode::ArchiveUnsafe,
             JtmError::LockOutdated { .. } => ErrorCode::LockOutdated,
-            JtmError::LockIndexMismatch { .. } | JtmError::LockPluginMismatch { .. } => {
-                ErrorCode::LockIndexMismatch
-            }
-            JtmError::PluginUntrusted { .. } => ErrorCode::PluginUntrusted,
-            JtmError::KeyChanged { .. } => ErrorCode::KeyChanged,
+            JtmError::LockIndexMismatch { .. } => ErrorCode::LockIndexMismatch,
             JtmError::InputRequired { .. } => ErrorCode::InputRequired,
-            JtmError::PluginScriptLimit { .. } => ErrorCode::PluginScriptLimit,
             JtmError::InUse { .. } => ErrorCode::InUse,
             JtmError::Permission { .. } => ErrorCode::Permission,
             JtmError::Io { .. } => ErrorCode::Io,
@@ -596,51 +528,9 @@ impl JtmError {
                 ("reason", reason.as_str().into()),
             ]),
             JtmError::LockIndexMismatch { tool, .. } => obj([("tool", tool.as_str().into())]),
-            JtmError::LockPluginMismatch {
-                tool,
-                locked,
-                actual,
-            } => obj([
-                ("tool", tool.as_str().into()),
-                ("locked", locked.as_str().into()),
-                ("actual", actual.as_str().into()),
-            ]),
-            JtmError::PluginUntrusted { plugin, resolve } => obj([
-                ("plugin", plugin.as_str().into()),
-                ("resolve", resolve.as_str().into()),
-            ]),
-            JtmError::KeyChanged {
-                plugin,
-                old_keys,
-                new_keys,
-                resolve,
-            } => obj([
-                ("plugin", plugin.as_str().into()),
-                ("old_keys", old_keys.clone().into()),
-                ("new_keys", new_keys.clone().into()),
-                ("resolve", resolve.as_str().into()),
-            ]),
             JtmError::InputRequired { action, resolve } => obj([
                 ("action", action.as_str().into()),
                 ("resolve", resolve.as_str().into()),
-            ]),
-            JtmError::PluginScriptLimit {
-                plugin,
-                hook,
-                limit,
-            } => obj([
-                ("plugin", plugin.as_str().into()),
-                ("hook", hook.as_str().into()),
-                ("limit", limit.as_str().into()),
-            ]),
-            JtmError::PluginScript {
-                plugin,
-                hook,
-                message,
-            } => obj([
-                ("plugin", plugin.as_str().into()),
-                ("hook", hook.as_str().into()),
-                ("message", message.as_str().into()),
             ]),
             JtmError::InUse { path: p }
             | JtmError::Permission { path: p, .. }
@@ -685,34 +575,6 @@ fn key_prefix(key: &str) -> String {
     }
 }
 
-impl JtmError {
-    /// The error for a failed hook of `plugin`.
-    pub fn script(plugin: &str, err: jtm_plugin::script::ScriptError) -> JtmError {
-        use jtm_plugin::script::ScriptError as S;
-        match err {
-            S::Limit { hook, limit } => JtmError::PluginScriptLimit {
-                plugin: plugin.to_owned(),
-                hook,
-                limit: limit.to_string(),
-            },
-            S::Invalid { hook, message } | S::Failed { hook, message } => JtmError::PluginScript {
-                plugin: plugin.to_owned(),
-                hook,
-                message,
-            },
-            S::Io {
-                path,
-                kind,
-                message,
-                ..
-            } => JtmError::io(path, std::io::Error::new(kind, message)),
-            S::Host { hook, message } => {
-                JtmError::internal(format!("plugin `{plugin}` hook `{hook}`: {message}"))
-            }
-        }
-    }
-}
-
 impl From<jtm_plugin::ResolveError> for JtmError {
     fn from(err: jtm_plugin::ResolveError) -> Self {
         use jtm_plugin::ResolveError as R;
@@ -731,7 +593,6 @@ impl From<jtm_plugin::ResolveError> for JtmError {
                 tool,
                 spec: format!("{variant}:{value}"),
             },
-            R::ScriptUnsupported { .. } => JtmError::internal(err.to_string()),
         }
     }
 }

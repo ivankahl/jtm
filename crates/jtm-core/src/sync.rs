@@ -148,9 +148,6 @@ impl Session<'_> {
                 .ok_or_else(|| JtmError::ToolUnknown { tool: tool.clone() })?;
             let requested = pin.selector.to_string();
             let previous = existing.as_ref().and_then(|l| l.tool(tool));
-            if !options.upgrade.covers(tool) {
-                check_locked_manifest(plugin, existing.as_ref())?;
-            }
             // Locked wins over newer while the entry still satisfies the pin.
             let keep = previous.filter(|p| {
                 !options.upgrade.covers(tool)
@@ -633,23 +630,6 @@ pub fn apply_lock(start: &Path, pins: &ProjectPins, plugins: &[Plugin]) -> Resul
     Ok(resolved)
 }
 
-/// A third-party plugin is pinned by its manifest hash; only an explicit upgrade accepts a
-/// changed one, so a manifest differing from the one `existing` locked is an error.
-fn check_locked_manifest(plugin: &Plugin, existing: Option<&Lockfile>) -> Result<()> {
-    let tool = &plugin.manifest.name;
-    if plugin.origin == crate::indices::ManifestOrigin::External
-        && let Some(locked) = existing.and_then(|l| l.plugins.iter().find(|p| &p.name == tool))
-        && locked.manifest_sha256 != plugin.sha256
-    {
-        return Err(JtmError::LockPluginMismatch {
-            tool: tool.clone(),
-            locked: locked.manifest_sha256.clone(),
-            actual: plugin.sha256.clone(),
-        });
-    }
-    Ok(())
-}
-
 /// Warning code for a locked tool with no artifact on any locked platform.
 pub const W_LOCK_NO_ARTIFACTS: &str = "W_LOCK_NO_ARTIFACTS";
 
@@ -661,20 +641,8 @@ fn sorted(tool: &LockedTool) -> LockedTool {
 
 /// The lockfile's record of `plugin`.
 pub fn locked_plugin(plugin: &Plugin) -> LockedPlugin {
-    // Until `jtm plugin add` (T9.3) records where a third-party plugin came from, it is locked
-    // by its manifest hash and the revision in its directory name, with source `external`
-    // (SPEC.md section 11).
     let (source, rev) = match plugin.origin {
         crate::indices::ManifestOrigin::Builtin => ("builtin".to_owned(), None),
-        crate::indices::ManifestOrigin::External => {
-            let rev = Path::new(&plugin.location)
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(std::ffi::OsStr::to_str)
-                .and_then(|n| n.split_once('@'))
-                .map(|(_, rev)| rev.to_owned());
-            ("external".to_owned(), rev)
-        }
     };
     LockedPlugin {
         name: plugin.manifest.name.clone(),

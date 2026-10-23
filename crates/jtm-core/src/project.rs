@@ -1,8 +1,8 @@
 //! The native pin file, `.jtm.toml` (SPEC.md section 6).
 //!
 //! The file is edited with `toml_edit`, so `jtm pin` and `jtm unpin` keep the user's comments,
-//! ordering and formatting. Parsing validates every table jtm reads: `[tools]` pins,
-//! `[plugins]` entries and `[lock]`. `[settings]` is validated by configuration loading, which
+//! ordering and formatting. Parsing validates every table jtm reads: `[tools]` pins
+//! and `[lock]`. `[settings]` is validated by configuration loading, which
 //! refuses the keys a project must not set.
 
 use std::fs;
@@ -20,21 +20,13 @@ use crate::spec::Selector;
 pub const PROJECT_FILE: &str = ".jtm.toml";
 
 /// The top-level tables a `.jtm.toml` may hold.
-const TABLES: &[&str] = &["tools", "plugins", "settings", "lock"];
+const TABLES: &[&str] = &["tools", "settings", "lock"];
 
 /// A parsed `.jtm.toml`.
 #[derive(Debug, Clone)]
 pub struct ProjectFile {
     path: PathBuf,
     doc: DocumentMut,
-}
-
-/// One `[plugins]` entry: a third-party plugin the project needs, pinned to a revision.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectPlugin {
-    pub name: String,
-    pub source: String,
-    pub rev: String,
 }
 
 impl ProjectFile {
@@ -136,24 +128,6 @@ impl ProjectFile {
             .is_some()
     }
 
-    /// The `[plugins]` entries, in file order.
-    pub fn plugins(&self) -> Vec<ProjectPlugin> {
-        let Some(plugins) = self.doc.get("plugins").and_then(Item::as_table_like) else {
-            return Vec::new();
-        };
-        plugins
-            .iter()
-            .filter_map(|(name, item)| {
-                let entry = item.as_table_like()?;
-                Some(ProjectPlugin {
-                    name: name.to_owned(),
-                    source: entry.get("source")?.as_str()?.to_owned(),
-                    rev: entry.get("rev")?.as_str()?.to_owned(),
-                })
-            })
-            .collect()
-    }
-
     /// `[lock] platforms`, the platforms `jtm.lock` covers, when the file narrows them.
     pub fn lock_platforms(&self) -> Option<Vec<Platform>> {
         let platforms = self.doc.get("lock")?.get("platforms")?.as_array()?;
@@ -208,50 +182,6 @@ impl ProjectFile {
         Ok(())
     }
 
-    /// Checks each `[plugins]` entry: a plugin name with a `source` and a `rev`.
-    fn validate_plugins(&self) -> Result<()> {
-        let path = &self.path;
-        if let Some(plugins) = self.doc.get("plugins").and_then(Item::as_table_like) {
-            for (name, item) in plugins.iter() {
-                let key = format!("plugins.{name}");
-                check_plugin_name(name).map_err(|(_, message)| error(path, &key, message))?;
-                let entry = item.as_table_like().ok_or_else(|| {
-                    error(
-                        path,
-                        &key,
-                        "expected `{ source = \"<url>\", rev = \"<commit>\" }`",
-                    )
-                })?;
-                for (field, value) in entry.iter() {
-                    if !matches!(field, "source" | "rev") {
-                        return Err(error(
-                            path,
-                            &format!("{key}.{field}"),
-                            "unknown key; a plugin entry has `source` and `rev`",
-                        ));
-                    }
-                    if value.as_str().is_none_or(|s| s.trim().is_empty()) {
-                        return Err(error(
-                            path,
-                            &format!("{key}.{field}"),
-                            "expected a non-empty string",
-                        ));
-                    }
-                }
-                for field in ["source", "rev"] {
-                    if !entry.contains_key(field) {
-                        return Err(error(
-                            path,
-                            &format!("{key}.{field}"),
-                            "missing; a project plugin is pinned by `source` and `rev`",
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn validate(&self) -> Result<()> {
         let path = &self.path;
         for (key, item) in self.doc.iter() {
@@ -271,7 +201,6 @@ impl ProjectFile {
             }
         }
         self.validate_tools()?;
-        self.validate_plugins()?;
         if let Some(lock) = self.doc.get("lock").and_then(Item::as_table_like) {
             for (field, item) in lock.iter() {
                 let key = format!("lock.{field}");

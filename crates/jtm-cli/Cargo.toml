@@ -24,6 +24,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+# The binary the end-to-end tests run embeds their `demo` plugin as well.
+jtm-core = { workspace = true, features = ["test-plugins"] }
 flate2.workspace = true
 jtm-archive = { workspace = true, features = ["testing"] }
 tar.workspace = true

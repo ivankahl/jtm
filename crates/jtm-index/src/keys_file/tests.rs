@@ -95,7 +95,7 @@ fn build_lists_the_index_key_for_every_first_party_plugin() {
     assert_eq!(value["keys"][0]["key"], index.public_str());
     assert_eq!(
         value["keys"][0]["scope"],
-        serde_json::json!(["alpha", "beta", "marketplace"])
+        serde_json::json!(["alpha", "beta"])
     );
     assert_eq!(value["keys"][0]["expires"], IN_30_DAYS);
     assert!(bytes.ends_with(b"}\n"), "ends with a single newline");
@@ -107,7 +107,7 @@ fn built_file_signed_by_two_roots_passes_the_client_loader() {
     let (bytes, sigs) = signed(&roots);
     let report = verify(&bytes, &sigs, &VerifySpec::new(roots.first_party()), NOW).unwrap();
     assert_eq!(report.sequence, 8);
-    assert_eq!(report.plugins, vec!["alpha", "beta", "marketplace"]);
+    assert_eq!(report.plugins, vec!["alpha", "beta"]);
     assert_eq!(report.signers.len(), 2);
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     assert_eq!(report.sha256, jtm_security::sha256_hex(&bytes));
@@ -123,24 +123,25 @@ fn build_scope_can_name_a_subset_of_the_first_party_plugins() {
     assert_eq!(value["keys"][0]["scope"], serde_json::json!(["beta"]));
 }
 
+/// There is no marketplace any more (ADR 0002), so its scope is not special.
 #[test]
-fn build_scope_can_name_the_marketplace() {
+fn build_scope_cannot_name_the_marketplace() {
     let roots = Roots::new();
     let mut s = spec(&TestKey::generate(), IN_30_DAYS);
     s.scope = Some(vec!["marketplace".to_owned(), "alpha".to_owned()]);
-    let bytes = build(&s, &roots.first_party(), NOW).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        value["keys"][0]["scope"],
-        serde_json::json!(["alpha", "marketplace"])
+    let err = build(&s, &roots.first_party(), NOW).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("`marketplace` is not a first-party plugin"),
+        "{err}"
     );
 }
 
 #[test]
-fn verify_warns_when_no_key_is_scoped_to_the_marketplace() {
+fn verify_warns_about_a_key_scoped_to_the_marketplace() {
     let roots = Roots::new();
     let raw = raw_keys_file(serde_json::json!([
-        { "key": TestKey::generate().public_str(), "scope": ["alpha", "beta"], "expires": IN_30_DAYS }
+        { "key": TestKey::generate().public_str(), "scope": ["alpha", "beta", "marketplace"], "expires": IN_30_DAYS }
     ]));
     let report = verify(
         &raw,

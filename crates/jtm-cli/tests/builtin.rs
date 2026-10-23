@@ -41,10 +41,12 @@ fn every_first_party_plugin_is_available_without_installing_anything() {
     }
 }
 
-/// What is in `<data>/plugins`, which holds only the fixture's own external plugin.
+/// What is in `<data>/plugins`, which jtm never reads and only removes the old working copy from.
 fn plugins_dir(f: &Fixture) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(f.home.path().join("plugins"))
-        .unwrap()
+    let Ok(entries) = fs::read_dir(f.home.path().join("plugins")) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
@@ -81,7 +83,10 @@ fn an_old_working_copy_is_removed() {
     assert_eq!(code, 0, "{value}");
     assert!(!copy.exists());
     assert!(!lock.exists());
-    assert_eq!(plugins_dir(&f), ["demo@0123abc"]);
+    assert!(
+        plugins_dir(&f).is_empty(),
+        "the empty plugins dir is removed"
+    );
 }
 
 /// SPEC.md section 9: a manifest on disk never changes a trust decision. A java manifest that
@@ -100,7 +105,7 @@ fn a_tampered_manifest_on_disk_never_changes_a_trust_decision() {
     index.remove("threshold");
     index.remove("keys_url");
     fs::write(&manifest, toml::to_string(&table).unwrap()).unwrap();
-    // The same edit dropped in as an external plugin is no better: builtin names win.
+    // The same edit dropped in as a plugin directory is no better: it is never read.
     let external = f.home.path().join("plugins").join("java@evil");
     fs::create_dir_all(&external).unwrap();
     fs::write(
@@ -150,4 +155,30 @@ fn a_tampered_manifest_on_disk_never_changes_a_trust_decision() {
     assert!(!f.home.path().join("tools").join("java").exists());
     // And the old copy is gone after that same run.
     assert!(!manifest.exists());
+}
+
+/// ADR 0002: a plugin directory under `<data>/plugins`, as earlier jtm versions read, is never
+/// loaded, whatever it is called.
+#[test]
+fn a_plugin_directory_on_disk_is_never_read() {
+    let f = Fixture::new(false);
+    f.trust();
+    let dir = f.home.path().join("plugins").join("widget@abc123");
+    fs::create_dir_all(&dir).unwrap();
+    let mut table: toml::Table = toml::from_str(&shipped("kotlin")).unwrap();
+    table["name"] = "widget".into();
+    fs::write(dir.join("plugin.toml"), toml::to_string(&table).unwrap()).unwrap();
+
+    for args in [&["available", "widget"][..], &["install", "widget@1"]] {
+        let (code, value) = f.json(args);
+        assert_eq!(code, 3, "{args:?}: {value}");
+        assert_eq!(value["error"]["code"], "E_TOOL_UNKNOWN", "{value}");
+    }
+    let (code, value) = f.json(&["current"]);
+    assert_eq!(code, 0, "{value}");
+    assert!(
+        !value.to_string().contains("widget"),
+        "the plugin is not listed: {value}"
+    );
+    assert!(dir.join("plugin.toml").is_file(), "and nothing touches it");
 }

@@ -58,24 +58,6 @@ fn check<'a>(value: &'a Value, id: &str) -> &'a Value {
 }
 
 #[test]
-fn a_third_party_plugin_with_untrusted_keys_fails_with_exit_7() {
-    let f = Fixture::new(false);
-    let (code, value) = doctor(&f, "/usr/bin");
-    assert_eq!(code, 7, "{value}");
-    assert_eq!(value["ok"], false);
-    assert_eq!(value["command"], "doctor");
-    assert_eq!(value["error"]["code"], "E_KEY_UNTRUSTED");
-    let trust = check(&value, "trust_store");
-    assert_eq!(trust["status"], "failed");
-    let finding = &trust["findings"][0];
-    assert_eq!(finding["code"], "E_KEY_UNTRUSTED");
-    assert!(
-        finding["hint"].as_str().unwrap().contains("jtm trust add"),
-        "{finding}"
-    );
-}
-
-#[test]
 fn a_healthy_home_exits_0_and_reports_every_check() {
     let f = Fixture::new(false);
     f.trust();
@@ -98,19 +80,17 @@ fn a_healthy_home_exits_0_and_reports_every_check() {
             "proxy",
             "tls",
             "trust_store",
-            "yanked_plugins"
         ]
     );
     assert_eq!(check(&value, "trust_store")["status"], "ok");
     assert_eq!(check(&value, "proxy")["status"], "ok");
-    // Offline, so the connection test is skipped with a note, and the marketplace is not read.
+    // Offline, so the connection test is skipped with a note.
     assert!(
         check(&value, "tls")["notes"][0]
             .as_str()
             .unwrap()
             .contains("offline")
     );
-    assert_eq!(check(&value, "yanked_plugins")["status"], "skipped");
     // The hook is missing here, and missing or skipped is never a failure.
     assert_ne!(check(&value, "shell_hook")["status"], "failed");
 }

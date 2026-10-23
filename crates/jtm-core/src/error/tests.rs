@@ -72,10 +72,7 @@ fn exit_code_mapping_matches_spec() {
         (E::ArchiveUnsafe, 5),
         (E::LockOutdated, 6),
         (E::LockIndexMismatch, 6),
-        (E::PluginUntrusted, 7),
-        (E::KeyChanged, 7),
         (E::InputRequired, 7),
-        (E::PluginScriptLimit, 1),
         (E::Io, 4),
         (E::PluginInvalid, 5),
         (E::InUse, 4),
@@ -140,28 +137,6 @@ fn exit_seven_errors_name_their_resolution() {
         "installing a missing version needs confirmation, but prompts are off; \
              rerun with --install"
     );
-
-    let err = JtmError::KeyChanged {
-        plugin: "example".into(),
-        old_keys: vec!["RWOLD".into()],
-        new_keys: vec!["RWNEW".into()],
-        resolve: "jtm trust add RWNEW --scope example".into(),
-    };
-    assert_eq!(err.code(), "E_KEY_CHANGED");
-    assert_eq!(
-        Value::Object(err.details()),
-        serde_json::json!({
-            "plugin": "example",
-            "old_keys": ["RWOLD"],
-            "new_keys": ["RWNEW"],
-            "resolve": "jtm trust add RWNEW --scope example"
-        })
-    );
-    assert_eq!(err.exit_code(), ExitCode::TrustRequired);
-    assert!(
-        err.to_string()
-            .ends_with("run jtm trust add RWNEW --scope example")
-    );
 }
 
 #[test]
@@ -204,11 +179,6 @@ fn resolve_errors_map_to_not_found_codes() {
     });
     assert_eq!(not_found.code(), "E_VERSION_NOT_FOUND");
     assert_eq!(not_found.details()["spec"], "default:9.9");
-    let script = JtmError::from(R::ScriptUnsupported {
-        tool: "demo".into(),
-        spec: "custom".into(),
-    });
-    assert_eq!(script.code(), "E_INTERNAL");
 }
 
 #[test]
@@ -370,87 +340,9 @@ fn io_failures_are_e_io_unless_access_was_denied() {
 }
 
 #[test]
-fn a_host_failure_after_a_hook_is_an_io_error_not_a_sandbox_limit() {
-    use jtm_plugin::script::{Limit, ScriptError};
-    let io = |kind| ScriptError::Io {
-        hook: "post_extract".into(),
-        path: "install/lib".into(),
-        kind,
-        message: "failed".into(),
-    };
-    let emfile = JtmError::script("demo", io(std::io::ErrorKind::Other));
-    assert_eq!(emfile.code(), "E_IO");
-    assert_eq!(emfile.details()["path"], "install/lib");
-    let denied = JtmError::script("demo", io(std::io::ErrorKind::PermissionDenied));
-    assert_eq!(denied.code(), "E_PERMISSION");
-    let mode = JtmError::script(
-        "demo",
-        ScriptError::Limit {
-            hook: "post_extract".into(),
-            limit: Limit::Mode {
-                path: "README".into(),
-                mode: 0,
-            },
-        },
-    );
-    assert_eq!(mode.code(), "E_PLUGIN_SCRIPT_LIMIT");
-}
-
-#[test]
 fn exit_code_converts_to_process_exit_code() {
     assert_eq!(
         std::process::ExitCode::from(ExitCode::TrustRequired),
         std::process::ExitCode::from(7)
-    );
-}
-
-#[test]
-fn script_errors_blame_the_plugin_only_for_what_it_did() {
-    use jtm_plugin::script::ScriptError as S;
-    let hook = || "post_extract".to_owned();
-    let code = |err: S| JtmError::script("demo", err).code();
-    assert_eq!(
-        code(S::Invalid {
-            hook: hook(),
-            message: "no function".to_owned()
-        }),
-        "E_PLUGIN_INVALID"
-    );
-    assert_eq!(
-        code(S::Failed {
-            hook: hook(),
-            message: "boom".to_owned()
-        }),
-        "E_PLUGIN_INVALID"
-    );
-    assert_eq!(
-        code(S::Io {
-            hook: hook(),
-            path: PathBuf::from("/data/tools/.tmp/x"),
-            kind: std::io::ErrorKind::NotFound,
-            message: "gone".to_owned()
-        }),
-        "E_IO"
-    );
-    assert_eq!(
-        code(S::Io {
-            hook: hook(),
-            path: PathBuf::from("/data/tools/.tmp/x"),
-            kind: std::io::ErrorKind::PermissionDenied,
-            message: "denied".to_owned()
-        }),
-        "E_PERMISSION"
-    );
-    let host = JtmError::script(
-        "demo",
-        S::Host {
-            hook: hook(),
-            message: "the script engine stopped".to_owned(),
-        },
-    );
-    assert_eq!(host.code(), "E_INTERNAL");
-    assert!(
-        host.to_string().contains("the script engine stopped"),
-        "{host}"
     );
 }

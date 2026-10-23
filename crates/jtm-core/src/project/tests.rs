@@ -8,9 +8,9 @@ java = "temurin:21"      # variant:version, alias, or partial version
 maven = "3.9"
 # gradle is pinned by the wrapper
 
-[plugins]
-# optional: third-party plugins this project needs, pinned to a commit
-acme-flyway = { source = "https://github.com/acme/jtm-flyway", rev = "3f9c2e1" }
+[settings.index]
+# optional: settings for this project only
+ttl_hours = 1
 "#;
 
 fn parse(text: &str) -> ProjectFile {
@@ -62,7 +62,7 @@ fn unpinning_removes_only_that_line() {
 }
 
 #[test]
-fn reads_tools_plugins_and_lock_platforms() {
+fn reads_tools_and_lock_platforms() {
     let file = parse(&format!(
         "{COMMENTED}\n[lock]\nplatforms = [\"linux-x64\", \"windows-x64\"]\n"
     ));
@@ -73,14 +73,6 @@ fn reads_tools_plugins_and_lock_platforms() {
         .collect();
     assert_eq!(tools, ["java=temurin:21", "maven=3.9"]);
     assert_eq!(file.tool("maven"), Some(selector("3.9")));
-    assert_eq!(
-        file.plugins(),
-        [ProjectPlugin {
-            name: "acme-flyway".to_owned(),
-            source: "https://github.com/acme/jtm-flyway".to_owned(),
-            rev: "3f9c2e1".to_owned(),
-        }]
-    );
     assert_eq!(
         file.lock_platforms(),
         Some(vec![Platform::LinuxX64, Platform::WindowsX64])
@@ -96,14 +88,10 @@ fn invalid_files_are_usage_errors_naming_the_key() {
         ("[tools]\njava = 21\n", "tools.java"),
         ("[tools]\njava = \"temurin:\"\n", "tools.java"),
         ("[tools]\n\"Bad Name\" = \"1\"\n", "tools.Bad Name"),
-        ("[plugins]\nx = \"y\"\n", "plugins.x"),
+        // Third-party plugins are gone (ADR 0002), so `[plugins]` is an unknown table.
         (
-            "[plugins]\nx = { source = \"https://e.test/x\" }\n",
-            "plugins.x.rev",
-        ),
-        (
-            "[plugins]\nx = { source = \"https://e.test/x\", rev = \"a\", branch = \"main\" }\n",
-            "plugins.x.branch",
+            "[plugins]\nx = { source = \"https://e.test/x\", rev = \"a\" }\n",
+            "plugins",
         ),
         ("[lock]\nplatforms = [\"amiga\"]\n", "lock.platforms"),
         ("[lock]\nos = []\n", "lock.os"),

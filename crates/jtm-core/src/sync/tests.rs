@@ -43,10 +43,9 @@ fn the_project_root_is_the_nearest_directory_with_any_pin_file() {
     let plugins = vec![Plugin {
         manifest: java,
         sha256: String::new(),
-        origin: crate::indices::ManifestOrigin::External,
+        origin: crate::indices::ManifestOrigin::Builtin,
         location: "test".to_owned(),
         text: String::new(),
-        script: None,
     }];
     let repo = tempfile::tempdir().unwrap();
     let api = repo.path().join("services").join("api");

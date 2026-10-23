@@ -1,5 +1,5 @@
-//! The trust store check (SPEC.md sections 9 and 14): `state/trust.json`, the signing keys of
-//! third-party plugins, and the delegated index keys in the cached keys files.
+//! The trust store check (SPEC.md sections 9 and 14): `state/trust.json`, the plugins' signing
+//! keys, and the delegated index keys in the cached keys files.
 //!
 //! A cached keys file is verified against the plugin's trust anchors before any of it is read,
 //! exactly as loading an index does, so a file that was tampered with is reported rather than
@@ -49,7 +49,7 @@ pub(super) fn check(inputs: &Inputs<'_>) -> Check {
 
     let mut missing = Vec::new();
     let mut files: BTreeMap<String, Vec<(String, KeysFile)>> = BTreeMap::new();
-    for name in inputs.registry.names().unwrap_or_default() {
+    for name in inputs.registry.names() {
         let plugin = match inputs.registry.find(&name) {
             Ok(plugin) => plugin,
             Err(err) => {
@@ -59,7 +59,7 @@ pub(super) fn check(inputs: &Inputs<'_>) -> Check {
                 continue;
             }
         };
-        let Some(anchors) = anchors(&plugin, state.as_ref(), &mut check) else {
+        let Some(anchors) = anchors(&plugin, &mut check) else {
             continue;
         };
         if plugin.manifest.index.keys_url.is_none() {
@@ -86,22 +86,14 @@ pub(super) fn check(inputs: &Inputs<'_>) -> Check {
     check
 }
 
-/// The anchors of `plugin`, or `None` after reporting why they cannot be used. A third-party
-/// plugin's anchors count only once the user trusts them.
-fn anchors(plugin: &Plugin, state: Option<&TrustState>, check: &mut Check) -> Option<TrustAnchors> {
+/// The anchors of `plugin`, or `None` after reporting why they cannot be used.
+fn anchors(plugin: &Plugin, check: &mut Check) -> Option<TrustAnchors> {
     let manifest = &plugin.manifest;
     let index = &manifest.index;
     let found = match plugin.origin {
         ManifestOrigin::Builtin => {
             TrustAnchors::preapproved(&manifest.name, &index.signing_keys, index.threshold())
         }
-        // Without a readable trust store nothing can be said about confirmed keys.
-        ManifestOrigin::External => TrustAnchors::confirmed(
-            &manifest.name,
-            &index.signing_keys,
-            index.threshold(),
-            state?,
-        ),
     };
     match found {
         Ok(anchors) => Some(anchors),

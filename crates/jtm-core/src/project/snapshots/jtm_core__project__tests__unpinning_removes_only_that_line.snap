@@ -7,6 +7,6 @@ expression: file.render()
 maven = "3.9"
 # gradle is pinned by the wrapper
 
-[plugins]
-# optional: third-party plugins this project needs, pinned to a commit
-acme-flyway = { source = "https://github.com/acme/jtm-flyway", rev = "3f9c2e1" }
+[settings.index]
+# optional: settings for this project only
+ttl_hours = 1

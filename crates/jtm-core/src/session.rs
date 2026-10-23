@@ -246,7 +246,6 @@ impl<'a> Session<'a> {
 
     pub fn registry(&self) -> Registry<'_> {
         Registry {
-            dirs: &self.dirs,
             builtin: self.ctx.builtin,
         }
     }
@@ -456,10 +455,6 @@ impl<'a> Session<'a> {
             };
             return Ok((item(status, &dest, &entry.url), warnings));
         }
-        let script = match plugin.manifest.hooks.post_extract {
-            Some(_) => plugin.script(self.platform)?,
-            None => None,
-        };
         let request = InstallRequest {
             manifest: &plugin.manifest,
             manifest_sha256: &plugin.sha256,
@@ -467,7 +462,6 @@ impl<'a> Session<'a> {
             platform: self.platform,
             index_sequence,
             force: options.force,
-            script: script.as_ref(),
         };
         let limits = jtm_archive::Limits {
             max_bytes: self.settings.extract.max_bytes,
@@ -572,7 +566,7 @@ impl<'a> Session<'a> {
                 let scheme = self
                     .plugin(&t)
                     .ok()
-                    .and_then(|p| p.manifest.versions.scheme.builtin());
+                    .map(|p| p.manifest.versions.scheme.version_scheme());
                 (t, scheme)
             })
             .collect();
@@ -583,7 +577,10 @@ impl<'a> Session<'a> {
                 .cmp(&b.tool)
                 .then_with(|| a.variant.cmp(&b.variant))
                 .then_with(|| {
-                    let parse = |v: &str| jtm_plugin::MaybeVersion::parse(scheme, v);
+                    let parse = |v: &str| match scheme {
+                        Some(scheme) => jtm_plugin::MaybeVersion::parse(scheme, v),
+                        None => jtm_plugin::MaybeVersion::Raw(v.to_owned()),
+                    };
                     let (pa, pb) = (parse(&a.version), parse(&b.version));
                     pb.parsed()
                         .cmp(&pa.parsed())
@@ -613,7 +610,7 @@ impl<'a> Session<'a> {
             });
         }
         let entries = &index.index.entries;
-        let scheme = manifest.versions.scheme.builtin();
+        let scheme = manifest.versions.scheme.version_scheme();
         let mut chosen: Vec<&IndexEntry> = jtm_plugin::sorted_for_display(scheme, entries)
             .into_iter()
             .filter(|e| options.all || e.variant == variant)
@@ -778,11 +775,11 @@ impl<'a> Session<'a> {
         &self.settings
     }
 
-    /// Every plugin available, builtin first.
+    /// Every plugin compiled into jtm.
     pub fn plugins(&self) -> Result<Vec<Plugin>> {
         let registry = self.registry();
         registry
-            .names()?
+            .names()
             .iter()
             .map(|name| registry.find(name))
             .collect()

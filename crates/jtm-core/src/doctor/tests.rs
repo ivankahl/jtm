@@ -60,7 +60,6 @@ impl Home {
         let builtin: &'static [BuiltinManifest] = Box::leak(Box::new([BuiltinManifest {
             name: "demo",
             text: leak(manifest("demo", &key.public_str(), index_extra)),
-            script: None,
         }]));
         Home {
             _dir: dir,
@@ -116,17 +115,6 @@ impl Home {
     fn with_path(self, path: &str) -> Home {
         self.with_env("PATH", path)
     }
-
-    /// An external plugin `acme/widget`, signed by `key`.
-    fn add_external(&self, key: &TestKey, index_extra: &str) {
-        let dir = self.dirs.plugins().join("acme--widget@abc123");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(
-            dir.join("plugin.toml"),
-            manifest("acme/widget", &key.public_str(), index_extra),
-        )
-        .unwrap();
-    }
 }
 
 fn settings(toml: &str) -> Settings {
@@ -144,42 +132,31 @@ fn settings(toml: &str) -> Settings {
 }
 
 /// Runs every check of `home` with its own environment.
-fn report(
-    home: &Home,
-    prober: Option<&dyn Prober>,
-    marketplace: Option<&dyn Marketplace>,
-) -> Report {
+fn report(home: &Home, prober: Option<&dyn Prober>) -> Report {
     let lookup = |key: &str| home.env.get(key).cloned();
     run(
         &Inputs {
             dirs: &home.dirs,
             settings: &home.settings,
             registry: Registry {
-                dirs: &home.dirs,
                 builtin: home.builtin,
             },
             offline: home.offline,
             env: &lookup,
             now: Timestamp::parse("2026-10-22T00:00:00Z").unwrap(),
             prober,
-            marketplace,
         },
         Check::pass("shell_hook", "loaded"),
     )
 }
 
-/// One check of `home`, offline unless `home` is [`Home::online`], with no marketplace.
+/// One check of `home`, offline unless `home` is [`Home::online`].
 fn check(home: &Home, id: &str) -> Check {
-    check_with(home, id, None, None)
+    check_with(home, id, None)
 }
 
-fn check_with(
-    home: &Home,
-    id: &str,
-    prober: Option<&dyn Prober>,
-    marketplace: Option<&dyn Marketplace>,
-) -> Check {
-    report(home, prober, marketplace)
+fn check_with(home: &Home, id: &str, prober: Option<&dyn Prober>) -> Check {
+    report(home, prober)
         .checks
         .into_iter()
         .find(|c| c.id == id)
@@ -192,7 +169,7 @@ fn codes(check: &Check) -> Vec<&'static str> {
 
 #[test]
 fn runs_every_check_in_a_fixed_order() {
-    let report = report(&Home::new(), None, None);
+    let report = report(&Home::new(), None);
     let ids: Vec<&str> = report.checks.iter().map(|c| c.id).collect();
     assert_eq!(
         ids,
@@ -203,7 +180,6 @@ fn runs_every_check_in_a_fixed_order() {
             "proxy",
             "tls",
             "trust_store",
-            "yanked_plugins"
         ]
     );
 }
@@ -563,7 +539,7 @@ fn ca_config(path: &std::path::Path) -> String {
 #[test]
 fn offline_the_connection_test_is_skipped_with_a_note() {
     let recorder = Recorder::default();
-    let tls = check_with(&Home::new(), "tls", Some(&recorder), None);
+    let tls = check_with(&Home::new(), "tls", Some(&recorder));
     assert_eq!(tls.status, Status::Ok, "{tls:?}");
     assert!(
         tls.notes.iter().any(|n| n.contains("offline")),
@@ -577,7 +553,7 @@ fn offline_the_connection_test_is_skipped_with_a_note() {
 fn online_each_index_host_is_probed_once() {
     let recorder = Recorder::default();
     let home = Home::new().online();
-    let tls = check_with(&home, "tls", Some(&recorder), None);
+    let tls = check_with(&home, "tls", Some(&recorder));
     assert_eq!(tls.status, Status::Ok, "{tls:?}");
     assert_eq!(recorder.urls(), ["https://index.example.test/"]);
     assert!(
@@ -593,14 +569,14 @@ fn mirrors_and_index_overrides_decide_which_hosts_are_probed() {
     let home = Home::new()
         .online()
         .config("[mirrors]\n\"https://index.example.test/\" = \"https://mirror.corp.test/jtm/\"\n");
-    check_with(&home, "tls", Some(&recorder), None);
+    check_with(&home, "tls", Some(&recorder));
     assert_eq!(recorder.urls(), ["https://mirror.corp.test/"]);
 
     let recorder = Recorder::default();
     let home = Home::new()
         .online()
         .config("[plugins.demo]\nindex_url = \"https://override.test:8443/x/demo.json\"\n");
-    check_with(&home, "tls", Some(&recorder), None);
+    check_with(&home, "tls", Some(&recorder));
     assert_eq!(recorder.urls(), ["https://override.test:8443/"]);
 }
 
@@ -614,7 +590,7 @@ fn local_index_sources_are_not_probed() {
         "[plugins.demo]\nindex_url = '{}'\n",
         local.display()
     ));
-    let tls = check_with(&home, "tls", Some(&recorder), None);
+    let tls = check_with(&home, "tls", Some(&recorder));
     assert_eq!(tls.status, Status::Ok, "{tls:?}");
     assert!(recorder.urls().is_empty());
     assert!(tls.summary.contains("local"), "{}", tls.summary);
@@ -623,7 +599,7 @@ fn local_index_sources_are_not_probed() {
 #[test]
 fn an_unreachable_host_is_a_network_error_naming_the_host() {
     let home = Home::new().online();
-    let tls = check_with(&home, "tls", Some(&Failing("connection refused")), None);
+    let tls = check_with(&home, "tls", Some(&Failing("connection refused")));
     assert_eq!(tls.status, Status::Failed, "{tls:?}");
     assert_eq!(codes(&tls), ["E_NETWORK"]);
     let finding = &tls.findings[0];
@@ -645,7 +621,7 @@ fn a_probe_failure_never_shows_proxy_credentials() {
         .online()
         .with_env("HTTPS_PROXY", "http://alice:s3cret@proxy.corp:3128");
     let failing = Failing("tunnel via http://alice:s3cret@proxy.corp:3128 failed");
-    let tls = check_with(&home, "tls", Some(&failing), None);
+    let tls = check_with(&home, "tls", Some(&failing));
     let everything = text(&tls);
     assert!(!everything.contains("s3cret"), "{everything}");
     assert!(!everything.contains("alice"), "{everything}");
@@ -688,7 +664,7 @@ fn a_tls_failure_points_at_the_extra_ca_file() {
         "[plugins.demo]\nindex_url = \"https://127.0.0.1:{port}/demo.json\"\n"
     ));
     let client = real_client();
-    let tls = check_with(&home, "tls", Some(&client), None);
+    let tls = check_with(&home, "tls", Some(&client));
     assert_eq!(tls.status, Status::Failed, "{tls:?}");
     assert_eq!(codes(&tls), ["E_NETWORK"]);
     let finding = &tls.findings[0];
@@ -715,7 +691,7 @@ fn a_closed_port_is_not_blamed_on_tls() {
         "[plugins.demo]\nindex_url = \"https://127.0.0.1:{port}/demo.json\"\n"
     ));
     let client = real_client();
-    let tls = check_with(&home, "tls", Some(&client), None);
+    let tls = check_with(&home, "tls", Some(&client));
     assert_eq!(codes(&tls), ["E_NETWORK"]);
     assert!(
         !tls.findings[0]
@@ -880,40 +856,6 @@ fn an_unreadable_trust_file_is_an_io_error() {
 }
 
 #[test]
-fn an_untrusted_third_party_plugin_names_the_command_that_trusts_it() {
-    let home = Home::new();
-    let author = TestKey::generate();
-    home.add_external(&author, "");
-    let trust = check(&home, "trust_store");
-    assert_eq!(trust.status, Status::Failed, "{trust:?}");
-    assert_eq!(codes(&trust), ["E_KEY_UNTRUSTED"]);
-    let finding = &trust.findings[0];
-    assert!(finding.message.contains("acme/widget"), "{finding:?}");
-    let expected = format!("jtm trust add {} --scope acme/widget", author.public_str());
-    assert!(
-        finding.hint.as_deref().unwrap().contains(&expected),
-        "{finding:?}"
-    );
-}
-
-#[test]
-fn a_third_party_plugin_with_a_trusted_key_passes() {
-    let home = Home::new();
-    let author = TestKey::generate();
-    home.add_external(&author, "");
-    write_trust(
-        &home,
-        &json!({
-            "format": 1,
-            "keys": [{ "key": author.public_str(), "scope": ["acme/widget"], "added": "2026-10-19T03:00:00Z" }],
-        })
-        .to_string(),
-    );
-    let trust = check(&home, "trust_store");
-    assert_eq!(trust.status, Status::Ok, "{trust:?}");
-}
-
-#[test]
 fn a_current_keys_file_passes() {
     let home = Home::with_index(KEYS_URL);
     let delegated = TestKey::generate();
@@ -1049,12 +991,10 @@ fn first_party_plugins_sharing_a_keys_file_are_reported_together() {
         BuiltinManifest {
             name: "alpha",
             text: leak(manifest("alpha", &key.public_str(), KEYS_URL)),
-            script: None,
         },
         BuiltinManifest {
             name: "beta",
             text: leak(manifest("beta", &key.public_str(), KEYS_URL)),
-            script: None,
         },
     ]));
     let home = Home {
@@ -1080,111 +1020,6 @@ fn first_party_plugins_sharing_a_keys_file_are_reported_together() {
     );
 }
 
-// Yanked plugins
-
-/// A marketplace with fixed answers per plugin.
-struct Listed(Vec<(&'static str, Result<Listing, &'static str>)>);
-
-impl Marketplace for Listed {
-    fn listing(&self, plugin: &str) -> crate::Result<Listing> {
-        match self.0.iter().find(|(name, _)| *name == plugin) {
-            Some((_, Ok(listing))) => Ok(listing.clone()),
-            Some((_, Err(message))) => Err(JtmError::internal(*message)),
-            None => Ok(Listing::NotListed),
-        }
-    }
-}
-
-fn home_with_widget() -> Home {
-    let home = Home::new().online();
-    home.add_external(&TestKey::generate(), "");
-    home
-}
-
-#[test]
-fn builtin_plugins_alone_have_nothing_to_check_even_offline() {
-    let yanked = check(&Home::new(), "yanked_plugins");
-    assert_eq!(yanked.status, Status::Ok, "{yanked:?}");
-    assert!(
-        yanked.summary.contains("no third-party"),
-        "{}",
-        yanked.summary
-    );
-}
-
-#[test]
-fn a_yanked_plugin_is_a_warning_with_its_reason() {
-    let market = Listed(vec![(
-        "acme/widget",
-        Ok(Listing::Yanked {
-            reason: "compromised key, use rev abc123".to_owned(),
-        }),
-    )]);
-    let yanked = check_with(&home_with_widget(), "yanked_plugins", None, Some(&market));
-    assert_eq!(yanked.status, Status::Warning, "{yanked:?}");
-    assert_eq!(codes(&yanked), ["W_PLUGIN_YANKED"]);
-    let finding = &yanked.findings[0];
-    assert!(finding.message.contains("acme/widget"), "{finding:?}");
-    assert!(finding.message.contains("compromised key"), "{finding:?}");
-    assert!(finding.hint.is_some());
-}
-
-#[test]
-fn a_plugin_that_is_not_yanked_passes() {
-    let market = Listed(vec![("acme/widget", Ok(Listing::Active))]);
-    let yanked = check_with(&home_with_widget(), "yanked_plugins", None, Some(&market));
-    assert_eq!(yanked.status, Status::Ok, "{yanked:?}");
-    assert!(yanked.findings.is_empty());
-}
-
-#[test]
-fn a_plugin_the_marketplace_does_not_list_is_noted() {
-    let market = Listed(vec![]);
-    let yanked = check_with(&home_with_widget(), "yanked_plugins", None, Some(&market));
-    assert_eq!(yanked.status, Status::Ok, "{yanked:?}");
-    assert!(
-        yanked.notes.iter().any(|n| n.contains("acme/widget")),
-        "{:?}",
-        yanked.notes
-    );
-}
-
-#[test]
-fn offline_the_check_is_skipped_and_says_why() {
-    let home = Home {
-        offline: true,
-        ..home_with_widget()
-    };
-    let market = Listed(vec![("acme/widget", Ok(Listing::Active))]);
-    let yanked = check_with(&home, "yanked_plugins", None, Some(&market));
-    assert_eq!(yanked.status, Status::Skipped, "{yanked:?}");
-    assert!(yanked.summary.contains("online"), "{}", yanked.summary);
-    assert!(yanked.summary.contains("acme/widget"), "{}", yanked.summary);
-}
-
-#[test]
-fn without_a_marketplace_listing_the_check_is_skipped() {
-    let yanked = check(&home_with_widget(), "yanked_plugins");
-    assert_eq!(yanked.status, Status::Skipped, "{yanked:?}");
-    assert!(
-        yanked.summary.contains("not available"),
-        "{}",
-        yanked.summary
-    );
-}
-
-#[test]
-fn a_marketplace_that_fails_skips_the_check_with_the_reason() {
-    let market = Listed(vec![("acme/widget", Err("the listing is corrupt"))]);
-    let yanked = check_with(&home_with_widget(), "yanked_plugins", None, Some(&market));
-    assert_eq!(yanked.status, Status::Skipped, "{yanked:?}");
-    assert!(
-        yanked.summary.contains("the listing is corrupt"),
-        "{}",
-        yanked.summary
-    );
-}
-
 #[test]
 fn a_keys_file_is_probed_where_the_mirrors_send_it() {
     // A mirror for the keys file alone moves it, and its signature, but not the index.
@@ -1192,7 +1027,7 @@ fn a_keys_file_is_probed_where_the_mirrors_send_it() {
     let home = Home::with_index(KEYS_URL).online().config(
         "[mirrors]\n\"https://index.example.test/keys.json\" = \"https://keys.corp.test/keys.json\"\n",
     );
-    check_with(&home, "tls", Some(&recorder), None);
+    check_with(&home, "tls", Some(&recorder));
     assert_eq!(
         recorder.urls(),
         ["https://index.example.test/", "https://keys.corp.test/"],
@@ -1207,47 +1042,17 @@ fn a_keys_file_is_probed_where_the_mirrors_send_it() {
         "[mirrors]\n\"https://index.example.test/keys.json\" = '{}'\n",
         local.join("keys.json").display()
     ));
-    check_with(&home, "tls", Some(&recorder), None);
+    check_with(&home, "tls", Some(&recorder));
     assert_eq!(recorder.urls(), ["https://index.example.test/"]);
 
     let recorder = Recorder::default();
     let home = Home::with_index(KEYS_URL)
         .online()
         .config("[plugins.demo]\nindex_url = \"https://override.test/demo.json\"\n");
-    check_with(&home, "tls", Some(&recorder), None);
+    check_with(&home, "tls", Some(&recorder));
     assert_eq!(
         recorder.urls(),
         ["https://index.example.test/", "https://override.test/"],
         "an index_url override does not move the keys file"
-    );
-}
-
-#[test]
-fn a_failing_lookup_keeps_the_yanked_plugins_found_before_it() {
-    let home = Home::new().online();
-    let author = TestKey::generate();
-    home.add_external(&author, "");
-    let other = home.dirs.plugins().join("acme--zeta@abc123");
-    fs::create_dir_all(&other).unwrap();
-    fs::write(
-        other.join("plugin.toml"),
-        manifest("acme/zeta", &author.public_str(), ""),
-    )
-    .unwrap();
-    let market = Listed(vec![
-        (
-            "acme/widget",
-            Ok(Listing::Yanked {
-                reason: "withdrawn".to_owned(),
-            }),
-        ),
-        ("acme/zeta", Err("the listing is corrupt")),
-    ]);
-    let yanked = check_with(&home, "yanked_plugins", None, Some(&market));
-    assert_eq!(codes(&yanked), ["W_PLUGIN_YANKED"]);
-    assert!(
-        yanked.notes.iter().any(|n| n.contains("incomplete")),
-        "{:?}",
-        yanked.notes
     );
 }
