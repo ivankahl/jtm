@@ -6,11 +6,11 @@ or revoking keys. The design is in [SPEC.md](../SPEC.md) sections 7 to 9; this d
 to carry it out and matches what `jtm-security` accepts today. The decision to run v1 with one
 root key is recorded in [ADR-0001](adr/0001-signing-and-trust-model.md).
 
-[ADR-0002](adr/0002-first-party-plugins-in-their-own-repositories.md) changes where these keys
-are used. The first-party plugins move into `jtm-cli/jtm-<tool>-plugin` repositories, each with
-its own index key scoped to that plugin, and `keys.json` is published from `jtm-cli/keys`. The
-`jtm-dev` organisation this runbook names belongs to an unrelated account. The runbook describes
-what the code accepts today, and is updated when T6.7 and T6.8 land.
+[ADR-0002](adr/0002-built-in-tools-and-no-third-party-plugins.md) affects two parts of this
+runbook. The `jtm-dev` organisation it names belongs to an unrelated account, so the index
+repository moves to `jtm-cli/index` (T6.7) and the URLs below change with it. v1 also has no
+marketplace, so the `marketplace` scope goes away (T5.6). The runbook describes what the code
+accepts today, and is updated when those tickets land.
 
 Every command below was run against the real implementation with throwaway keys (see
 [Rehearsal](#rehearsal-with-throwaway-keys)), using `minisign` 0.11.
