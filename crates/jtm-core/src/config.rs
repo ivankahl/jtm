@@ -3,6 +3,9 @@
 //! Layers merge in this order, later winning: built-in defaults, user config, project
 //! `.jtm.toml` `[settings]`, `JTM__<SECTION>__<KEY>` environment variables, and command-line
 //! flags. A project file can never set a key that weakens verification or redirects downloads.
+//!
+//! Company keys, `plugins.<name>.signing_keys`, come only from the user config: a project file
+//! refuses them, and no environment variable or flag exists for them (SPEC.md section 9).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -11,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use jtm_fetch::proxy::redact_url;
 use jtm_plugin::names::{check_name_segment, check_plugin_name};
+use jtm_security::PublicKey;
 
 use crate::error::{JtmError, Result};
 
@@ -96,10 +100,14 @@ pub struct ExtractSettings {
     pub max_ratio: u64,
 }
 
+// T5.7 renames the `[plugins.<name>]` table to `[tools.<name>]`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PluginSettings {
     /// Replaces the index location in the plugin's manifest.
     pub index_url: Option<String>,
+    /// Company keys that may sign this plugin's indices on their own, in the order listed and
+    /// without duplicates. Set only in the user config.
+    pub signing_keys: Vec<PublicKey>,
 }
 
 /// Where a configuration value came from.
@@ -228,6 +236,8 @@ enum Kind {
     Choice(&'static [&'static str]),
     /// `native` or a plugin interop format name.
     Format,
+    /// A list of minisign public keys.
+    Keys,
 }
 
 /// A scalar key in a fixed section.
@@ -353,6 +363,7 @@ enum Key {
     Scalar(&'static KeyDef),
     Mirror(String),
     PluginIndexUrl(String),
+    PluginSigningKeys(String),
 }
 
 impl Key {
@@ -361,13 +372,15 @@ impl Key {
             Key::Scalar(def) => format!("{}.{}", def.section, def.name),
             Key::Mirror(prefix) => format!("mirrors.{prefix:?}"),
             Key::PluginIndexUrl(plugin) => format!("plugins.{plugin}.index_url"),
+            Key::PluginSigningKeys(plugin) => jtm_security::company_keys_setting(plugin),
         }
     }
 
     fn allowed_in_project(&self) -> bool {
         match self {
             Key::Scalar(def) => def.project,
-            Key::Mirror(_) | Key::PluginIndexUrl(_) => false,
+            // A cloned repository must not be able to add a signing key (section 14).
+            Key::Mirror(_) | Key::PluginIndexUrl(_) | Key::PluginSigningKeys(_) => false,
         }
     }
 }
@@ -377,6 +390,7 @@ enum Value {
     Bool(bool),
     Int(u64),
     Text(String),
+    Keys(Vec<PublicKey>),
 }
 
 #[derive(Debug, Clone)]
@@ -462,19 +476,19 @@ impl Merged {
         let mut mirrors = BTreeMap::new();
         let mut plugins: BTreeMap<String, PluginSettings> = BTreeMap::new();
         for entry in self.entries.values() {
-            let Value::Text(url) = &entry.value else {
-                continue;
-            };
-            match &entry.key {
-                Key::Mirror(prefix) => {
+            match (&entry.key, &entry.value) {
+                (Key::Mirror(prefix), Value::Text(url)) => {
                     check_location(entry, url, allow_http_mirrors)?;
                     mirrors.insert(prefix.clone(), url.clone());
                 }
-                Key::PluginIndexUrl(plugin) => {
+                (Key::PluginIndexUrl(plugin), Value::Text(url)) => {
                     check_location(entry, url, allow_http_mirrors)?;
                     plugins.entry(plugin.clone()).or_default().index_url = Some(url.clone());
                 }
-                Key::Scalar(_) => {}
+                (Key::PluginSigningKeys(plugin), Value::Keys(keys)) => {
+                    plugins.entry(plugin.clone()).or_default().signing_keys = keys.clone();
+                }
+                _ => {}
             }
         }
 
@@ -624,7 +638,7 @@ fn read_mirrors(
     Ok(())
 }
 
-/// Reads `[plugins.<name>]` tables, which support only `index_url`.
+/// Reads `[plugins.<name>]` tables, which support `index_url` and `signing_keys`.
 fn read_plugins(
     origin: &Origin,
     prefix: &str,
@@ -640,14 +654,17 @@ fn read_plugins(
             return Err(config_error(origin, &plugin_path, "expected a table"));
         };
         for (name, value) in settings {
-            if name != "index_url" {
-                return Err(config_error(
-                    origin,
-                    &format!("{plugin_path}.{name}"),
-                    "unknown key; plugin settings support `index_url`",
-                ));
-            }
-            let key = Key::PluginIndexUrl(plugin.clone());
+            let key = match name.as_str() {
+                "index_url" => Key::PluginIndexUrl(plugin.clone()),
+                "signing_keys" => Key::PluginSigningKeys(plugin.clone()),
+                _ => {
+                    return Err(config_error(
+                        origin,
+                        &format!("{plugin_path}.{name}"),
+                        "unknown key; plugin settings support `index_url` and `signing_keys`",
+                    ));
+                }
+            };
             entries.push(file_entry(origin, prefix, key, value)?);
         }
     }
@@ -688,8 +705,8 @@ fn check_project_allowed(origin: &Origin, prefix: &str, key: &Key) -> Result<()>
         return Err(config_error(
             origin,
             &format!("{prefix}{}", key.dotted()),
-            "project files cannot set security, network, extract, mirror, plugin index or \
-             download cache settings; set it in user config instead",
+            "project files cannot set security, network, extract, mirror, plugin or download \
+             cache settings; set it in user config instead",
         ));
     }
     Ok(())
@@ -699,7 +716,11 @@ fn unknown_key_message() -> String {
     let known: Vec<String> = KEYS
         .iter()
         .map(|def| format!("{}.{}", def.section, def.name))
-        .chain(["mirrors".to_owned(), "plugins.<name>.index_url".to_owned()])
+        .chain([
+            "mirrors".to_owned(),
+            "plugins.<name>.index_url".to_owned(),
+            "plugins.<name>.signing_keys".to_owned(),
+        ])
         .collect();
     format!("unknown key; known keys are {}", known.join(", "))
 }
@@ -721,6 +742,7 @@ fn kind_of(key: &Key) -> Kind {
     match key {
         Key::Scalar(def) => def.kind,
         Key::Mirror(_) | Key::PluginIndexUrl(_) => Kind::Text,
+        Key::PluginSigningKeys(_) => Kind::Keys,
     }
 }
 
@@ -730,7 +752,10 @@ fn convert_toml(key: &Key, value: toml::Value) -> std::result::Result<Value, Str
         (Kind::Int { min, max }, toml::Value::Integer(n)) => check_int(n, min, max),
         (Kind::Bytes, toml::Value::Integer(n)) if n > 0 => Ok(Value::Int(n.unsigned_abs())),
         (Kind::Bytes, toml::Value::String(s)) => parse_bytes(&s),
-        (kind, toml::Value::String(s)) if !matches!(kind, Kind::Bool | Kind::Int { .. }) => {
+        (Kind::Keys, toml::Value::Array(items)) => parse_keys(items),
+        (kind, toml::Value::String(s))
+            if !matches!(kind, Kind::Bool | Kind::Int { .. } | Kind::Keys) =>
+        {
             convert_text(kind, s)
         }
         (kind, _) => Err(format!("expected {}", describe(kind))),
@@ -751,8 +776,25 @@ fn convert_str(key: &Key, text: &str) -> std::result::Result<Value, String> {
             .map_err(|_| format!("expected {}", describe(Kind::Int { min, max })))
             .and_then(|n| check_int(n, min, max)),
         Kind::Bytes => parse_bytes(text),
+        // Company keys have no variable or flag; only the user config can name them.
+        Kind::Keys => Err(format!("expected {}", describe(Kind::Keys))),
         kind => convert_text(kind, text.to_owned()),
     }
+}
+
+/// Parses a list of minisign public keys, dropping repeats.
+fn parse_keys(items: Vec<toml::Value>) -> std::result::Result<Value, String> {
+    let mut keys: Vec<PublicKey> = Vec::with_capacity(items.len());
+    for (i, item) in items.into_iter().enumerate() {
+        let toml::Value::String(text) = item else {
+            return Err(format!("item {}: expected {}", i + 1, describe(Kind::Keys)));
+        };
+        let key = PublicKey::parse(&text).map_err(|e| format!("item {}: {e}", i + 1))?;
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    Ok(Value::Keys(keys))
 }
 
 fn check_int(n: i64, min: u64, max: u64) -> std::result::Result<Value, String> {
@@ -800,6 +842,9 @@ fn describe(kind: Kind) -> String {
         Kind::Path => "an absolute path".to_owned(),
         Kind::Choice(choices) => format!("one of {}", choices.join(", ")),
         Kind::Format => "`native` or the name of a plugin interop format".to_owned(),
+        Kind::Keys => {
+            "a list of minisign public keys, each the base64 line starting with `RW`".to_owned()
+        }
     }
 }
 

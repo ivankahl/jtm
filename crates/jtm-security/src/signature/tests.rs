@@ -65,7 +65,7 @@ fn wrong_key_is_untrusted() {
             key_id, resolve, ..
         } => {
             assert_eq!(key_id, signer.public().id().to_string());
-            assert_eq!(resolve, "jtm trust add <public key> --scope demo");
+            assert_eq!(resolve, "plugins.demo.signing_keys");
         }
         other => panic!("unexpected {other:?}"),
     }

@@ -156,6 +156,8 @@ pub fn verify(req: &Request<'_>) -> Result<Report> {
             // The files are checked as the first-party manifests are: their anchors are the
             // ones compiled into jtm.
             origin: ManifestOrigin::Builtin,
+            // A release is verified with the published keys only, never a company key.
+            company_keys: &[],
         };
         let (keyring, keys_warnings) = loader.keyring(&keys, &options)?;
         if let Some(warning) = keys_warnings

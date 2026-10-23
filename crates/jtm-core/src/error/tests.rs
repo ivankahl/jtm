@@ -222,13 +222,16 @@ fn security_errors_map_to_verification_and_trust_codes() {
     let untrusted = JtmError::from(jtm_security::Error::KeyUntrusted {
         file: "demo-linux-x64.json".into(),
         key_id: "0123456789ABCDEF".into(),
-        resolve: "jtm trust add <public key> --scope demo".into(),
+        resolve: "plugins.demo.signing_keys".into(),
     });
     assert_eq!(untrusted.code(), "E_KEY_UNTRUSTED");
     assert_eq!(untrusted.exit_code(), ExitCode::TrustRequired);
-    assert_eq!(
-        untrusted.details()["resolve"],
-        "jtm trust add <public key> --scope demo"
+    assert_eq!(untrusted.details()["resolve"], "plugins.demo.signing_keys");
+    assert!(
+        untrusted
+            .to_string()
+            .ends_with("add its public key to `plugins.demo.signing_keys` in the user config"),
+        "{untrusted}"
     );
     assert_eq!(untrusted.details()["file"], "demo-linux-x64.json");
     assert!(

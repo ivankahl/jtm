@@ -146,13 +146,9 @@ fn the_exported_index_loads_through_a_plugin_index_url() {
     let fresh = source.sibling();
     fresh.trust();
     let root = export.path().display().to_string().replace('\\', "/");
-    std::fs::write(
-        fresh.home.path().join("config.toml"),
-        format!(
-            "[plugins.demo]\nindex_url = \"{root}/index.example.test/demo-{{os}}-{{arch}}.json\"\n"
-        ),
-    )
-    .unwrap();
+    fresh.save_config(fresh.demo_table(&format!(
+        "index_url = \"{root}/index.example.test/demo-{{os}}-{{arch}}.json\"\n"
+    )));
     let (code, value) = fresh.json(&["--offline", "available", "demo"]);
     assert_eq!(code, 0, "{value}");
     assert_eq!(

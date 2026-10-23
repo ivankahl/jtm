@@ -18,7 +18,7 @@ pub enum Error {
         file: String,
         /// Key ids found in the signature file, comma-separated.
         key_id: String,
-        /// The command that would trust the key, for `details.resolve`.
+        /// The user config key that would trust the key, for `details.resolve`.
         resolve: String,
     },
 
@@ -55,10 +55,9 @@ pub enum Error {
     IndexExpired { file: String, expires: String },
 
     /// `trust.json` cannot be read as jtm wrote it. It is never silently reset, since that
-    /// would forget trusted keys and rollback history.
+    /// would forget the rollback history.
     #[error(
-        "{}: {message}; fix or remove the file (removing it forgets trusted keys and \
-         rollback history)",
+        "{}: {message}; fix or remove the file (removing it forgets the rollback history)",
         path.display()
     )]
     State { path: PathBuf, message: String },

@@ -1,5 +1,6 @@
-//! The trust store check (SPEC.md sections 9 and 14): `state/trust.json`, the signing keys of
-//! third-party plugins, and the delegated index keys in the cached keys files.
+//! The trust store check (SPEC.md sections 9 and 14): `state/trust.json`, the company keys in
+//! the user config, the signing keys of third-party plugins, and the delegated index keys in
+//! the cached keys files.
 //!
 //! A cached keys file is verified against the plugin's trust anchors before any of it is read,
 //! exactly as loading an index does, so a file that was tampered with is reported rather than
@@ -11,7 +12,7 @@ use std::io::Read as _;
 
 use jtm_security::keys_json::MAX_KEYS_FILE;
 use jtm_security::signature::MAX_SIGNATURE_FILE;
-use jtm_security::{KeysFile, Timestamp, TrustAnchors, TrustState};
+use jtm_security::{KeysFile, PublicKey, Timestamp, TrustAnchors, TrustState};
 
 use crate::error::JtmError;
 use crate::indices::{ManifestOrigin, keys_cache_path, trust_path};
@@ -28,8 +29,7 @@ pub(super) fn check(inputs: &Inputs<'_>) -> Check {
         Ok(state) => Some(state),
         Err(err) => {
             let hint = format!(
-                "fix {}, or remove it to start over; removing it forgets trusted keys and \
-                 rollback history",
+                "fix {}, or remove it to start over; removing it forgets the rollback history",
                 path.display()
             );
             check.summary = "the trust store cannot be read".to_owned();
@@ -39,10 +39,23 @@ pub(super) fn check(inputs: &Inputs<'_>) -> Check {
     };
     if let Some(state) = &state {
         let tracked: usize = state.indices.values().map(BTreeMap::len).sum();
+        let company: Vec<String> = inputs
+            .settings
+            .plugins
+            .iter()
+            .filter(|(_, p)| !p.signing_keys.is_empty())
+            .map(|(name, p)| {
+                let ids: Vec<String> = p.signing_keys.iter().map(|k| k.id().to_string()).collect();
+                format!("`{name}` ({})", ids.join(", "))
+            })
+            .collect();
+        let company = if company.is_empty() {
+            "no company keys configured".to_owned()
+        } else {
+            format!("company keys configured for {}", list(&company))
+        };
         check.summary = format!(
-            "{} trusted key{}; rollback protection tracks {tracked} index{}",
-            state.keys.len(),
-            if state.keys.len() == 1 { "" } else { "s" },
+            "{company}; rollback protection tracks {tracked} index{}",
             if tracked == 1 { "" } else { "es" },
         );
     }
@@ -59,7 +72,12 @@ pub(super) fn check(inputs: &Inputs<'_>) -> Check {
                 continue;
             }
         };
-        let Some(anchors) = anchors(&plugin, state.as_ref(), &mut check) else {
+        let company_keys = inputs
+            .settings
+            .plugins
+            .get(&name)
+            .map_or(&[][..], |p| p.signing_keys.as_slice());
+        let Some(anchors) = anchors(&plugin, company_keys, &mut check) else {
             continue;
         };
         if plugin.manifest.index.keys_url.is_none() {
@@ -87,20 +105,19 @@ pub(super) fn check(inputs: &Inputs<'_>) -> Check {
 }
 
 /// The anchors of `plugin`, or `None` after reporting why they cannot be used. A third-party
-/// plugin's anchors count only once the user trusts them.
-fn anchors(plugin: &Plugin, state: Option<&TrustState>, check: &mut Check) -> Option<TrustAnchors> {
+/// plugin's anchors count only once `company_keys`, its keys in the user config, list them.
+fn anchors(plugin: &Plugin, company_keys: &[PublicKey], check: &mut Check) -> Option<TrustAnchors> {
     let manifest = &plugin.manifest;
     let index = &manifest.index;
     let found = match plugin.origin {
         ManifestOrigin::Builtin => {
             TrustAnchors::preapproved(&manifest.name, &index.signing_keys, index.threshold())
         }
-        // Without a readable trust store nothing can be said about confirmed keys.
         ManifestOrigin::External => TrustAnchors::confirmed(
             &manifest.name,
             &index.signing_keys,
             index.threshold(),
-            state?,
+            company_keys,
         ),
     };
     match found {
@@ -109,7 +126,8 @@ fn anchors(plugin: &Plugin, state: Option<&TrustState>, check: &mut Check) -> Op
             let err = JtmError::from(err);
             let hint = match &err {
                 JtmError::KeyUntrusted { resolve, .. } => format!(
-                    "if you trust the author of `{}`, run `{resolve}`",
+                    "if you trust the author of `{}`, add their key to `{resolve}` in the user \
+                     config",
                     manifest.name
                 ),
                 _ => format!("fix or reinstall the plugin `{}`", manifest.name),

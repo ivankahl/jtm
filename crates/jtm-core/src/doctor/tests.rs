@@ -835,21 +835,38 @@ fn an_empty_trust_store_is_fine() {
 }
 
 #[test]
-fn the_trust_store_summary_counts_keys_and_tracked_indices() {
-    let home = Home::new();
+fn the_trust_store_summary_names_company_keys_and_counts_tracked_indices() {
     let key = TestKey::generate();
+    let home = Home::new().config(&format!(
+        "[plugins.demo]\nsigning_keys = [{:?}]",
+        key.public_str()
+    ));
+    // A file from before company keys moved to the config still loads; its keys are ignored.
     write_trust(
         &home,
         &json!({
             "format": 1,
-            "keys": [{ "key": key.public_str(), "scope": ["acme/widget"], "added": "2026-10-19T03:00:00Z" }],
+            "keys": [{ "key": TestKey::generate().public_str(), "scope": ["demo"], "added": "2026-10-19T03:00:00Z" }],
             "indices": { "demo": { "linux-x64": { "sequence": 3, "sha256": "ab", "source": "remote" } } },
         })
         .to_string(),
     );
     let trust = check(&home, "trust_store");
     assert_eq!(trust.status, Status::Ok, "{trust:?}");
-    assert!(trust.summary.contains("1 trusted key"), "{}", trust.summary);
+    assert_eq!(
+        trust.summary,
+        format!(
+            "company keys configured for `demo` ({}); rollback protection tracks 1 index",
+            key.public().id()
+        )
+    );
+
+    let trust = check(&Home::new(), "trust_store");
+    assert!(
+        trust.summary.starts_with("no company keys configured"),
+        "{}",
+        trust.summary
+    );
 }
 
 #[test]
@@ -862,7 +879,11 @@ fn a_corrupt_trust_file_says_which_file_and_what_removing_it_costs() {
     let finding = &trust.findings[0];
     assert!(finding.message.contains("trust.json"), "{finding:?}");
     assert!(
-        finding.hint.as_deref().unwrap().contains("trusted keys"),
+        finding
+            .hint
+            .as_deref()
+            .unwrap()
+            .contains("rollback history"),
         "{finding:?}"
     );
 }
@@ -880,7 +901,7 @@ fn an_unreadable_trust_file_is_an_io_error() {
 }
 
 #[test]
-fn an_untrusted_third_party_plugin_names_the_command_that_trusts_it() {
+fn an_untrusted_third_party_plugin_names_the_setting_that_trusts_it() {
     let home = Home::new();
     let author = TestKey::generate();
     home.add_external(&author, "");
@@ -889,26 +910,28 @@ fn an_untrusted_third_party_plugin_names_the_command_that_trusts_it() {
     assert_eq!(codes(&trust), ["E_KEY_UNTRUSTED"]);
     let finding = &trust.findings[0];
     assert!(finding.message.contains("acme/widget"), "{finding:?}");
-    let expected = format!("jtm trust add {} --scope acme/widget", author.public_str());
+    assert_eq!(
+        finding.details["resolve"],
+        "plugins.acme/widget.signing_keys"
+    );
     assert!(
-        finding.hint.as_deref().unwrap().contains(&expected),
+        finding
+            .hint
+            .as_deref()
+            .unwrap()
+            .contains("`plugins.acme/widget.signing_keys` in the user config"),
         "{finding:?}"
     );
 }
 
 #[test]
 fn a_third_party_plugin_with_a_trusted_key_passes() {
-    let home = Home::new();
     let author = TestKey::generate();
+    let home = Home::new().config(&format!(
+        "[plugins.\"acme/widget\"]\nsigning_keys = [{:?}]",
+        author.public_str()
+    ));
     home.add_external(&author, "");
-    write_trust(
-        &home,
-        &json!({
-            "format": 1,
-            "keys": [{ "key": author.public_str(), "scope": ["acme/widget"], "added": "2026-10-19T03:00:00Z" }],
-        })
-        .to_string(),
-    );
     let trust = check(&home, "trust_store");
     assert_eq!(trust.status, Status::Ok, "{trust:?}");
 }

@@ -299,12 +299,18 @@ impl<'a> Session<'a> {
     /// The keys that may sign `plugin`'s indices, loaded once for all its platforms.
     pub(crate) fn plugin_trust(&self, plugin: &Plugin, refresh: bool) -> Result<PluginTrust> {
         let manifest = &plugin.manifest;
+        let company_keys = self
+            .settings
+            .plugins
+            .get(&manifest.name)
+            .map_or(&[][..], |p| p.signing_keys.as_slice());
         let keys = PluginKeys {
             plugin: &manifest.name,
             signing_keys: &manifest.index.signing_keys,
             threshold: manifest.index.threshold(),
             keys_url: manifest.index.keys_url.as_deref(),
             origin: plugin.origin,
+            company_keys,
         };
         let (keyring, keys_file, warnings) = self
             .index_loader()?

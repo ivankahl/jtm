@@ -134,11 +134,10 @@ pub fn verify(
         .into_iter()
         .collect::<Vec<_>>()
         .join(", ");
-    let resolve = format!("jtm trust add <public key> --scope {}", subject.plugin);
     Err(Error::KeyUntrusted {
         file: subject.file.to_owned(),
         key_id,
-        resolve,
+        resolve: crate::anchors::company_keys_setting(subject.plugin),
     })
 }
 

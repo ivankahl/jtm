@@ -9,10 +9,10 @@
 //! [`IndexLoader::keyring`] builds the keys an index is checked against. First-party and
 //! third-party plugins go through the same steps: the manifest's `signing_keys` are the
 //! plugin's trust anchors, an optional keys file at `keys_url` delegates to short-lived index
-//! keys, and keys the user trusts for the plugin may re-sign its indices. The only difference is
-//! that anchors in a manifest compiled into jtm ([`ManifestOrigin::Builtin`]) are pre-approved,
-//! while any other manifest's anchors ([`ManifestOrigin::External`]) count only once the user
-//! has trusted them.
+//! keys, and company keys the user config lists for the plugin (`plugins.<name>.signing_keys`)
+//! may re-sign its indices. The only difference is that anchors in a manifest compiled into jtm
+//! ([`ManifestOrigin::Builtin`]) are pre-approved, while any other manifest's anchors
+//! ([`ManifestOrigin::External`]) count only once the user config lists them.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -22,8 +22,8 @@ use std::path::{Path, PathBuf};
 use jtm_fetch::mirrors::{Location, local_path, resolve};
 use jtm_security::select::{IndexCopy, Selection};
 use jtm_security::{
-    ExpiryPolicy, IndexFile, IndexRequest, Keyring, KeysFile, SourceKind, Timestamp, TrustAnchors,
-    TrustState, Warning,
+    ExpiryPolicy, IndexFile, IndexRequest, Keyring, KeysFile, PublicKey, SourceKind, Timestamp,
+    TrustAnchors, TrustState, Warning,
 };
 
 use crate::dirs::{Dirs, dir_name};
@@ -32,7 +32,7 @@ use crate::error::{JtmError, Result};
 /// Warning code when the network copy could not be fetched and a local copy was used.
 pub const W_INDEX_REFRESH_FAILED: &str = "W_INDEX_REFRESH_FAILED";
 /// Warning code when a plugin's keys file is unavailable or invalid, so only its anchors and
-/// the user's keys can verify its indices.
+/// the company keys in the user config can verify its indices.
 pub const W_KEYS_FILE_UNAVAILABLE: &str = "W_KEYS_FILE_UNAVAILABLE";
 
 /// Where a plugin manifest came from, which decides whether its anchors are pre-approved.
@@ -40,7 +40,7 @@ pub const W_KEYS_FILE_UNAVAILABLE: &str = "W_KEYS_FILE_UNAVAILABLE";
 /// Pre-approval is provenance, never a property of a key or of a file's contents: `Builtin` is
 /// only for manifests compiled into the jtm binary. The unpacked `<data>/plugins/builtin`
 /// working copy, the marketplace, a project directory and the network are all `External`, so
-/// their anchors count only once the user trusts them.
+/// their anchors count only once the user config lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManifestOrigin {
     /// Compiled into the jtm binary, as the first-party plugins are.
@@ -59,8 +59,11 @@ pub struct PluginKeys<'a> {
     /// `[index] keys_url`, a keys file signed by the anchors.
     pub keys_url: Option<&'a str>,
     /// Where the manifest came from. A builtin manifest's anchors are pre-approved; every other
-    /// manifest's anchors must be trusted by the user.
+    /// manifest's anchors must be listed in `company_keys`.
     pub origin: ManifestOrigin,
+    /// `plugins.<name>.signing_keys` from the user config: company keys that may sign this
+    /// plugin's indices on their own. They count for this plugin only.
+    pub company_keys: &'a [PublicKey],
 }
 
 /// A signed keys file compiled into the binary, identified by its URL.
@@ -183,9 +186,9 @@ pub fn keys_cache_path(dirs: &Dirs, plugin: &str) -> PathBuf {
 impl IndexLoader<'_> {
     /// The keys that may sign `keys.plugin`'s indices, and any warnings about its keys file.
     ///
-    /// Fails with `E_KEY_UNTRUSTED` when the manifest is not builtin and the user trusts fewer
-    /// of its anchors than its threshold. A keys file that cannot be fetched or does not verify
-    /// only removes its delegated keys, so it can never widen trust.
+    /// Fails with `E_KEY_UNTRUSTED` when the manifest is not builtin and the user config lists
+    /// fewer of its anchors than its threshold. A keys file that cannot be fetched or does not
+    /// verify only removes its delegated keys, so it can never widen trust.
     pub fn keyring(
         &self,
         keys: &PluginKeys<'_>,
@@ -207,9 +210,12 @@ impl IndexLoader<'_> {
             ManifestOrigin::Builtin => {
                 TrustAnchors::preapproved(keys.plugin, keys.signing_keys, keys.threshold)?
             }
-            ManifestOrigin::External => {
-                TrustAnchors::confirmed(keys.plugin, keys.signing_keys, keys.threshold, &state)?
-            }
+            ManifestOrigin::External => TrustAnchors::confirmed(
+                keys.plugin,
+                keys.signing_keys,
+                keys.threshold,
+                keys.company_keys,
+            )?,
         };
         let mut warnings = Vec::new();
         let keys_file = match keys.keys_url {
@@ -231,7 +237,7 @@ impl IndexLoader<'_> {
         let keyring = jtm_security::plugin_keyring(
             &anchors,
             keys_file.as_ref().map(|(file, _)| file),
-            &state,
+            keys.company_keys,
         );
         Ok((keyring, keys_file.map(|(_, copy)| copy), warnings))
     }

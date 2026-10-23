@@ -17,7 +17,7 @@ pub mod trust;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use anchors::{TrustAnchors, plugin_keyring};
+pub use anchors::{TrustAnchors, company_keys_setting, plugin_keyring};
 pub use checks::{ExpiryPolicy, IndexRequest, Warning, check_index, check_keys_file};
 pub use error::{Error, Result};
 pub use index::{ArchiveKind, IndexEntry, IndexFile, LoadedIndex};
@@ -26,7 +26,7 @@ pub use keys_json::{IndexKey, KeysFile};
 pub use select::{IndexCopy, Selected, Selection, select};
 pub use signature::{Subject, Verified, verify};
 pub use time::Timestamp;
-pub use trust::{Seen, SourceKind, TrustState, UserKey};
+pub use trust::{Seen, SourceKind, TrustState};
 
 /// Lowercase hex SHA-256 of `bytes`.
 pub fn sha256_hex(bytes: &[u8]) -> String {

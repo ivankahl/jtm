@@ -1,7 +1,4 @@
 use super::*;
-use crate::testing::TestKey;
-
-const NOW: Timestamp = Timestamp::from_unix(1_800_000_000);
 
 fn seen(sequence: u64, sha: &str, source: SourceKind) -> Seen {
     Seen {
@@ -11,15 +8,9 @@ fn seen(sequence: u64, sha: &str, source: SourceKind) -> Seen {
     }
 }
 
-fn scope(names: &[&str]) -> BTreeSet<String> {
-    names.iter().map(|s| (*s).to_owned()).collect()
-}
-
 #[test]
 fn round_trips_through_json() {
-    let key = TestKey::generate();
     let mut state = TrustState::default();
-    state.add_key(key.public(), scope(&["acme/flyway", "demo"]), NOW);
     state.record_keys_file(
         "demo",
         Seen {
@@ -38,15 +29,13 @@ fn round_trips_through_json() {
 #[test]
 fn corrupt_state_is_an_error_not_a_reset() {
     for bad in [
-            &b"{"[..],
-            br#"{"format":2}"#,
-            br#"{"format":1,"keys":[{"key":"nope","scope":["demo"],"added":"2026-10-19T03:00:00Z"}]}"#,
-            br#"{"format":1,"keys":[{"key":"RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB","scope":[],"added":"2026-10-19T03:00:00Z"}]}"#,
-            br#"{"format":1,"surprise":true}"#,
-        ] {
-            let err = TrustState::parse(bad, Path::new("state/trust.json")).unwrap_err();
-            assert!(matches!(err, Error::State { .. }), "{err:?}");
-        }
+        &b"{"[..],
+        br#"{"format":2}"#,
+        br#"{"format":1,"surprise":true}"#,
+    ] {
+        let err = TrustState::parse(bad, Path::new("state/trust.json")).unwrap_err();
+        assert!(matches!(err, Error::State { .. }), "{err:?}");
+    }
 }
 
 #[test]
@@ -83,38 +72,37 @@ fn records_only_move_forward() {
 }
 
 #[test]
-fn adding_and_removing_keys_is_idempotent() {
-    let (a, b) = (TestKey::generate(), TestKey::generate());
+fn holds_only_sequences() {
     let mut state = TrustState::default();
-    assert!(state.add_key(a.public(), scope(&["demo"]), NOW));
-    assert!(!state.add_key(a.public(), scope(&["demo"]), NOW));
-    assert!(state.add_key(a.public(), scope(&["other"]), NOW));
-    assert!(state.add_key(b.public(), scope(&["demo"]), NOW));
-    assert_eq!(state.keys[0].scope, scope(&["demo", "other"]));
-
-    assert!(state.remove_key(&a.public_str(), &scope(&["other"])));
-    assert_eq!(state.keys[0].scope, scope(&["demo"]));
-    assert!(!state.remove_key(&a.public_str(), &scope(&["other"])));
-    assert!(state.remove_key(&a.public().id().to_string(), &BTreeSet::new()));
-    assert!(!state.remove_key(&a.public_str(), &BTreeSet::new()));
-    assert_eq!(state.keys.len(), 1);
-    assert_eq!(state.keys[0].key, b.public());
-    assert!(state.remove_key(&b.public_str(), &scope(&["demo"])));
-    assert!(state.keys.is_empty(), "a key with no scope left is removed");
+    state.record_index("demo", "linux-x64", seen(7, "bb", SourceKind::Remote));
+    let json: serde_json::Value = serde_json::from_slice(&state.to_json()).unwrap();
+    let mut fields: Vec<&str> = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["format", "indices"]);
 }
 
 #[test]
-fn user_group_is_scoped_and_never_expires() {
-    let key = TestKey::generate();
-    let mut state = TrustState::default();
-    state.add_key(key.public(), scope(&["demo"]), NOW);
-    let group = state.user_group();
-    assert_eq!(group.threshold, 1);
-    assert!(group.keys[0].scope.covers("demo"));
-    assert!(!group.keys[0].scope.covers("other"));
-    assert!(state.trusts(&key.public(), "demo"));
-    assert!(!state.trusts(&key.public(), "other"));
-    assert_eq!(group.keys[0].expires, None);
+fn an_old_file_with_trusted_keys_still_loads_and_drops_them() {
+    // `jtm trust add` wrote this list before company keys moved to the user config. Even a
+    // list jtm could not have written loads: its contents are never read.
+    for keys in [
+        r#"[{"key":"RWTB5jyFnNg68V0CwSpHcVuDAhAhJj5aYJboedszhloVwCP5cHSTI+PB","scope":["demo"],"added":"2026-10-19T03:00:00Z"}]"#,
+        r#"[{"key":"nope","scope":[],"added":"never"}]"#,
+        "[]",
+    ] {
+        let old = format!(
+            r#"{{"format":1,"keys":{keys},"indices":{{"demo":{{"linux-x64":{{"sequence":4,"sha256":"aa","source":"remote"}}}}}}}}"#
+        );
+        let state = TrustState::parse(old.as_bytes(), Path::new("t")).unwrap();
+        assert_eq!(state.seen_index("demo", "linux-x64").unwrap().sequence, 4);
+        let text = String::from_utf8(state.to_json()).unwrap();
+        assert!(!text.contains(r#""keys""#), "{text}");
+    }
 }
 
 #[test]

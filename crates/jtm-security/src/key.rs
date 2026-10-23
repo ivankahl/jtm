@@ -172,7 +172,8 @@ impl TrustedKey {
 /// `threshold` distinct keys of the group, each in scope, signed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyGroup {
-    /// Where the keys come from, such as a plugin's signing keys, its keys file or the user trust store, for messages.
+    /// Where the keys come from, such as a plugin's signing keys, its keys file or the company
+    /// keys in the user config, for messages.
     pub origin: String,
     pub keys: Vec<TrustedKey>,
     pub threshold: u32,
