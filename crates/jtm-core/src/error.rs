@@ -286,10 +286,14 @@ pub enum JtmError {
     #[error("invalid signature on {file}: {message}")]
     SignatureInvalid { file: String, message: String },
 
-    #[error("{file} is signed by key `{key_id}`, which is not trusted; to trust it, run {resolve}")]
+    #[error(
+        "{file} is signed by key `{key_id}`, which is not trusted; to trust it, add its public \
+         key to `{resolve}` in the user config"
+    )]
     KeyUntrusted {
         file: String,
         key_id: String,
+        /// The user config key that would trust it, such as `plugins.<name>.signing_keys`.
         resolve: String,
     },
 
@@ -314,8 +318,7 @@ pub enum JtmError {
 
     /// `state/trust.json` cannot be read as jtm wrote it.
     #[error(
-        "{}: {message}; fix or remove the file (removing it forgets trusted keys and \
-         rollback history)",
+        "{}: {message}; fix or remove the file (removing it forgets the rollback history)",
         path.display()
     )]
     TrustStateCorrupt { path: PathBuf, message: String },

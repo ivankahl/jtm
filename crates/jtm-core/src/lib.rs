@@ -19,7 +19,6 @@ pub mod project;
 pub mod session;
 pub mod spec;
 pub mod sync;
-pub mod trust;
 
 pub use config::{Config, ConfigInputs, Settings};
 pub use context::{ColorChoice, Context, GlobalFlags, Terminal, Verbosity};

@@ -43,22 +43,6 @@ fn global_flags_map_onto_core_flags() {
 }
 
 #[test]
-fn trust_add_requires_a_scope() {
-    assert!(Cli::try_parse_from(["jtm", "trust", "add", "RWkey"]).is_err());
-    let cli = Cli::try_parse_from([
-        "jtm", "trust", "add", "RWkey", "--scope", "a", "--scope", "b",
-    ])
-    .unwrap();
-    match cli.command {
-        Some(Command::Trust(TrustCommand::Add { key, scope })) => {
-            assert_eq!(key, "RWkey");
-            assert_eq!(scope, ["a", "b"]);
-        }
-        other => panic!("unexpected {other:?}"),
-    }
-}
-
-#[test]
 fn install_takes_several_specs_and_flags() {
     let cli = Cli::try_parse_from(["jtm", "install", "a@1", "b", "--dry-run", "--force"]).unwrap();
     match cli.command {

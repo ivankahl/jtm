@@ -70,7 +70,10 @@ fn a_third_party_plugin_with_untrusted_keys_fails_with_exit_7() {
     let finding = &trust["findings"][0];
     assert_eq!(finding["code"], "E_KEY_UNTRUSTED");
     assert!(
-        finding["hint"].as_str().unwrap().contains("jtm trust add"),
+        finding["hint"]
+            .as_str()
+            .unwrap()
+            .contains("`plugins.demo.signing_keys` in the user config"),
         "{finding}"
     );
 }

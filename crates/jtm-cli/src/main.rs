@@ -14,7 +14,6 @@ mod setup;
 mod shell;
 mod sync;
 mod tools;
-mod trust;
 mod uninstall;
 
 use std::ffi::OsString;
@@ -28,7 +27,6 @@ use serde::Serialize;
 
 use crate::cli::{Cli, Command, IdeCommand, MirrorCommand, SelfCommand};
 use crate::output::{Diagnosis, Format, Human, JTM_VERSION, Outcome, Renderer};
-use crate::trust::TrustOutcome;
 
 #[derive(Debug, Serialize)]
 struct VersionData {
@@ -315,16 +313,6 @@ fn main() -> ExitCode {
                 },
             ),
         ),
-        Some(Command::Trust(cmd)) => {
-            let name = trust::command_name(&cmd);
-            let _ = match trust::run(&ctx, cmd) {
-                Ok(TrustOutcome::Add(outcome)) => renderer.success(&outcome),
-                Ok(TrustOutcome::Remove(outcome)) => renderer.success(&outcome),
-                Ok(TrustOutcome::List(outcome)) => renderer.success(&outcome),
-                Err(err) => return fail(&mut renderer, name, &err),
-            };
-            JtmExitCode::Success.into()
-        }
         None => fail(
             &mut renderer,
             "jtm",

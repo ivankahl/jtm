@@ -128,15 +128,11 @@ impl Home {
         self.serve(&format!("{at}.minisig"), self.key.sign(&index));
         self.serve(&at, index);
         self.plugin_config.push(format!(
-            "[plugins.{plugin}]\nindex_url = \"{}{at}\"\n",
-            self.server.uri()
+            "[plugins.{plugin}]\nindex_url = \"{}{at}\"\nsigning_keys = [\"{}\"]\n",
+            self.server.uri(),
+            self.key.public_str()
         ));
         self.write_config();
-        let (code, value) = self.json(
-            self.home.path(),
-            &["trust", "add", &self.key.public_str(), "--scope", &plugin],
-        );
-        assert_eq!(code, 0, "{value}");
     }
 
     fn write_config(&self) {

@@ -15,13 +15,120 @@ fn an_untrusted_plugin_key_needs_a_human() {
     let (code, value) = f.json(&["install", "demo@1.0.0"]);
     assert_eq!(code, 7, "{value}");
     assert_eq!(value["error"]["code"], "E_KEY_UNTRUSTED");
-    assert!(
-        value["error"]["details"]["resolve"]
-            .as_str()
-            .unwrap()
-            .contains("jtm trust add")
+    assert_eq!(
+        value["error"]["details"]["resolve"],
+        "plugins.demo.signing_keys"
     );
     assert!(!exists(&f.install_dir("1.0.0")));
+}
+
+#[test]
+fn a_signing_key_counts_only_for_the_tool_it_is_listed_under() {
+    let f = Fixture::new(false);
+    let mut config = std::fs::read_to_string(f.home.path().join("config.toml")).unwrap();
+    config.push_str(&format!(
+        "\n[plugins.other]\nsigning_keys = [\"{}\"]\n",
+        f.key.public_str()
+    ));
+    f.save_config(config);
+    let (code, value) = f.json(&["install", "demo@1.0.0"]);
+    assert_eq!(code, 7, "{value}");
+    assert_eq!(value["error"]["code"], "E_KEY_UNTRUSTED");
+    assert_eq!(
+        value["error"]["details"]["resolve"],
+        "plugins.demo.signing_keys"
+    );
+
+    f.trust();
+    let (code, value) = f.json(&["install", "demo@1.0.0"]);
+    assert_eq!(code, 0, "{value}");
+}
+
+/// SPEC.md section 14: a cloned repository cannot add a signing key.
+#[test]
+fn a_project_file_cannot_add_a_signing_key() {
+    let f = Fixture::new(false);
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join(".jtm.toml"),
+        format!(
+            "[tools]\ndemo = \"1.0.0\"\n\n[settings.plugins.demo]\nsigning_keys = [\"{}\"]\n",
+            f.key.public_str()
+        ),
+    )
+    .unwrap();
+    let output = f
+        .jtm()
+        .current_dir(project.path())
+        .args(["--json", "install", "demo@1.0.0"])
+        .output()
+        .unwrap();
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{value}");
+    assert_eq!(value["error"]["code"], "E_USAGE");
+    assert_eq!(
+        value["error"]["details"]["key"],
+        "settings.plugins.demo.signing_keys"
+    );
+    assert!(!exists(&f.install_dir("1.0.0")));
+}
+
+#[test]
+fn a_bad_signing_key_in_the_user_config_is_a_config_error() {
+    let f = Fixture::new(false);
+    let mut config = std::fs::read_to_string(f.home.path().join("config.toml")).unwrap();
+    config.push_str("\n[plugins.demo]\nsigning_keys = [\"RWnot-a-key\"]\n");
+    f.save_config(config);
+    let (code, value) = f.json(&["install", "demo@1.0.0"]);
+    assert_eq!(code, 2, "{value}");
+    assert_eq!(value["error"]["code"], "E_USAGE");
+    assert_eq!(
+        value["error"]["details"]["key"],
+        "plugins.demo.signing_keys"
+    );
+}
+
+/// `trust.json` written by a jtm that still had `jtm trust add` keeps loading; the keys it
+/// lists no longer count, and the next write keeps only the sequences.
+#[test]
+fn an_old_trust_file_with_keys_still_loads_and_holds_only_sequences_after() {
+    let f = Fixture::new(false);
+    let state = f.home.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let old = json!({
+        "format": 1,
+        "keys": [{ "key": f.key.public_str(), "scope": ["demo"], "added": "2026-10-19T03:00:00Z" }],
+    });
+    std::fs::write(state.join("trust.json"), old.to_string()).unwrap();
+
+    let (code, value) = f.json(&["install", "demo@1.0.0"]);
+    assert_eq!(
+        code, 7,
+        "a key in trust.json no longer trusts anything: {value}"
+    );
+    assert_eq!(value["error"]["code"], "E_KEY_UNTRUSTED");
+
+    f.trust();
+    let (code, value) = f.json(&["install", "demo@1.0.0"]);
+    assert_eq!(code, 0, "{value}");
+    let trust: Value =
+        serde_json::from_slice(&std::fs::read(state.join("trust.json")).unwrap()).unwrap();
+    let mut fields: Vec<&str> = trust
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["format", "indices"], "{trust}");
+}
+
+#[test]
+fn there_is_no_trust_command() {
+    let f = Fixture::new(false);
+    let (code, value) = f.json(&["trust", "list"]);
+    assert_eq!(code, 2, "{value}");
+    assert_eq!(value["error"]["code"], "E_USAGE");
 }
 
 #[test]

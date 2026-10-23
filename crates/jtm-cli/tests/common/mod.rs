@@ -4,6 +4,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic, dead_code, unreachable_pub)]
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,6 +24,8 @@ pub struct Fixture {
     pub server: MockServer,
     pub key: Arc<TestKey>,
     pub platform: String,
+    /// Whether the user config lists [`Fixture::key`] in `plugins.demo.signing_keys`.
+    trusted: Cell<bool>,
 }
 
 pub fn archive(version: &str) -> Vec<u8> {
@@ -60,6 +63,7 @@ impl Fixture {
             server,
             key,
             platform,
+            trusted: Cell::new(false),
         };
         f.write_plugin();
         f.write_config();
@@ -131,7 +135,7 @@ impl Fixture {
             "[mirrors]\n\"https://index.example.test/\" = \"{target}index/\"\n\
              \"https://dl.example.test/\" = \"{target}dl/\"\n"
         );
-        std::fs::write(self.home.path().join("config.toml"), config).unwrap();
+        self.save_config(config);
     }
 
     /// Points `[mirrors]` at a directory `jtm mirror export` wrote, the way its output
@@ -142,7 +146,7 @@ impl Fixture {
             "[mirrors]\n\"https://index.example.test/\" = \"{root}/index.example.test/\"\n\
              \"https://dl.example.test/\" = \"{root}/dl.example.test/\"\n"
         );
-        std::fs::write(self.home.path().join("config.toml"), config).unwrap();
+        self.save_config(config);
     }
 
     pub fn write_plugin(&self) {
@@ -192,7 +196,7 @@ allow_http_mirrors = true
 "https://dl.example.test/" = "{uri}/dl/"
 "#
         );
-        std::fs::write(self.home.path().join("config.toml"), config).unwrap();
+        self.save_config(config);
     }
 
     pub fn serve(&self, at: &str, body: Vec<u8>) {
@@ -244,9 +248,31 @@ allow_http_mirrors = true
         (code, value)
     }
 
+    /// Lists the publisher key in `plugins.demo.signing_keys` in the user config, now and
+    /// in every config the fixture writes after this.
     pub fn trust(&self) {
-        let (code, value) = self.json(&["trust", "add", &self.key.public_str(), "--scope", "demo"]);
-        assert_eq!(code, 0, "{value}");
+        self.trusted.set(true);
+        let path = self.home.path().join("config.toml");
+        let config = std::fs::read_to_string(&path).unwrap_or_default();
+        self.save_config(config);
+    }
+
+    /// The `[plugins.demo]` table that trusts the publisher key, with `extra` lines in it.
+    pub fn demo_table(&self, extra: &str) -> String {
+        format!(
+            "[plugins.demo]\n{extra}signing_keys = [\"{}\"]\n",
+            self.key.public_str()
+        )
+    }
+
+    /// Writes `config` as the user config, trusting the publisher key once [`Fixture::trust`]
+    /// was called, unless `config` already has a `[plugins.demo]` table.
+    pub fn save_config(&self, mut config: String) {
+        if self.trusted.get() && !config.contains("[plugins.demo]") {
+            config.push('\n');
+            config.push_str(&self.demo_table(""));
+        }
+        std::fs::write(self.home.path().join("config.toml"), config).unwrap();
     }
 
     /// The path of the `jtm` binary under test.

@@ -187,9 +187,6 @@ pub(crate) enum Command {
     /// Manage jtm itself.
     #[command(subcommand, name = "self")]
     SelfCmd(SelfCommand),
-    /// Manage keys trusted to sign version indices.
-    #[command(subcommand)]
-    Trust(TrustCommand),
     /// Diagnose PATH, current links, the shell hook, proxy, TLS, the trust store and yanked
     /// plugins. Only reads; exits with the code of the first check that fails.
     Doctor,
@@ -264,28 +261,6 @@ pub(crate) enum SelfCommand {
         #[arg(long)]
         purge: bool,
     },
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum TrustCommand {
-    /// Trust a minisign public key to sign the indices of the named plugins.
-    Add {
-        /// The public key: the base64 line of a minisign.pub file, starting with `RW`.
-        key: String,
-        /// A plugin the key may sign indices for. Repeat for several plugins.
-        #[arg(long, value_name = "PLUGIN", required = true)]
-        scope: Vec<String>,
-    },
-    /// Stop trusting a key, for the named plugins or entirely.
-    Remove {
-        /// The public key, or its 16-digit key id.
-        key: String,
-        /// Only stop trusting it for this plugin. Repeatable; without it the key is removed.
-        #[arg(long, value_name = "PLUGIN")]
-        scope: Vec<String>,
-    },
-    /// List the keys you trust and their scopes.
-    List,
 }
 
 /// Flags accepted by every command.

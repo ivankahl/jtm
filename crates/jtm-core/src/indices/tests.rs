@@ -57,7 +57,7 @@ impl Fixture {
         let dirs = Dirs::resolve(os, Some(home.path()), None, &|_| None).unwrap();
         let key = TestKey::generate();
         let anchors = TrustAnchors::preapproved("demo", &[key.public_str()], 1).unwrap();
-        let keyring = jtm_security::plugin_keyring(&anchors, None, &TrustState::default());
+        let keyring = jtm_security::plugin_keyring(&anchors, None, &[]);
         Fixture {
             _home: home,
             dirs,
@@ -499,6 +499,18 @@ impl Fixture {
         net: &FakeNet,
         options: LoadOptions,
     ) -> Result<PluginIndex> {
+        self.load_with_company_keys(anchors, origin, &[], net, options)
+    }
+
+    /// [`Fixture::load_plugin`], with `company_keys` configured for `demo`.
+    fn load_with_company_keys(
+        &self,
+        anchors: &[String],
+        origin: ManifestOrigin,
+        company_keys: &[PublicKey],
+        net: &FakeNet,
+        options: LoadOptions,
+    ) -> Result<PluginIndex> {
         let loader = self.loader(Some(net), &[]);
         let keys = PluginKeys {
             plugin: "demo",
@@ -506,6 +518,7 @@ impl Fixture {
             threshold: 1,
             keys_url: Some(KEYS_URL),
             origin,
+            company_keys,
         };
         let (keyring, mut warnings) = loader.keyring(&keys, &options)?;
         let sources = IndexSources {
@@ -593,6 +606,7 @@ fn an_embedded_keys_file_works_offline() {
         threshold: 1,
         keys_url: Some(KEYS_URL),
         origin: ManifestOrigin::Builtin,
+        company_keys: &[],
     };
     let offline = LoadOptions {
         offline: true,
@@ -632,6 +646,7 @@ fn the_verified_bytes_of_the_index_and_keys_file_are_available_for_export() {
         threshold: 1,
         keys_url: Some(KEYS_URL),
         origin: ManifestOrigin::Builtin,
+        company_keys: &[],
     };
     let (keyring, copy, _) = loader.keyring_with_keys_file(&keys, &refresh()).unwrap();
     let copy = copy.expect("a keys file was used");
@@ -673,18 +688,52 @@ fn a_third_party_plugin_needs_its_key_confirmed() {
         .unwrap_err();
     assert_eq!(err.code(), "E_KEY_UNTRUSTED");
     assert_eq!(err.exit_code(), crate::ExitCode::TrustRequired);
-    assert_eq!(
-        err.details()["resolve"],
-        format!("jtm trust add {} --scope demo", author.public_str())
-    );
+    assert_eq!(err.details()["resolve"], "plugins.demo.signing_keys");
     assert!(
         net.requests.borrow().is_empty(),
         "nothing is fetched before trust"
     );
 
-    crate::trust::add_key(&f.dirs, &author.public_str(), &["demo".to_owned()], NOW).unwrap();
     let loaded = f
-        .load_plugin(&anchors, ManifestOrigin::External, &net, refresh())
+        .load_with_company_keys(
+            &anchors,
+            ManifestOrigin::External,
+            &[author.public()],
+            &net,
+            refresh(),
+        )
+        .unwrap();
+    assert_eq!(loaded.index.sequence, 1);
+}
+
+#[test]
+fn a_company_key_re_signs_an_index_and_names_its_setting_until_configured() {
+    let f = Fixture::new();
+    let (root, company) = (TestKey::generate(), TestKey::generate());
+    let anchors = [root.public_str()];
+    let mut net = FakeNet::default();
+    net.serve(REMOTE_EXPANDED, index_signed_by(&company, 1));
+
+    let err = f
+        .load_plugin(&anchors, ManifestOrigin::Builtin, &net, refresh())
+        .unwrap_err();
+    assert_eq!(err.code(), "E_KEY_UNTRUSTED");
+    assert_eq!(err.exit_code(), crate::ExitCode::TrustRequired);
+    assert_eq!(err.details()["resolve"], "plugins.demo.signing_keys");
+    assert!(
+        err.to_string()
+            .contains("add its public key to `plugins.demo.signing_keys` in the user config"),
+        "{err}"
+    );
+
+    let loaded = f
+        .load_with_company_keys(
+            &anchors,
+            ManifestOrigin::Builtin,
+            &[company.public()],
+            &net,
+            refresh(),
+        )
         .unwrap();
     assert_eq!(loaded.index.sequence, 1);
 }
@@ -758,6 +807,7 @@ fn two_keys_file_copies_at_the_same_sequence_refuse_the_whole_file() {
         threshold: 1,
         keys_url: Some(KEYS_URL),
         origin: ManifestOrigin::Builtin,
+        company_keys: &[],
     };
     let (keyring, warnings) = loader.keyring(&keys, &refresh()).unwrap();
     assert!(warnings.iter().any(|w| w.code == W_KEYS_FILE_UNAVAILABLE));
@@ -999,6 +1049,7 @@ fn a_file_mirror_serves_the_index_and_keys_file_offline() {
         threshold: 1,
         keys_url: Some(KEYS_URL),
         origin: ManifestOrigin::Builtin,
+        company_keys: &[],
     };
     let (keyring, warnings) = loader.keyring(&keys, &offline).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -1057,6 +1108,7 @@ fn a_tampered_file_mirror_keys_file_delegates_nothing() {
         threshold: 1,
         keys_url: Some(KEYS_URL),
         origin: ManifestOrigin::Builtin,
+        company_keys: &[],
     };
     let (keyring, warnings) = loader.keyring(&keys, &offline).unwrap();
     assert_eq!(warnings[0].code, W_KEYS_FILE_UNAVAILABLE);

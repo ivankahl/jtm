@@ -175,6 +175,10 @@ fn project_files_cannot_set_restricted_keys() {
             "settings.plugins.example.index_url",
         ),
         (
+            format!("[settings.plugins.example]\nsigning_keys = [{:?}]", key()),
+            "settings.plugins.example.signing_keys",
+        ),
+        (
             "[settings.extract]\nmax_bytes = 99999999999".to_owned(),
             "settings.extract.max_bytes",
         ),
@@ -205,6 +209,31 @@ fn project_files_cannot_set_restricted_keys() {
             "{err}"
         );
     }
+}
+
+/// A cloned repository cannot add a company key, under the table jtm reads or under the
+/// `tools` name the spec gives it, and the `[tools]` pins of `.jtm.toml` are not that table.
+#[test]
+fn project_files_cannot_add_a_signing_key() {
+    let key = key();
+    let err = Fixture::default()
+        .project(&format!(
+            "[tools]\nexample = \"1\"\n\n[settings.plugins.example]\nsigning_keys = [{key:?}]"
+        ))
+        .err();
+    assert_eq!(key_of(&err), "settings.plugins.example.signing_keys");
+    assert!(
+        err.to_string().contains("project files cannot set"),
+        "{err}"
+    );
+
+    let err = Fixture::default()
+        .project(&format!(
+            "[settings.tools.example]\nsigning_keys = [{key:?}]"
+        ))
+        .err();
+    assert_eq!(err.code(), "E_USAGE");
+    assert_eq!(key_of(&err), "settings.tools");
 }
 
 #[test]
@@ -435,6 +464,73 @@ fn env_variables_are_parsed_and_checked() {
             .starts_with("environment variable JTM__DOWNLOAD__CONCURRENCY: "),
         "{err}"
     );
+}
+
+fn key() -> String {
+    jtm_security::testing::TestKey::generate().public_str()
+}
+
+#[test]
+fn company_keys_are_read_from_the_user_config() {
+    let (a, b) = (key(), key());
+    let config = Fixture::default()
+        .user(&format!(
+            "[plugins.example]\nsigning_keys = [{a:?}, {b:?}, {a:?}]\n\n[plugins.other]\nindex_url = \"https://x.example/i.json\""
+        ))
+        .ok();
+    let keys: Vec<&str> = config.settings.plugins["example"]
+        .signing_keys
+        .iter()
+        .map(PublicKey::as_str)
+        .collect();
+    assert_eq!(keys, [a.as_str(), b.as_str()], "repeats are dropped");
+    assert!(config.settings.plugins["other"].signing_keys.is_empty());
+    assert_eq!(
+        config.origin("plugins.example.signing_keys").unwrap().layer,
+        Layer::User
+    );
+    // The config key is the one `E_KEY_UNTRUSTED` names.
+    assert_eq!(
+        jtm_security::company_keys_setting("example"),
+        "plugins.example.signing_keys"
+    );
+
+    let empty = Fixture::default()
+        .user("[plugins.example]\nsigning_keys = []")
+        .ok();
+    assert!(empty.settings.plugins["example"].signing_keys.is_empty());
+}
+
+#[test]
+fn company_keys_must_be_minisign_public_keys() {
+    for text in [
+        "signing_keys = [\"RWnot-a-key\"]".to_owned(),
+        format!("signing_keys = [{:?}, 3]", key()),
+        format!("signing_keys = {:?}", key()),
+    ] {
+        let err = Fixture::default()
+            .user(&format!("[plugins.example]\n{text}"))
+            .err();
+        assert_eq!(err.code(), "E_USAGE", "{text}");
+        assert_eq!(err.exit_code(), crate::ExitCode::Usage, "{text}");
+        assert_eq!(key_of(&err), "plugins.example.signing_keys", "{text}");
+        assert!(err.to_string().contains("minisign public key"), "{err}");
+    }
+}
+
+/// No flag or environment variable can add a company key (SPEC.md section 9).
+#[test]
+fn company_keys_have_no_flag_or_variable() {
+    let key = key();
+    let err = Fixture::default()
+        .flag("plugins.example.signing_keys", "RW")
+        .err();
+    assert_eq!(key_of(&err), "plugins.example.signing_keys");
+    let config = Fixture::default()
+        .env("JTM__PLUGINS__EXAMPLE__SIGNING_KEYS", &key)
+        .env("JTM__PLUGINS__SIGNING_KEYS", &key)
+        .ok();
+    assert!(config.settings.plugins.is_empty());
 }
 
 #[test]

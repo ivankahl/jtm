@@ -1,29 +1,31 @@
-//! `state/trust.json`: keys the user trusts and the highest index sequences seen (SPEC.md
-//! sections 9 and 14).
+//! `state/trust.json`: the highest index and keys file sequences seen, for rollback protection
+//! (SPEC.md sections 9 and 14).
 //!
 //! ```json
 //! {
 //!   "format": 1,
-//!   "keys": [{ "key": "RW...", "scope": ["acme/flyway"], "added": "2026-10-19T03:00:00Z" }],
 //!   "keys_files": { "java": { "sequence": 7, "sha256": "..." } },
 //!   "indices": { "java": { "linux-x64": { "sequence": 412, "sha256": "...", "source": "remote" } } }
 //! }
 //! ```
 //!
+//! The file holds no keys. Company keys live in the user config (`plugins.<name>.signing_keys`)
+//! and the anchors are compiled into jtm. A file written by an earlier jtm may still hold the
+//! `keys` list that `jtm trust add` kept; it is ignored on load and dropped on the next write.
+//!
 //! The file lives in the user's data directory, which project files cannot touch. Updates take
 //! an exclusive lock on `trust.json.lock`, re-read the file, and replace it atomically, so
 //! parallel jtm processes never lose each other's writes or lower a recorded sequence.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::key::{KeyGroup, PublicKey, Scope, TrustedKey, plugin_set};
-use crate::time::Timestamp;
 
 /// The only `trust.json` format this build reads and writes.
 pub const TRUST_FORMAT: u64 = 1;
@@ -66,18 +68,9 @@ pub struct Seen {
     pub source: Option<SourceKind>,
 }
 
-/// A key the user trusts with `jtm trust add`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UserKey {
-    pub key: PublicKey,
-    pub scope: BTreeSet<String>,
-    pub added: Timestamp,
-}
-
 /// The contents of `trust.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrustState {
-    pub keys: Vec<UserKey>,
     /// Newest keys file seen per plugin. First-party plugins share one file, recorded under
     /// each of them.
     pub keys_files: BTreeMap<String, Seen>,
@@ -112,69 +105,6 @@ impl TrustState {
         }
     }
 
-    /// Whether the user trusts `key` for `plugin`.
-    pub fn trusts(&self, key: &PublicKey, plugin: &str) -> bool {
-        self.keys
-            .iter()
-            .any(|k| k.key == *key && k.scope.contains(plugin))
-    }
-
-    /// Adds `key` for `scope`, merging with any scopes it already has. Returns whether anything
-    /// changed.
-    pub fn add_key(&mut self, key: PublicKey, scope: BTreeSet<String>, now: Timestamp) -> bool {
-        match self.keys.iter_mut().find(|k| k.key == key) {
-            Some(existing) => {
-                let before = existing.scope.len();
-                existing.scope.extend(scope);
-                existing.scope.len() != before
-            }
-            None => {
-                self.keys.push(UserKey {
-                    key,
-                    scope,
-                    added: now,
-                });
-                true
-            }
-        }
-    }
-
-    /// Removes `scope` from the keys matching `key` (a public key or a key id), or the whole key
-    /// when `scope` is empty or covers every plugin it had. Returns whether anything changed.
-    pub fn remove_key(&mut self, key: &str, scope: &BTreeSet<String>) -> bool {
-        let matches = |k: &UserKey| k.key.as_str() == key || k.key.id().to_string() == key;
-        let mut changed = false;
-        for k in self.keys.iter_mut().filter(|k| matches(k)) {
-            if scope.is_empty() {
-                k.scope.clear();
-                changed = true;
-            } else {
-                let before = k.scope.len();
-                k.scope.retain(|p| !scope.contains(p));
-                changed |= k.scope.len() != before;
-            }
-        }
-        self.keys.retain(|k| !k.scope.is_empty());
-        changed
-    }
-
-    /// The user's keys as a group that verifies indices on its own.
-    pub fn user_group(&self) -> KeyGroup {
-        KeyGroup {
-            origin: "user trust store".to_owned(),
-            keys: self
-                .keys
-                .iter()
-                .map(|k| TrustedKey {
-                    key: k.key.clone(),
-                    scope: Scope::from_set(k.scope.clone()),
-                    expires: None,
-                })
-                .collect(),
-            threshold: 1,
-        }
-    }
-
     /// Parses `trust.json`. `path` is only used in messages.
     pub fn parse(text: &[u8], path: &Path) -> Result<TrustState> {
         let corrupt = |message: String| Error::State {
@@ -188,16 +118,7 @@ impl TrustState {
                 raw.format
             )));
         }
-        let mut keys = Vec::with_capacity(raw.keys.len());
-        for (i, k) in raw.keys.into_iter().enumerate() {
-            let key = PublicKey::parse(&k.key).map_err(|e| corrupt(format!("keys[{i}]: {e}")))?;
-            let scope = plugin_set(k.scope).map_err(|e| corrupt(format!("keys[{i}]: {e}")))?;
-            let added = Timestamp::parse(&k.added)
-                .ok_or_else(|| corrupt(format!("keys[{i}].added is not a UTC time")))?;
-            keys.push(UserKey { key, scope, added });
-        }
         Ok(TrustState {
-            keys,
             keys_files: raw.keys_files,
             indices: raw.indices,
         })
@@ -207,15 +128,7 @@ impl TrustState {
     pub fn to_json(&self) -> Vec<u8> {
         let raw = RawTrust {
             format: TRUST_FORMAT,
-            keys: self
-                .keys
-                .iter()
-                .map(|k| RawKey {
-                    key: k.key.as_str().to_owned(),
-                    scope: k.scope.iter().cloned().collect(),
-                    added: k.added.to_string(),
-                })
-                .collect(),
+            _old_keys: IgnoredAny,
             keys_files: self.keys_files.clone(),
             indices: self.indices.clone(),
         };
@@ -325,20 +238,18 @@ fn io_error(path: &Path, source: io::Error) -> Error {
 #[serde(deny_unknown_fields)]
 struct RawTrust {
     format: u64,
-    #[serde(default)]
-    keys: Vec<RawKey>,
+    // SPEC-QUESTION: ADR-0002 removes the user key list from `trust.json` without saying what
+    // happens to a file that still has one. Keeping format 1 and ignoring the list is the
+    // least disruptive reading: no command fails on an old file, and the keys stop counting,
+    // which only narrows trust. Their contents are never parsed, so a malformed old list
+    // cannot fail a command either.
+    /// The `jtm trust add` keys of earlier builds: read and ignored, never written.
+    #[serde(default, rename = "keys", skip_serializing)]
+    _old_keys: IgnoredAny,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     keys_files: BTreeMap<String, Seen>,
     #[serde(default)]
     indices: BTreeMap<String, BTreeMap<String, Seen>>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawKey {
-    key: String,
-    scope: Vec<String>,
-    added: String,
 }
 
 #[cfg(test)]

@@ -233,6 +233,7 @@ impl World {
                 threshold: 1,
                 keys_url: Some(KEYS_URL),
                 origin: ManifestOrigin::Builtin,
+                company_keys: &[],
             },
             &options,
         )?;
