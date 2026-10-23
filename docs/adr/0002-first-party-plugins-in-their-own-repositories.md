@@ -68,9 +68,20 @@ repositories, belongs to an unrelated personal account.
    network, installs every first-party plugin without a prompt, in every mode except `--offline`.
    A third-party plugin found by short name still needs a trust decision, and fails with exit 7
    in automation. The shell hook and read-only commands never fetch.
-7. **The marketplace keeps every revision of an entry,** each with its manifest hash and
-   `min_jtm`. A lockfile can then pin an earlier first-party revision without a prompt, and an
-   older jtm can pick the newest revision it supports.
+7. **Every plugin, first-party and third-party alike, has a version and a signed history:**
+   - `version` is a required field in `plugin.toml`. Marketplace CI checks it rises with every
+     release, and a published version never points at another commit.
+   - Besides `marketplace.json`, which holds each plugin's current version, the marketplace
+     publishes one history file per plugin. It lists every version with its commit, manifest hash
+     and `min_jtm`, is signed the same way, and only ever grows. jtm fetches it only when needed.
+   - A locked commit installs without a prompt only when the plugin's history lists it, or, for a
+     plugin added by URL, when the user chose it. Any other commit, such as one from a fork,
+     counts as adding a new plugin.
+   - Automatic updates only move forward. Installing an older version on purpose, with
+     `jtm plugin update <name> --version <v>`, is allowed and warns.
+   - Entries can yank version ranges with level `warn` or `block`. `block` stops installs with
+     exit 7 (`E_PLUGIN_YANKED`) unless `--allow-yanked` is given, which `--yes` never implies.
+     `revoked_keys` withdraws trust in a plugin's keys, but can never name the root keys.
 8. **Each first-party plugin repository has its own index key,** scoped to that plugin in
    `keys.json`. The marketplace has its own.
 9. **`jtm self update` refuses to replace the binary while other jtm processes run.** In a
@@ -96,6 +107,14 @@ repositories, belongs to an unrelated personal account.
 - **One signed list can keep short names unique; names declared in manifests could not.** Because
   short names never move, every old copy is still correct, just incomplete. That makes caching and
   embedding the list safe, and lets lookups work offline.
+- **The same history for every plugin keeps first-party and third-party alike.** Lockfiles stay
+  reproducible after a plugin updates, a fork commit cannot pass as a released one, and an older
+  jtm can still install a version it supports. Separate history files keep `marketplace.json`,
+  which every `jtm update` downloads, from growing with every release of every plugin.
+- **Downgrades are the user's choice; only automatic moves are restricted.** A stolen marketplace
+  key could otherwise list an old, vulnerable version as current and quietly move every machine
+  back to it. Yanked ranges handle known-bad versions instead. The marketplace can only take trust
+  away, so the worst a stolen key can do with them is block versions, which is visible.
 
 ## Alternatives considered
 
@@ -110,13 +129,18 @@ repositories, belongs to an unrelated personal account.
 | Short names declared in `plugin.toml` | Nothing could keep them unique. |
 | Short names only among installed plugins | An installed `acme/java` could answer to `java` before the first-party plugin is installed. |
 | Plugin names unrelated to the repository name | Hides where a plugin comes from. Full names follow the repository. |
+| Only the current revision in the marketplace | Every plugin update breaks committed lockfiles, or lets a fork commit pass, and an older jtm cannot install once `min_jtm` rises. |
+| Every revision of every plugin in `marketplace.json` | Works, but the file every `jtm update` downloads grows without bound. |
+| Full history for first-party plugins only | Too large a gap between first-party and third-party plugins: third-party locks would need prompts in CI, and no older version could be picked by number. |
+| Refuse every downgrade | A downgrade can be a deliberate, reasonable choice. Restricting automatic moves and yanking known-bad versions covers the attack. |
+| A key compromise as a hard block with no override | Overriding is the user's decision, as with downgrades; `--allow-yanked` keeps it explicit and never implied by `--yes`. |
 
 ## Consequences
 
 - **A fresh machine needs the network, or a mirror, once before its first install.** Release
   builds no longer embed indices, so the promise that a fresh install works offline from the first
-  run is dropped. `jtm mirror export` also exports the marketplace, `keys.json` and the installed
-  plugins' files for air-gapped setups.
+  run is dropped. `jtm mirror export` also exports the marketplace, `keys.json`, and the history
+  files and files of the installed plugins, for air-gapped setups.
 - **Missing data is fetched in every mode except `--offline`, CI included.** This covers a
   plugin, a marketplace copy or an index jtm has no copy of. Only refreshing a copy jtm already has
   follows the refresh policy.
@@ -132,8 +156,8 @@ repositories, belongs to an unrelated personal account.
 
   `check-tool-names` will read tool names from the embedded marketplace snapshot.
 - **Tickets in SPEC.md section 18:**
-  - rewritten: T6.6, T9.1, T9.2 and T9.3;
-  - new: T6.7, T6.8, T9.6, T9.7 and T9.8;
+  - rewritten: T6.6, T9.1, T9.2, T9.3 and T9.4;
+  - new: T6.7, T6.8, T9.6, T9.7, T9.8 and T9.9;
   - extended: T10.2 gains the process check.
 - **Still open (SPEC.md section 17):**
   - how to fetch plugins from hosts other than GitHub;
