@@ -5,6 +5,7 @@
 - Supersedes:
   - the third-party plugin, marketplace and Lua scripting parts of SPEC.md: sections 2, 7, 16
     and milestone M9;
+  - `jtm trust add/remove/list` (T2.6);
   - the `plugins/builtin` working copy of T5.4.
 
 ## Context
@@ -61,11 +62,16 @@ Some facts about the plugin system as planned:
 6. **The trust model shrinks:**
    - root keys compiled into jtm sign `keys.json`, which delegates to index keys, which sign the
      indices;
-   - users can also trust their own keys, scoped to one tool, so a company can re-sign a vetted
-     index.
+   - a company can re-sign a vetted index with its own key. The key is a config setting,
+     `tools.<name>.signing_keys`, next to the `index_url` it goes with, rather than a `jtm trust`
+     command. IT can roll both out in one config file, and the trust state keeps only rollback
+     sequences.
 7. **Everything first-party moves to the `jtm-cli` GitHub organisation.** The name `jtm-dev` that
    the spec first used belongs to an unrelated account.
-8. **`jtm self update` refuses to replace the binary while other jtm processes run.** In a
+8. **Users see "tool", not "plugin".** Flags, config keys and output say `tool`
+   (`--tool`, `tools.<name>.index_url`). "Plugin" stays an internal word for `plugin.toml`, the
+   `jtm-plugin` crate, `E_PLUGIN_INVALID` and the signed index's `plugin` field.
+9. **`jtm self update` refuses to replace the binary while other jtm processes run.** In a
    terminal it offers to close them. Otherwise it fails with exit 7 (`E_JTM_RUNNING`), and `--yes`
    never closes them. This was decided on #108.
 
@@ -75,6 +81,7 @@ Some facts about the plugin system as planned:
   - milestone M9;
   - the Luau engine and its `mlua` dependency;
   - plugin trust prompts and their error codes;
+  - the `jtm trust` command group;
   - the working copy;
   - every rule about names, history and yanking that the marketplace design needed.
 - **Definitions change rarely.** New tools, vendors and layout fixes are uncommon. The data that
@@ -104,8 +111,8 @@ Some facts about the plugin system as planned:
 - **Definition changes ship with a jtm release.** That covers a new tool, a new Java vendor or a
   layout fix for an unusual archive, so users of package managers get them later. If new vendors
   become the most common change, the index could decide which variants exist (SPEC.md section 17).
-- **A company with its own needs has three routes:** mirrors, a re-signed index, or a request or
-  pull request for a new tool.
+- **A company with its own needs has three routes:** mirrors, a re-signed index with its key in
+  `tools.<name>.signing_keys`, or a request or pull request for a new tool.
 - **Code to remove:**
   - T5.5: the working copy.
   - T5.6:
@@ -114,6 +121,10 @@ Some facts about the plugin system as planned:
     - the yanked-plugins check in `jtm doctor` and the `marketplace` scope in `jtm-index keys`;
     - the codes `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_PLUGIN_SCRIPT_LIMIT` and
       `W_PLUGIN_YANKED`.
+
+  - T2.7: the `jtm trust` command, the key list in `trust.json` and `W_KEY_NOT_TRUSTED`, replaced
+    by `tools.<name>.signing_keys`.
+  - T5.7: "plugin" in flags, config keys and output.
 
   No release has carried those codes, so removing them breaks no stability promise.
 - **The M9 tickets stay in the spec,** marked as not in v1.

@@ -69,7 +69,8 @@ v1 stays narrow so the plugin API and the security model are proven on five JVM 
 | Signing keys | A plugin's trust anchors: the Ed25519 public keys in its manifest's `[index] signing_keys`, which sign its indices directly or sign its keys file |
 | Keys file | A file signed by a plugin's signing keys that delegates to short-lived index keys, each with a scope and an expiry; the first-party plugins share one, `keys.json` |
 | Root key | One of jtm's offline Ed25519 keys. They are the signing keys of every plugin |
-| Trust store | The keys the user has trusted, each for named plugins, in `<JTM_HOME>/state/trust.json` |
+| Company key | A key the user config names in `tools.<name>.signing_keys`, so a company can re-sign a vetted index of that tool (section 9) |
+| Trust state | The highest index and keys file sequences seen, per tool and platform, in `<JTM_HOME>/state/trust.json`, for rollback protection |
 | Install dir | One extracted, verified version on disk, for example `tools/java/temurin-21.0.5+11` |
 | Current link | A junction (Windows) or symlink (Unix) at `current/<tool>` pointing at the default install; its `bin` dir is on `PATH` and `[env]` variables such as `JAVA_HOME` point at it |
 
@@ -104,15 +105,14 @@ The CLI uses nvm-style verbs with a `<tool>@<spec>` argument; every command supp
 | `jtm exec <spec>... -- <cmd>` | Run a command with specific versions, no state change | `--install`, `--latest` |
 | `jtm sync` | Install everything the project pins need and update `jtm.lock` | `--dry-run`, `--frozen` (fail if lock would change) |
 | `jtm lock` | Resolve pins and write `jtm.lock` without installing | `--platform` (repeatable), `--upgrade [tool]`, `--dry-run` |
-| `jtm update` | Refresh the signed version indices | `--plugin <name>` |
-| `jtm trust add/remove/list` | Manage trusted signing keys | `add --scope <plugin>` |
+| `jtm update` | Refresh the signed version indices | `--tool <name>` |
 | `jtm env` | Print environment changes for the active versions | `--shell <name>` (bash, zsh, fish, pwsh, cmd) |
 | `jtm shell-init <shell>` | Print the shell hook (bash, zsh, fish, pwsh) |  |
 | `jtm ide sync` | Write installed JDKs into Maven `toolchains.xml` and Gradle installation paths (section 5) | `--dry-run`, `--maven-only`, `--gradle-only` |
-| `jtm mirror export <dir>` | Copy signed indices, signatures and optionally artifacts for an air-gapped mirror (section 8) | `--plugin <name>`, `--platform <p>`, `--artifacts` |
+| `jtm mirror export <dir>` | Copy signed indices, signatures and optionally artifacts for an air-gapped mirror (section 8) | `--tool <name>`, `--platform <p>`, `--artifacts` |
 | `jtm config get/set/list` | Read and write user config | `--project` |
 | `jtm cache list/prune/clean` | Manage downloaded archives and cached indices | `--older-than <days>` |
-| `jtm doctor` | Diagnose PATH, current links, shell hook, proxy, TLS and trust store | Read-only; exits with the code of the first failing check (section 12) |
+| `jtm doctor` | Diagnose PATH, current links, shell hook, proxy, TLS and trust state | Read-only; exits with the code of the first failing check (section 12) |
 | `jtm describe` | Print a JSON description of every command, flag and output schema | `--format json, markdown` |
 | `jtm mcp` | Run the MCP server over stdio |  |
 | `jtm self setup` | Add current-link bin dirs to `PATH` and set `[env]` variables in the user environment, and load the shell hook (section 5) | `--dry-run`, `--no-hook` |
@@ -132,7 +132,7 @@ jtm is interactive by default for humans and switches prompts off by itself for 
 - **Interactive** when stdin and stderr are both terminals. jtm may offer to install a missing version, confirm overwrites, and let the user pick when a spec is ambiguous.
 - **Automatically non-interactive** when stdin or stderr is not a terminal, `CI=true`, `--json` is passed, or the call comes through `jtm mcp`. Scripts and agents never see a prompt, even without a flag.
 - **`--no-input`** (or `JTM_NO_INPUT=1`) forces non-interactive mode in a terminal. A step that needs a decision fails with exit 7 (`E_INPUT_REQUIRED`, or a trust code from section 12) and prints the flag or command that would resolve it.
-- **`--yes`** accepts routine confirmations, such as installing a missing version or editing a shell rc file. It never accepts trust changes: a key jtm does not trust always needs `jtm trust add` or a human answering the prompt.
+- **`--yes`** accepts routine confirmations, such as installing a missing version or editing a shell rc file. It never accepts trust changes: jtm trusts a key it does not embed only when the user config names it in `tools.<name>.signing_keys`, and no prompt or flag can add one.
 
 The flag is `--no-input` because it is the common CLI convention (the Command Line Interface Guidelines at clig.dev recommend it) and says exactly what it does.
 
@@ -299,7 +299,7 @@ key = "maven"
 - Every plugin is compiled into jtm. jtm never loads a manifest from disk, a project, a mirror or the network, and keeps no copy of the manifests on disk, so no file can add a tool or change one.
 - A plugin's `signing_keys` are its trust anchors: jtm's root keys, which sign `keys.json`, which delegates to the short-lived index keys that sign its indices (section 9). They are pre-approved because they are compiled in; installing jtm is that decision, so jtm never prompts for them, and their rotations need no action from the user.
 - Each install's receipt and `jtm.lock` record the manifest hash, so it is visible when a jtm with a different definition of a tool installed or locked it.
-- A user can also trust a key of their own for one tool with `jtm trust add <key> --scope <tool>`, so a company can vet and re-sign an internal index (sections 8 and 9). Such a key counts only for indices of that tool.
+- The user config can also name company keys for one tool in `tools.<name>.signing_keys`, so a company can vet and re-sign an internal index (sections 8 and 9). Such a key counts only for indices of that tool. There is no `jtm trust` command: the key sits next to the `index_url` it is used with, and IT can roll both out as one config file.
 
 ## 8. Version indices and distribution
 
@@ -368,20 +368,22 @@ Overrides change where bytes come from, never which keys are trusted. A copied i
 "https://github.com/jtm-cli/index/releases/latest/download/" = "https://artifactory.corp.example/jtm-index/"
 "https://github.com/adoptium/" = "https://artifactory.corp.example/github-adoptium/"
 
-[plugins.java]
-# replace a plugin's index location entirely
+[tools.java]
+# replace a tool's index location entirely
 index_url = "file:///opt/jtm-mirror/index/java-{os}-{arch}.json"
+# optional: company keys that may re-sign this tool's indices (section 9)
+signing_keys = ["RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"]
 ```
 
 - Supported schemes: `https`, `file`, and plain paths. `http` is rejected unless `security.allow_http_mirrors = true`, and even then signatures and hashes are still required.
 - Artifact URLs are rewritten the same way. The SHA-256 belongs to the content, so a mirror cannot change what is accepted.
-- `jtm mirror export <dir> [--plugin <name>] [--platform <p>] [--artifacts]` copies indices, signatures and optionally every artifact into a directory layout that `index_url` and `[mirrors]` can point at. This is the air-gapped workflow.
-- **Export layout.** Every exported file sits where the URL it is served from says: `<dir>/<host>/<path of the URL>`, with the path percent-decoded, the host lowercased and a `:port` written `+port`. A signature is the file's URL plus `.minisig`. A plugin's keys file, when its manifest sets `keys_url`, is exported with its signature, because an index signed by a delegated key cannot be verified without it. Aim one `[mirrors]` entry per host at that host's directory, for example `"https://github.com/" = "/opt/jtm-mirror/github.com/"`; the command prints the entries. `plugins.<name>.index_url` can instead name the exported index, `file:///opt/jtm-mirror/index.example.com/java-{os}-{arch}.json`. Only verified bytes are exported: indices and signatures exactly as signed, archives only when their SHA-256 and size match the signed index. Without `--plugin` every plugin is exported; without `--platform` every platform a plugin publishes an index for. The index is refreshed first when online. Archives are written before the indices that list them, so an interrupted export never advertises an archive it lacks, and repeating an export changes nothing.
-- Changing who is trusted is a separate step: `jtm trust add <key> --scope java` lets a company re-sign a vetted internal index with its own key.
+- `jtm mirror export <dir> [--tool <name>] [--platform <p>] [--artifacts]` copies indices, signatures and optionally every artifact into a directory layout that `index_url` and `[mirrors]` can point at. This is the air-gapped workflow.
+- **Export layout.** Every exported file sits where the URL it is served from says: `<dir>/<host>/<path of the URL>`, with the path percent-decoded, the host lowercased and a `:port` written `+port`. A signature is the file's URL plus `.minisig`. A plugin's keys file, when its manifest sets `keys_url`, is exported with its signature, because an index signed by a delegated key cannot be verified without it. Aim one `[mirrors]` entry per host at that host's directory, for example `"https://github.com/" = "/opt/jtm-mirror/github.com/"`; the command prints the entries. `tools.<name>.index_url` can instead name the exported index, `file:///opt/jtm-mirror/index.example.com/java-{os}-{arch}.json`. Only verified bytes are exported: indices and signatures exactly as signed, archives only when their SHA-256 and size match the signed index. Without `--tool` every tool is exported; without `--platform` every platform a tool publishes an index for. The index is refreshed first when online. Archives are written before the indices that list them, so an interrupted export never advertises an archive it lacks, and repeating an export changes nothing.
+- Changing who is trusted is a separate setting: `tools.java.signing_keys` in the user config lets a company re-sign a vetted internal index with its own key.
 
 ## 9. Security model
 
-jtm never trusts a network location: an artifact is accepted only if its SHA-256 matches a value reached through an unbroken chain of signatures starting at a key embedded in the binary or added explicitly by the user. The design is a deliberate subset of [The Update Framework](https://theupdateframework.io). The comparison with peer tools and the reasoning behind it are in [ADR-0001](docs/adr/0001-signing-and-trust-model.md).
+jtm never trusts a network location: an artifact is accepted only if its SHA-256 matches a value reached through an unbroken chain of signatures starting at a key embedded in the binary or named in the user config. The design is a deliberate subset of [The Update Framework](https://theupdateframework.io). The comparison with peer tools and the reasoning behind it are in [ADR-0001](docs/adr/0001-signing-and-trust-model.md).
 
 ### Verification chain
 
@@ -392,9 +394,9 @@ jtm never trusts a network location: an artifact is accepted only if its SHA-256
 5. **Index entry** supplies the expected `size` and `sha256`.
 6. **Artifact** is hashed while streaming and rejected on any mismatch before extraction.
 
-Every plugin follows this chain. Keys the user trusts with `jtm trust add` are stored, scoped to named tools, in `<JTM_HOME>/state/trust.json`. An index signed by no key trusted for its tool fails with `E_KEY_UNTRUSTED`, and `details.resolve` names the command that would trust its key.
+Every plugin follows this chain. Company keys come only from `tools.<name>.signing_keys` in the user config (section 14), never from a project file, a flag, a prompt or an environment variable, and each counts only for the tool it is listed under. An index signed by no key trusted for its tool fails with `E_KEY_UNTRUSTED`, and `details.resolve` names the config key that would trust its key.
 
-A key the user trusts for a plugin may also re-sign that plugin's indices on its own, so a company can vet and re-sign an internal mirror. A key that already counts toward a threshold — a manifest signing key or a key listed in the keys file — never also counts as such a user signature, so trusting one cannot lower a `threshold`.
+A company key may re-sign that tool's indices on its own, so a company can vet and re-sign an internal mirror. A key that already counts toward a threshold — a manifest signing key or a key listed in the keys file — never also counts as a company key, so listing one cannot lower a `threshold`.
 
 ### Key roles
 
@@ -403,7 +405,7 @@ A key the user trusts for a plugin may also re-sign that plugin's indices on its
 | Root | The maintainer, offline (hardware token and encrypted offline backups), threshold 1 of 1 | `keys.json`, as the signing key of every plugin | New root embedded in a jtm release, cross-signed by the old and new roots |
 | Index | CI (GitHub Actions secret in a protected environment) | Index files | New `keys.json` signed by root; old key removed |
 | Release | Maintainers, offline | jtm binaries and `SHA256SUMS` | Same as root |
-| User or company | The user | Re-signed internal indices | `jtm trust add` and `jtm trust remove` |
+| User or company | The user or their IT department | Re-signed internal indices | Edit `tools.<name>.signing_keys` in the user config |
 
 **Rotation never breaks clients.**
 
@@ -446,7 +448,7 @@ These run on embedded, cached, mirrored and freshly downloaded copies alike, bef
 | Swapping one plugin's or platform's index for another | Signed `plugin` and `platform` fields |
 | Stolen index key | Short `keys.json` expiry, rotation via root, scope limits blast radius |
 | Malicious archive contents | Extraction rules in section 10 |
-| Prompt-injected agent widening trust | Non-interactive modes and MCP never trust a key, and `--yes` never accepts a trust change |
+| Prompt-injected agent widening trust | Only the user config can add a key; MCP exposes no config writes, and no flag or prompt adds a key |
 | A tool definition changed on disk or in a project | Tool definitions come only from the jtm binary (section 7) |
 | Tampered local cache | Signatures re-verified on every load; installs record their hash |
 | Tampered jtm update | Release signature verified before `self update` swaps the binary |
@@ -582,20 +584,20 @@ Success and no-op both exit 0 so `set -e` scripts keep working; the difference i
 | 4 | Network or I/O error | Yes |
 | 5 | Verification failure (signature, hash, rollback, expiry, invalid signed file, unsafe archive, invalid plugin manifest) | No, report it |
 | 6 | Lock or pin problem (outdated, mismatch, conflict) | No |
-| 7 | Trust required (untrusted plugin or key) | No, ask a human |
+| 7 | Trust or input required (untrusted key, confirmation needed) | No, ask a human |
 | 8 | Partial success in a multi-tool command | Inspect `data` |
 
 ### Error codes
 
 Stable string codes, never renamed once released: `E_USAGE`, `E_TOOL_UNKNOWN`, `E_VERSION_NOT_FOUND`, `E_ALIAS_UNKNOWN`, `E_PLATFORM_UNSUPPORTED`, `E_NETWORK`, `E_OFFLINE`, `E_SIGNATURE_INVALID`, `E_KEY_UNTRUSTED`, `E_INDEX_EXPIRED`, `E_INDEX_ROLLBACK`, `E_INDEX_BINDING`, `E_INDEX_INVALID`, `E_HASH_MISMATCH`, `E_SIZE_EXCEEDED`, `E_ARCHIVE_UNSAFE`, `E_LOCK_OUTDATED`, `E_LOCK_INDEX_MISMATCH`, `E_INPUT_REQUIRED`, `E_PLUGIN_INVALID`, `E_IN_USE`, `E_JTM_RUNNING`, `E_PERMISSION`, `E_IO`, `E_INTERNAL`.
 
-Warning codes use the same stable form and travel in `warnings`; they never change the exit code: `W_INDEX_EXPIRED` (an expired index was accepted from a source where expiry is only a warning), `W_INDEX_COPY_REJECTED` (a copy that failed verification was ignored while a valid copy was used), `W_KEYS_FILE_UNAVAILABLE` (no usable keys file, so only the anchors verify), `W_INDEX_REFRESH_FAILED` (a refresh failed and a local copy was used), `W_KEY_NOT_TRUSTED` (a `jtm trust remove` matched nothing), `W_DEFAULT_CLEARED` (an uninstall removed the version the user default pointed at), `W_PIN_CONFLICT` (two pin files in one directory set different versions; `details` names the tool, the winner and the other files), `W_PIN_IGNORED` (a `.jtm.toml` above the nearest one names a tool with no plugin), `W_SESSION_INVALID` (a `JTM_SESSION_<TOOL>` value is not a version and is ignored; the shell hook clears it), `W_NOT_INSTALLED` (a session or project version is not installed, so it does not apply), `W_LOCK_NOT_IN_INDEX` (a locked version the index no longer lists installs from the locked URL and hash), `W_LOCK_NO_ARTIFACTS` (no locked platform publishes a locked version), `W_WRAPPER_HASH_MISMATCH` (a wrapper file declares a different SHA-256 for the archive jtm installs), `W_REQUIRES_UNMET` (an active tool's `[requires]` entry is not met by the active version of the tool it needs; a required tool jtm does not manage is not checked), `W_SHELL_HOOK_SKIPPED` (`jtm self setup` could not add the shell hook, because the login shell has none or no PowerShell was found) and the `jtm doctor` warnings `W_PATH_MISSING` (a current link's `bin` directory is not on `PATH`), `W_SHELL_HOOK_MISSING` (the rc file or profile does not load the shell hook), `W_SHELL_HOOK_INACTIVE` (a pinned project is used in a shell where the hook is not active), `W_PROXY_UNSUPPORTED` (a proxy setting jtm cannot honour, such as a PAC file) and `W_INDEX_KEY_EXPIRED` (a cached keys file lists an expired index key while another still signs for the plugin).
+Warning codes use the same stable form and travel in `warnings`; they never change the exit code: `W_INDEX_EXPIRED` (an expired index was accepted from a source where expiry is only a warning), `W_INDEX_COPY_REJECTED` (a copy that failed verification was ignored while a valid copy was used), `W_KEYS_FILE_UNAVAILABLE` (no usable keys file, so only the anchors verify), `W_INDEX_REFRESH_FAILED` (a refresh failed and a local copy was used), `W_DEFAULT_CLEARED` (an uninstall removed the version the user default pointed at), `W_PIN_CONFLICT` (two pin files in one directory set different versions; `details` names the tool, the winner and the other files), `W_PIN_IGNORED` (a `.jtm.toml` above the nearest one names a tool with no plugin), `W_SESSION_INVALID` (a `JTM_SESSION_<TOOL>` value is not a version and is ignored; the shell hook clears it), `W_NOT_INSTALLED` (a session or project version is not installed, so it does not apply), `W_LOCK_NOT_IN_INDEX` (a locked version the index no longer lists installs from the locked URL and hash), `W_LOCK_NO_ARTIFACTS` (no locked platform publishes a locked version), `W_WRAPPER_HASH_MISMATCH` (a wrapper file declares a different SHA-256 for the archive jtm installs), `W_REQUIRES_UNMET` (an active tool's `[requires]` entry is not met by the active version of the tool it needs; a required tool jtm does not manage is not checked), `W_SHELL_HOOK_SKIPPED` (`jtm self setup` could not add the shell hook, because the login shell has none or no PowerShell was found) and the `jtm doctor` warnings `W_PATH_MISSING` (a current link's `bin` directory is not on `PATH`), `W_SHELL_HOOK_MISSING` (the rc file or profile does not load the shell hook), `W_SHELL_HOOK_INACTIVE` (a pinned project is used in a shell where the hook is not active), `W_PROXY_UNSUPPORTED` (a proxy setting jtm cannot honour, such as a PAC file) and `W_INDEX_KEY_EXPIRED` (a cached keys file lists an expired index key while another still signs for the plugin).
 
 Three codes exit with 7, and they tell an agent whether a flag can help:
 
 | Code | Meaning | Resolved by |
 | --- | --- | --- |
-| `E_KEY_UNTRUSTED` | An index is signed by a key not trusted for that tool, such as a company key not added yet | `jtm trust add`, or a human at the prompt; never `--yes` |
+| `E_KEY_UNTRUSTED` | An index is signed by a key not trusted for that tool, such as a company key not configured yet | Adding the key to `tools.<name>.signing_keys` in the user config; never `--yes` |
 | `E_INPUT_REQUIRED` | A routine confirmation or choice was needed while prompts were off | The flag named in `details.resolve`, such as `--yes`, `--install` or a more specific spec |
 | `E_JTM_RUNNING` | `jtm self update` found other jtm processes while prompts were off; `details.processes` lists each one's process ID and command | Close those processes and run it again, or run it in a terminal; never `--yes` |
 
@@ -627,8 +629,8 @@ Every exit-7 error puts the flag or command that would resolve it in `details.re
 | `doctor` | `jtm doctor` |  |
 
 - `use` is not exposed: the MCP server is a separate process and cannot change the agent's shell. `run` replaces it.
-- `trust add` is deliberately not exposed. Widening trust is a human decision.
-- Resources: `jtm://project/pins`, `jtm://project/lock`, `jtm://plugins/{name}/manifest`, `jtm://config`.
+- Config writes are deliberately not exposed, so an agent cannot add a company key. Widening trust is a human decision.
+- Resources: `jtm://project/pins`, `jtm://project/lock`, `jtm://tools/{name}/manifest`, `jtm://config`.
 
 ## 13. Corporate, proxy and offline support
 
@@ -644,11 +646,11 @@ jtm must install verified JDKs on a locked-down Windows laptop behind a TLS-insp
 | Blocked domains | `[mirrors]` prefix rewrites for indices and artifacts, so only approved hosts are contacted |
 | Air-gapped | `jtm mirror export --artifacts` on a connected machine, copy the directory, point `index_url` or `[mirrors]` at it, run with `--offline` |
 | Shared download cache | `download.cache_dir` can point at a shared or pre-seeded directory; entries are content-addressed and re-hashed before use |
-| Re-signed internal indices | Security teams vet versions, re-sign with their own key, and users trust it with `jtm trust add` |
+| Re-signed internal indices | Security teams vet versions and re-sign them with their own key; one user config sets `tools.<name>.index_url` and `tools.<name>.signing_keys` |
 
 `jtm doctor` checks each of these and prints the exact failure, for example "certificate for github.com issued by Corp-Proxy-CA is not trusted; add it with `network.extra_ca_file`".
 
-`jtm doctor` only reads. Every finding has a code, a specific message and a hint. A failed check carries an `E_` code from section 12 and the command exits with the code of the first failed check, in the order `PATH`, current links, shell hook, proxy, TLS, trust store; with `--json` that check's code is `error.code` and the full report is `error.details.report`. A warning carries a `W_` code and never changes the exit code. The connection test runs only when jtm is not offline, and says so when skipped.
+`jtm doctor` only reads. Every finding has a code, a specific message and a hint. A failed check carries an `E_` code from section 12 and the command exits with the code of the first failed check, in the order `PATH`, current links, shell hook, proxy, TLS, trust state; with `--json` that check's code is `error.code` and the full report is `error.details.report`. A warning carries a `W_` code and never changes the exit code. The connection test runs only when jtm is not offline, and says so when skipped.
 
 ## 14. Configuration and on-disk layout
 
@@ -672,7 +674,7 @@ All state lives in per-user directories following each OS's conventions, and set
     maven/default-3.9.9/
     .tmp/  .trash/
   state/
-    trust.json            # trusted keys, highest seen index sequences
+    trust.json            # highest seen index and keys file sequences
     defaults.toml         # user defaults set by `jtm default`
     resolve-cache.bin     # shell hook fast path for project pin lookups
   locks/
@@ -686,7 +688,7 @@ Tools without variants use the variant name `default`.
 
 ### Configuration keys
 
-Layers merge in this order, later winning: built-in defaults, user config, project `.jtm.toml` `[settings]`, environment variables, command-line flags. Each key `<section>.<key>` in the table below is read from the environment variable `JTM__<SECTION>__<KEY>`, for example `JTM__INDEX__TTL_HOURS`; `[mirrors]` and `plugins.<name>.index_url` have no variables.
+Layers merge in this order, later winning: built-in defaults, user config, project `.jtm.toml` `[settings]`, environment variables, command-line flags. Each key `<section>.<key>` in the table below is read from the environment variable `JTM__<SECTION>__<KEY>`, for example `JTM__INDEX__TTL_HOURS`; `[mirrors]` and `tools.<name>.*` have no variables.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
@@ -700,18 +702,19 @@ Layers merge in this order, later winning: built-in defaults, user config, proje
 | `network.proxy` | from environment | Explicit proxy URL |
 | `network.extra_ca_file` | none | Extra PEM certificates |
 | `[mirrors]` | none | URL prefix rewrites |
-| `plugins.<name>.index_url` | from manifest | Replace a plugin's index location |
+| `tools.<name>.index_url` | from manifest | Replace a tool's index location |
+| `tools.<name>.signing_keys` | none | Company keys (minisign public keys) that may sign this tool's indices (section 9) |
 | `extract.max_bytes` | `4 GiB` | Archive bomb limit: total uncompressed size |
 | `extract.max_entries` | `200000` | Archive bomb limit: entries per archive |
 | `extract.max_ratio` | `200` | Archive bomb limit: compression ratio of any entry |
 
-Project files can never set `security.*`, `network.*`, `[mirrors]`, `extract.*`, `plugins.*.index_url` or `download.cache_dir`. A cloned repository must not be able to weaken verification, redirect downloads, or choose where jtm writes files; such keys in `.jtm.toml` are an error.
+Project files can never set `security.*`, `network.*`, `[mirrors]`, `extract.*`, `tools.*` or `download.cache_dir`. A cloned repository must not be able to weaken verification, redirect downloads, add a signing key, or choose where jtm writes files; such keys in `.jtm.toml` `[settings]` are an error. (The `[tools]` table of `.jtm.toml` holds pins, section 6; it is not this config key.)
 
 ### PATH and shell setup
 
 - The installer (`install.ps1`, `install.sh`) and `jtm self setup` add the `current/<tool>` bin directories and `[env]` variables (section 5) to the user environment. On Windows this edits `HKCU\Environment` and broadcasts `WM_SETTINGCHANGE`; no admin needed.
 - On Unix, `jtm self setup` shows the lines it will add to the shell rc file and adds them after confirmation at the prompt, or straight away with `--yes`.
-- `jtm self uninstall` undoes this. It removes jtm's marked block from every rc file it could have written (`.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, fish's `conf.d/jtm.fish`) and from the PowerShell profile, deletes `env.sh` and `env.fish`, removes the `HKCU\Environment` values `self setup` recorded (a variable only while it still holds jtm's value), and removes the current links and the defaults. It lists all of this and asks first, or proceeds with `--yes`; without a terminal and without `--yes` it fails with exit 7. Installed versions, plugins, trust and the cache stay unless `--purge` is given, which deletes the entries jtm makes in its data and cache directories and then each directory once empty. `--purge` refuses a data or cache directory that is the file system root or holds the home directory. The user config file and the jtm binary are never deleted; the output names both.
+- `jtm self uninstall` undoes this. It removes jtm's marked block from every rc file it could have written (`.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, fish's `conf.d/jtm.fish`) and from the PowerShell profile, deletes `env.sh` and `env.fish`, removes the `HKCU\Environment` values `self setup` recorded (a variable only while it still holds jtm's value), and removes the current links and the defaults. It lists all of this and asks first, or proceeds with `--yes`; without a terminal and without `--yes` it fails with exit 7. Installed versions, trust state and the cache stay unless `--purge` is given, which deletes the entries jtm makes in its data and cache directories and then each directory once empty. `--purge` refuses a data or cache directory that is the file system root or holds the home directory. The user config file and the jtm binary are never deleted; the output names both.
 - `jtm shell-init <shell>` is needed for automatic project pins and for `jtm use`. `jtm self setup` adds it for bash, zsh, fish and PowerShell unless `--no-hook` is given; it can also be added to an rc file by hand.
 
 ### Updating jtm
@@ -830,7 +833,7 @@ v1 has no third-party plugins, no marketplace and no plugin scripting ([ADR-0002
 A company that needs something jtm does not ship has three routes in v1:
 
 - the same tools from internal servers, through `[mirrors]` (section 8);
-- only vetted versions, through a re-signed index and `jtm trust add` (section 9);
+- only vetted versions, through a re-signed index and `tools.<name>.signing_keys` (section 9);
 - a request, or a pull request, for a new tool (section 15).
 
 ## 17. Open questions
@@ -856,6 +859,8 @@ None of these block M0 or M1; each should be decided before the milestone named 
 - [x] **Working copy of the built-in manifests:** decided: none. Nothing read it, and keeping it in sync cost a lock and churn between jtm versions (#102, #108). \[M5\]
 - [x] **GitHub organisation:** decided: `jtm-cli`, for the index repository. The `jtm-dev` name the spec first used belongs to an unrelated account. \[M6\]
 - [x] **Other jtm processes during `self update`:** decided: refuse to swap the binary, with an offer to close them in a terminal, and exit 7 with `E_JTM_RUNNING` otherwise; `--yes` never closes them (section 14). \[M10\]
+- [x] **Company keys:** decided: a config setting, `tools.<name>.signing_keys`, instead of a `jtm trust` command. Re-signing an index always goes with pointing `index_url` at it, so both sit together in one config file that IT can roll out, and anyone who can write the user config could already run a trust command. The trust state keeps only the rollback sequences ([ADR-0002](docs/adr/0002-built-in-tools-and-no-third-party-plugins.md)). \[M7\]
+- [x] **"Plugin" in the user interface:** decided: users see "tool" only, as in `--tool`, `tools.<name>.index_url` and `jtm://tools/{name}/manifest`. "Plugin" stays an internal word, for `plugin.toml`, the `jtm-plugin` crate, `E_PLUGIN_INVALID` and the `plugin` field of the signed index format, which changing would break published indices. \[M5\]
 - [ ] **Variants from the index:** let the signed index decide which variants exist, instead of the manifest's `variants` list, so a new Java vendor whose archives fit the existing layout rules needs no release. Worth doing if new vendors turn out to be the most common definition change. \[M6\]
 - [x] **Name availability:** the crate name `jtm` is taken on crates.io by an unrelated crypto library (Just The Math, last released September 2025). Decided: publish the crate as jtm-cli with a binary named jtm. winget IDs, Scoop buckets and Homebrew taps are namespaced by publisher, so they are fine; check homebrew-core before submitting there. \[M0\]
 
@@ -921,7 +926,7 @@ Suggested crates: `clap`, `serde`, `serde_json`, `toml`, `toml_edit`, `schemars`
 | T1.3 | Spec parser for `<tool>[@[<variant>:]<version-or-alias>]` | T0.3 | Valid and invalid cases return `E_USAGE` with position |
 | T1.4 | `plugin.toml` schema (section 7) with validation and helpful errors | T1.2 | Maven example from section 7 parses; 20+ invalid fixtures rejected with field paths |
 | T1.5 | Alias resolution: `highest`, `index-tag`, `fixed` (script kind stubbed) | T1.4 | Resolves against an in-memory index fixture |
-| T1.6 | Config layering: defaults, user, project, env, flags, with the project-file security restrictions | T0.5 | Tests prove project files cannot set `security.*`, `network.*`, `[mirrors]`, `extract.*`, `plugins.*.index_url`, `download.cache_dir` |
+| T1.6 | Config layering: defaults, user, project, env, flags, with the project-file security restrictions | T0.5 | Tests prove project files cannot set `security.*`, `network.*`, `[mirrors]`, `extract.*`, `tools.*`, `download.cache_dir` |
 | T1.7 | Directory resolution per OS and `JTM_HOME` override (section 14) | T1.1 | Paths correct per OS; `JTM_HOME` collapses all |
 
 ### M2 Security
@@ -933,7 +938,8 @@ Suggested crates: `clap`, `serde`, `serde_json`, `toml`, `toml_edit`, `schemars`
 | T2.3 | Index file schema and loader that verifies before parsing | T2.2, T1.2 | Unsigned or tampered files never reach the JSON parser (test with malformed JSON plus bad signature) |
 | T2.4 | Binding, rollback and expiry checks with `state/trust.json` | T2.3 | `E_INDEX_BINDING`, `E_INDEX_INVALID`, `E_INDEX_ROLLBACK`, `E_INDEX_EXPIRED` each tested; expiry warning versus error per source kind |
 | T2.5 | Index source selection: embedded, cache, remote, override; pick highest valid sequence | T2.4 | Mixed valid and invalid copies resolve to the correct one |
-| T2.6 | `jtm trust add/remove/list` | T2.4 | Keys persisted with scope; JSON output |
+| T2.6 | `jtm trust add/remove/list`. Replaced by T2.7 | T2.4 | Keys persisted with scope; JSON output |
+| T2.7 | Replace `jtm trust` with `tools.<name>.signing_keys` in the user config (ADR-0002): remove the command, the key list in `trust.json` and `W_KEY_NOT_TRUSTED`; `E_KEY_UNTRUSTED` names the config key | T2.6, T1.6 | A configured key re-signs only its tool's indices; the key in `.jtm.toml` or a flag is refused; `trust.json` holds only sequences |
 
 ### M3 Install
 
@@ -971,7 +977,8 @@ Suggested crates: `clap`, `serde`, `serde_json`, `toml`, `toml_edit`, `schemars`
 | T5.3 | `maven`, `gradle`, `kotlin`, `spring-boot-cli` manifests with `platform: any` indices and `[requires]` warnings | T4.7 | Each installs from fixtures; `mvn -v` works with the pinned Java in CI |
 | T5.4 | Embed first-party manifests in the binary; `plugins/builtin` unpacking as a non-authoritative working copy. The working copy is removed again by T5.5 | T5.2, T5.3 | `grep` check in CI: no tool names in core crates; a modified working copy is repaired from the binary and never changes a trust decision |
 | T5.5 | Remove the `plugins/builtin` working copy: no unpacking, no repair and no lock for it; delete an old `<data>/plugins/builtin` once | T5.4 | No command writes under `<data>/plugins`; an existing copy is removed |
-| T5.6 | Remove third-party plugin support and scripting (ADR-0002): loading manifests from `<data>/plugins/<name>@<rev>`, the Luau engine and the `mlua` dependency, `script` schemes, aliases and interop, `[hooks]` (now refused), the yanked-plugins check in `jtm doctor`, the `marketplace` scope in `jtm-index keys`, and the codes `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_PLUGIN_SCRIPT_LIMIT` and `W_PLUGIN_YANKED` | T5.5 | A manifest on disk is never read; a manifest with `[hooks]` fails with `E_PLUGIN_INVALID`; `mlua` is gone from `Cargo.lock` |
+| T5.6 | Remove third-party plugin support and scripting (ADR-0002): loading manifests from `<data>/plugins/<name>@<rev>`, the Luau engine and the `mlua` dependency, `script` schemes, aliases and interop, `[hooks]` (now refused), the project `[plugins]` table, the yanked-plugins check in `jtm doctor`, the `marketplace` scope in `jtm-index keys`, and the codes `E_PLUGIN_UNTRUSTED`, `E_KEY_CHANGED`, `E_PLUGIN_SCRIPT_LIMIT` and `W_PLUGIN_YANKED` | T5.5 | A manifest on disk is never read; a manifest with `[hooks]` fails with `E_PLUGIN_INVALID`; `mlua` is gone from `Cargo.lock` |
+| T5.7 | Say "tool" instead of "plugin" to users: `--plugin` flags become `--tool`, `plugins.<name>.*` config becomes `tools.<name>.*`, and messages and JSON output fields follow. Internal names stay (section 17) | T5.6 | `jtm describe` and `--help` mention no plugin; the old config key is an error naming the new one |
 
 ### M6 Index pipeline
 
@@ -990,12 +997,12 @@ Suggested crates: `clap`, `serde`, `serde_json`, `toml`, `toml_edit`, `schemars`
 
 | ID | Task | Depends on | Done when |
 | --- | --- | --- | --- |
-| T7.1 | `[mirrors]` prefix rewrites and `plugins.<name>.index_url`, including `file` and path sources | T3.6, T2.5 | Rewritten artifact still verifies; tampered mirror copy fails |
+| T7.1 | `[mirrors]` prefix rewrites and `tools.<name>.index_url`, including `file` and path sources | T3.6, T2.5 | Rewritten artifact still verifies; tampered mirror copy fails |
 | T7.2 | Proxy support: env vars, config, Windows system proxy | T3.1 | Tested with a local proxy container |
 | T7.3 | `network.extra_ca_file` and TLS-inspection scenario | T3.1 | Test with a self-signed intercepting proxy |
 | T7.4 | `jtm mirror export` with optional artifacts | T7.1 | Exported directory installs offline via `--offline` |
 | T7.5 | Deferred: a system config with `locked` keys. jtm runs at user level, so a user can point it at any file and locks would protect nothing | T1.6 | Not scheduled for v1 |
-| T7.6 | `jtm doctor` covering PATH, current links, hook, proxy, TLS, trust store | T7.2, T4.5 | Each failure has a specific message and code |
+| T7.6 | `jtm doctor` covering PATH, current links, hook, proxy, TLS, trust state | T7.2, T4.5 | Each failure has a specific message and code |
 
 ### M8 Agent support
 
@@ -1003,7 +1010,7 @@ Suggested crates: `clap`, `serde`, `serde_json`, `toml`, `toml_edit`, `schemars`
 | --- | --- | --- | --- |
 | T8.1 | `schemars` schemas for all outputs; `jtm describe` JSON and markdown | T4.10 | Schema validates every snapshot test output |
 | T8.2 | Audit: every mutating command has `--dry-run`; no prompts without a TTY or under `CI`, `--json`, `--no-input` or MCP; `--yes` never accepts trust changes; no implicit refresh in JSON, CI or MCP modes | T4.10 | Test suite runs every command with stdin closed |
-| T8.3 | `jtm mcp` server with the tools and resources in section 12, sharing `jtm-core` | T8.1 | MCP inspector test; `run` enforces timeout; `trust add` absent |
+| T8.3 | `jtm mcp` server with the tools and resources in section 12, sharing `jtm-core` | T8.1 | MCP inspector test; `run` enforces timeout; no config writes |
 
 ### M9 Marketplace
 
