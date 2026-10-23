@@ -3,8 +3,8 @@
 //! report.
 //!
 //! Doctor only reads. It does not open a [`Session`](jtm_core::session::Session), because
-//! opening one repairs the builtin plugin working copy, and it never prompts. Exit codes follow
-//! the first failed check (SPEC.md section 12); warnings never change the exit code.
+//! opening one may remove an old builtin plugin working copy, and it never prompts. Exit codes
+//! follow the first failed check (SPEC.md section 12); warnings never change the exit code.
 
 use std::io::{self, Write};
 use std::path::PathBuf;

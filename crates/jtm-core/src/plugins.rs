@@ -3,7 +3,7 @@
 //! First-party manifests are compiled into the binary and are the only ones whose anchors are
 //! pre-approved. Every other manifest lives at `<data>/plugins/<name>@<rev>/plugin.toml`, where
 //! `<name>` is the plugin name with `/` written as `--`, and its anchors count only once the
-//! user trusts them. The unpacked `<data>/plugins/builtin` working copy is never read here.
+//! user trusts them.
 
 use std::fs;
 use std::io;
@@ -18,193 +18,41 @@ use crate::error::{JtmError, Result};
 use crate::indices::ManifestOrigin;
 use crate::platform::Platform;
 
-/// The name prefix of the files the working copy repair writes in `<data>/plugins`.
-const TEMP_PREFIX: &str = ".jtm-builtin-";
+/// The working copy of the builtin manifests that older jtm versions unpacked, under
+/// `<data>/plugins`. Nothing reads or writes it any more.
+const OLD_WORKING_COPY: &str = "builtin";
 
-/// The working copy files of one builtin plugin, as `(file name, bytes)`.
-fn working_files(found: &BuiltinManifest) -> Vec<(&'static str, &'static [u8])> {
-    let mut files = vec![("plugin.toml", found.text.as_bytes())];
-    if let Some(script) = found.script {
-        files.push(("plugin.lua", script.as_bytes()));
-    }
-    files
-}
-
-/// Makes the `<data>/plugins/builtin` working copy match `builtin` byte for byte (SPEC.md
-/// sections 9 and 14): one directory per plugin holding its `plugin.toml` and any
-/// `plugin.lua`. A file that differs, or is a link or a directory, is replaced; anything else
-/// in the working copy is removed, and links are removed, never followed. Returns the paths it
-/// repaired, so `jtm doctor` can report them.
-///
-/// The working copy is for people and tools to read. jtm never reads it, so a modified copy
-/// cannot change a trust decision; [`Registry`] reads only the compiled-in manifests.
-///
-/// Several jtm processes may start a repair at once, such as two shells' prompt hooks, so a
-/// repair holds an exclusive lock in `<data>/locks`. While another process holds it, the sync
-/// is skipped and reports no repairs rather than waiting, so a stopped process never stalls
-/// every prompt. New files are also written in `<data>/plugins`, outside the copy, and renamed
-/// into place, so nothing that does not take the lock sees a half-written file in the copy.
-/// Without any `builtin` manifests, such as from a context that embeds none, there is nothing
-/// to compare against, so the copy is left alone.
-pub fn sync_working_copy(dirs: &Dirs, builtin: &[BuiltinManifest]) -> Result<Vec<PathBuf>> {
-    if builtin.is_empty() {
-        return Ok(Vec::new());
-    }
-    let Some(_lock) = lock_working_copy(dirs)? else {
-        tracing::debug!("another process is repairing the builtin plugin working copy");
-        return Ok(Vec::new());
-    };
-    let root = dirs.builtin_plugins();
-    let scratch = dirs.plugins();
-    let mut repaired = Vec::new();
-    ensure_dir(&root, &mut repaired)?;
-    sweep_temp_files(&scratch);
-    let wanted: Vec<(String, &BuiltinManifest)> =
-        builtin.iter().map(|b| (dir_name(b.name), b)).collect();
-    for entry in read_entries(&root)? {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !wanted.iter().any(|(dir, _)| *dir == name) {
-            remove_entry(&entry.path())?;
-            repaired.push(entry.path());
-        }
-    }
-    for (dir, found) in &wanted {
-        let dir = root.join(dir);
-        ensure_dir(&dir, &mut repaired)?;
-        let files = working_files(found);
-        for entry in read_entries(&dir)? {
-            let name = entry.file_name();
-            if !files.iter().any(|(file, _)| name == *file) {
-                remove_entry(&entry.path())?;
-                repaired.push(entry.path());
-            }
-        }
-        for (file, bytes) in files {
-            let path = dir.join(file);
-            let current = match fs::symlink_metadata(&path) {
-                Ok(meta) if meta.is_file() => fs::read(&path).ok(),
-                Ok(meta) if meta.is_dir() => {
-                    remove_entry(&path)?;
-                    None
-                }
-                // A link is replaced by the rename below, never followed.
-                _ => None,
-            };
-            if current.as_deref() != Some(bytes) {
-                write_replacing(&scratch, &path, bytes)?;
-                repaired.push(path);
-            }
-        }
-    }
-    if !repaired.is_empty() {
-        tracing::debug!(
-            count = repaired.len(),
-            "repaired the builtin plugin working copy"
-        );
-    }
-    Ok(repaired)
-}
-
-/// Writes `bytes` to a new file in `scratch`, on the same file system, and renames it over
-/// `path`. A rename replaces a link rather than writing through it, so a link planted in the
-/// working copy is never followed.
-///
-/// Windows briefly refuses a rename onto a file another program has open, such as a virus
-/// scanner or an editor, so there a refused rename is retried twice, waiting at most 60 ms in
-/// all. Any other failure is returned at once.
-fn write_replacing(scratch: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
-    write_replacing_with(scratch, path, bytes, rename_refused)
-}
-
-/// Whether a failed rename may work if tried again: on Windows, a refused or shared target.
-fn rename_refused(error: &io::Error) -> bool {
-    // ERROR_SHARING_VIOLATION, which std does not map to an error kind.
-    const SHARING_VIOLATION: i32 = 32;
-    cfg!(windows)
-        && (error.kind() == io::ErrorKind::PermissionDenied
-            || error.raw_os_error() == Some(SHARING_VIOLATION))
-}
-
-/// [`write_replacing`], retrying a failed rename while `transient` says it may work.
-fn write_replacing_with(
-    scratch: &Path,
-    path: &Path,
-    bytes: &[u8],
-    transient: impl Fn(&io::Error) -> bool,
-) -> Result<()> {
-    const ATTEMPTS: u32 = 3;
-    let mut file = tempfile::Builder::new()
-        .prefix(TEMP_PREFIX)
-        .tempfile_in(scratch)
-        .map_err(|e| JtmError::io(scratch, e))?;
-    io::Write::write_all(&mut file, bytes).map_err(|e| JtmError::io(file.path(), e))?;
-    let mut attempt = 1;
-    loop {
-        let failed = match file.persist(path) {
-            Ok(_) => return Ok(()),
-            Err(failed) => failed,
-        };
-        if !transient(&failed.error) || attempt == ATTEMPTS {
-            return Err(JtmError::io(path, failed.error));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10 << attempt));
-        attempt += 1;
-        file = failed.file;
-    }
-}
-
-/// Takes the exclusive lock on the working copy, or returns `None` while another process
-/// holds it.
-fn lock_working_copy(dirs: &Dirs) -> Result<Option<fs::File>> {
-    let locks = dirs.locks();
-    fs::create_dir_all(&locks).map_err(|e| JtmError::io(&locks, e))?;
-    // A leading `.` keeps this apart from every install lock, which starts with a plugin name.
-    let path = locks.join(".builtin-working-copy.lock");
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|e| JtmError::io(&path, e))?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(fs::TryLockError::WouldBlock) => Ok(None),
-        Err(fs::TryLockError::Error(e)) => Err(JtmError::io(&path, e)),
-    }
-}
-
-/// Removes the repair's temporary files in `scratch`. Only a repair holding the working copy
-/// lock writes them, so with the lock held every one is from a process killed mid-repair.
-/// Failures are ignored; the next sync tries again.
-fn sweep_temp_files(scratch: &Path) {
-    let Ok(entries) = fs::read_dir(scratch) else {
+/// Removes the `<data>/plugins/builtin` working copy older jtm versions kept, with the lock and
+/// any temporary files of its repair. It is best effort: a failure is logged and tried again by
+/// the next command, and never fails this one. When there is no copy, which is every run after
+/// the first, it costs one `stat`, so the shell hook can run it at every prompt.
+pub fn remove_old_working_copy(dirs: &Dirs) {
+    let plugins = dirs.plugins();
+    let copy = plugins.join(OLD_WORKING_COPY);
+    if fs::symlink_metadata(&copy).is_err() {
         return;
-    };
-    for entry in entries.flatten() {
-        let ours = entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX);
-        if ours && entry.file_type().is_ok_and(|t| t.is_file()) {
-            let _ = fs::remove_file(entry.path());
+    }
+    if let Err(err) = remove_entry(&copy) {
+        tracing::debug!(%err, "cannot remove the old builtin plugin working copy");
+        return;
+    }
+    // What the copy's repair left behind: its lock, and the files a killed repair left beside
+    // the copy.
+    let _ = fs::remove_file(dirs.locks().join(".builtin-working-copy.lock"));
+    if let Ok(entries) = fs::read_dir(&plugins) {
+        for entry in entries.flatten() {
+            let ours = entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".jtm-builtin-");
+            if ours && entry.file_type().is_ok_and(|t| t.is_file()) {
+                let _ = fs::remove_file(entry.path());
+            }
         }
     }
-}
-
-/// Makes `dir` a real directory, replacing a file or link in its place.
-fn ensure_dir(dir: &Path, repaired: &mut Vec<PathBuf>) -> Result<()> {
-    match fs::symlink_metadata(dir) {
-        Ok(meta) if meta.is_dir() => return Ok(()),
-        Ok(_) => {
-            remove_entry(dir)?;
-            repaired.push(dir.to_path_buf());
-        }
-        Err(_) => {}
-    }
-    fs::create_dir_all(dir).map_err(|e| JtmError::io(dir, e))
-}
-
-fn read_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
-    fs::read_dir(dir)
-        .and_then(Iterator::collect::<io::Result<Vec<_>>>)
-        .map_err(|e| JtmError::io(dir, e))
+    // Only succeeds when nothing else is left in it.
+    let _ = fs::remove_dir(&plugins);
+    tracing::debug!(path = %copy.display(), "removed the old builtin plugin working copy");
 }
 
 /// Removes a file, a link (not its target) or a whole directory.

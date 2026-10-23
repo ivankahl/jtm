@@ -194,10 +194,7 @@ impl<'a> Session<'a> {
         let dirs = Dirs::for_context(ctx)?;
         let cwd = std::env::current_dir().ok();
         let config = load_config(&dirs, cwd.as_deref(), &|key| std::env::var_os(key))?;
-        // The working copy is only for reading, so failing to repair it never fails a command.
-        if let Err(err) = crate::plugins::sync_working_copy(&dirs, ctx.builtin) {
-            tracing::debug!(%err, "cannot update the builtin plugin working copy");
-        }
+        crate::plugins::remove_old_working_copy(&dirs);
         Session::new(ctx, dirs, config.settings, Platform::detect()?)
     }
 
